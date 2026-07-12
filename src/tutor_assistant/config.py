@@ -14,6 +14,8 @@ class RecordingConfig(BaseModel):
     subtype: str = "PCM_16"
     mic_device: int | None = None
     loopback_device: int | None = None
+    chunk_seconds: int = 30
+    diagnostics_seconds: int = 5
 
 
 class WhisperConfig(BaseModel):
@@ -31,6 +33,8 @@ class RepositoryConfig(BaseModel):
     base_branch: str = "main"
     push: bool = True
     create_branch: bool = True
+    use_worktree: bool = True
+    keep_worktree: bool = False
 
 
 class AppConfig(BaseModel):
@@ -50,4 +54,3 @@ class AppConfig(BaseModel):
 def load_students(path: Path) -> list[Student]:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return [Student.model_validate(item) for item in data.get("students", [])]
-

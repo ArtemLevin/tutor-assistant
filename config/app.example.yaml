@@ -4,6 +4,8 @@ students_file: config/students.yaml
 recording:
   sample_rate: 48000
   channels: 1
+  chunk_seconds: 30
+  diagnostics_seconds: 5
 
 whisper:
   model: small
@@ -19,4 +21,5 @@ repository:
   base_branch: main
   push: true
   create_branch: true
-
+  use_worktree: true
+  keep_worktree: false

@@ -22,6 +22,24 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
+    JobStatus.DRAFT: {JobStatus.RECORDING, JobStatus.RECORDED, JobStatus.TRANSCRIBING, JobStatus.FAILED},
+    JobStatus.RECORDING: {JobStatus.RECORDED, JobStatus.FAILED},
+    JobStatus.RECORDED: {JobStatus.TRANSCRIBING, JobStatus.FAILED},
+    JobStatus.TRANSCRIBING: {JobStatus.REVIEW_REQUIRED, JobStatus.FAILED},
+    JobStatus.REVIEW_REQUIRED: {JobStatus.READY, JobStatus.TRANSCRIBING, JobStatus.FAILED},
+    JobStatus.READY: {JobStatus.PUBLISHED, JobStatus.TRANSCRIBING, JobStatus.FAILED},
+    JobStatus.PUBLISHED: {JobStatus.GENERATING, JobStatus.READY, JobStatus.FAILED},
+    JobStatus.GENERATING: {JobStatus.COMPLETED, JobStatus.FAILED},
+    JobStatus.COMPLETED: {JobStatus.READY},
+    JobStatus.FAILED: {JobStatus.DRAFT, JobStatus.RECORDED, JobStatus.TRANSCRIBING, JobStatus.READY},
+}
+
+
+class InvalidStatusTransition(ValueError):
+    pass
+
+
 class Student(BaseModel):
     id: str
     full_name: str
@@ -75,7 +93,9 @@ class Lesson(BaseModel):
     pipeline: PipelineOptions = Field(default_factory=PipelineOptions)
     error: str | None = None
 
-    def transition(self, status: JobStatus, error: str | None = None) -> None:
+    def transition(self, status: JobStatus, error: str | None = None, *, force: bool = False) -> None:
+        if status != self.status and not force and status not in ALLOWED_TRANSITIONS[self.status]:
+            raise InvalidStatusTransition(f"Недопустимый переход: {self.status.value} → {status.value}")
         self.status = status
         self.updated_at = datetime.now(timezone.utc)
         self.error = error
@@ -96,4 +116,3 @@ class Lesson(BaseModel):
     @classmethod
     def read_json(cls, path: Path) -> "Lesson":
         return cls.model_validate_json(path.read_text(encoding="utf-8"))
-

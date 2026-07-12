@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 import logging
+import json
 import sys
 import traceback
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QThread, QTimer, Signal
+from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Signal
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDateEdit, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..config import AppConfig, load_students
 from ..domain import JobStatus, Lesson
 from ..pipeline import LessonPipeline
-from ..recording import DualRecorder, list_input_devices
+from ..recording import (
+    DualRecorder, find_recoverable_recordings, list_input_devices, recover_recording, test_input_device,
+)
 
 
 class Worker(QThread):
@@ -46,11 +51,18 @@ class MainWindow(QMainWindow):
         self.recorder: DualRecorder | None = None
         self.recording_seconds = 0
         self.workers: list[Worker] = []
+        self.player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio_output)
+        self.play_stop_timer = QTimer(self)
+        self.play_stop_timer.setSingleShot(True)
+        self.play_stop_timer.timeout.connect(self.player.pause)
         self.setWindowTitle("Tutor Assistant")
         self.resize(1000, 720)
         self._build()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
+        QTimer.singleShot(0, self._offer_recovery)
 
     def _build(self) -> None:
         tabs = QTabWidget()
@@ -59,6 +71,30 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._publish_tab(), "3. Публикация")
         self.setCentralWidget(tabs)
         self.statusBar().showMessage("Готово")
+
+    def _offer_recovery(self) -> None:
+        sessions = find_recoverable_recordings(self.config.workspace)
+        if not sessions:
+            return
+        directory = sessions[-1]
+        answer = QMessageBox.question(
+            self,
+            "Незавершённая запись",
+            f"Найдены сохранённые чанки:\n{directory}\n\nВосстановить аудиозапись?",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            result = recover_recording(directory)
+            self.audio_path.setText(str(result.mixed_file))
+            session = json.loads(result.session_file.read_text(encoding="utf-8"))
+            session["status"] = "recovered"
+            result.session_file.write_text(
+                json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            QMessageBox.information(self, "Восстановление", f"Запись восстановлена:\n{result.mixed_file}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка восстановления", str(exc))
 
     def _lesson_tab(self) -> QWidget:
         page = QWidget()
@@ -88,6 +124,19 @@ class MainWindow(QMainWindow):
         form.addRow("Микрофон", self.mic)
         form.addRow("Системный звук / loopback", self.loopback)
         layout.addWidget(form_box)
+
+        diagnostics = QGroupBox("Проверка устройств")
+        diagnostics_layout = QFormLayout(diagnostics)
+        self.mic_level = QProgressBar()
+        self.mic_level.setRange(0, 100)
+        self.system_level = QProgressBar()
+        self.system_level.setRange(0, 100)
+        diagnostics_layout.addRow("Микрофон", self.mic_level)
+        diagnostics_layout.addRow("Системный звук", self.system_level)
+        self.test_devices_button = QPushButton("Записать тестовый сигнал")
+        self.test_devices_button.clicked.connect(self.test_devices)
+        diagnostics_layout.addRow(self.test_devices_button)
+        layout.addWidget(diagnostics)
 
         row = QHBoxLayout()
         self.start_button = QPushButton("Начать запись")
@@ -123,8 +172,27 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(
             "Проверьте числа, формулы и спорные фрагменты. После подтверждения текст попадёт в репозиторий ученика."
         ))
+        self.segment_table = QTableWidget(0, 4)
+        self.segment_table.setHorizontalHeaderLabels(["Начало", "Конец", "Текст", "Уверенность"])
+        self.segment_table.horizontalHeader().setStretchLastSection(False)
+        self.segment_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.segment_table.setAlternatingRowColors(True)
+        self.segment_table.doubleClicked.connect(self.play_selected_segment)
+        layout.addWidget(self.segment_table, 4)
+        controls = QHBoxLayout()
+        self.play_segment_button = QPushButton("▶ Воспроизвести выбранный сегмент")
+        self.play_segment_button.clicked.connect(self.play_selected_segment)
+        self.playback_speed = QComboBox()
+        for label, value in [("0,75×", 0.75), ("1×", 1.0), ("1,25×", 1.25)]:
+            self.playback_speed.addItem(label, value)
+        controls.addWidget(self.play_segment_button)
+        controls.addWidget(QLabel("Скорость"))
+        controls.addWidget(self.playback_speed)
+        controls.addStretch()
+        layout.addLayout(controls)
+        layout.addWidget(QLabel("Сводный текст — используется, если таблица сегментов пуста:"))
         self.transcript = QPlainTextEdit()
-        layout.addWidget(self.transcript)
+        layout.addWidget(self.transcript, 1)
         self.approve = QPushButton("Подтвердить транскрипт")
         self.approve.setEnabled(False)
         self.approve.clicked.connect(self.approve_transcript)
@@ -162,7 +230,11 @@ class MainWindow(QMainWindow):
         try:
             self.lesson = self._make_lesson()
             directory = self.pipeline.lesson_dir(self.lesson) / "recording"
-            self.recorder = DualRecorder(self.config.recording.sample_rate, self.config.recording.channels)
+            self.recorder = DualRecorder(
+                self.config.recording.sample_rate,
+                self.config.recording.channels,
+                self.config.recording.chunk_seconds,
+            )
             self.recorder.start(directory, int(self.mic.currentData()), int(self.loopback.currentData()))
             self.lesson.transition(JobStatus.RECORDING)
             self.pipeline.store.save(self.lesson)
@@ -193,6 +265,43 @@ class MainWindow(QMainWindow):
         if path:
             self.audio_path.setText(path)
 
+    def test_devices(self) -> None:
+        self.test_devices_button.setEnabled(False)
+        self.statusBar().showMessage("Проверяю микрофон и системный звук…")
+        mic_device = int(self.mic.currentData())
+        loopback_device = int(self.loopback.currentData())
+        seconds = self.config.recording.diagnostics_seconds
+        sample_rate = self.config.recording.sample_rate
+        channels = self.config.recording.channels
+
+        def run_tests():
+            mic = test_input_device(mic_device, seconds, sample_rate, channels)
+            system = test_input_device(loopback_device, seconds, sample_rate, channels)
+            return mic, system
+
+        worker = Worker(run_tests)
+        worker.succeeded.connect(self._device_test_ready)
+        worker.failed.connect(self._worker_failed)
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _device_test_ready(self, results) -> None:
+        mic, system = results
+        self.mic_level.setValue(round(min(1.0, mic.rms * 5) * 100))
+        self.system_level.setValue(round(min(1.0, system.rms * 5) * 100))
+        warnings = []
+        if mic.silent:
+            warnings.append("микрофон почти не передаёт сигнал")
+        if system.silent:
+            warnings.append("системный вход почти не передаёт сигнал")
+        if mic.clipped or system.clipped:
+            warnings.append("обнаружен перегруз")
+        message = "Проверка пройдена." if not warnings else "Проверьте настройки: " + "; ".join(warnings)
+        QMessageBox.information(self, "Диагностика аудио", message)
+        self.test_devices_button.setEnabled(True)
+        self.statusBar().showMessage(message)
+
     def transcribe(self) -> None:
         try:
             if self.lesson is None:
@@ -214,15 +323,63 @@ class MainWindow(QMainWindow):
     def _transcription_ready(self, lesson: Lesson) -> None:
         self.lesson = lesson
         self.transcript.setPlainText(Path(lesson.artifacts.verified_transcript).read_text(encoding="utf-8"))
+        self._load_segments(Path(lesson.artifacts.segments_json))
         self.approve.setEnabled(True)
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         self.transcribe_button.setEnabled(True)
         self.statusBar().showMessage("Транскрипт ждёт проверки")
 
+    def _load_segments(self, path: Path) -> None:
+        segments = json.loads(path.read_text(encoding="utf-8"))
+        self.segment_table.setRowCount(len(segments))
+        for row, segment in enumerate(segments):
+            start = float(segment["start"])
+            end = float(segment["end"])
+            confidence = segment.get("avg_logprob")
+            confidence_text = "—" if confidence is None else f"{min(100, max(0, round((1 + float(confidence)) * 100)))}%"
+            start_item = QTableWidgetItem(self._format_time(start))
+            start_item.setData(256, start)
+            end_item = QTableWidgetItem(self._format_time(end))
+            end_item.setData(256, end)
+            text_item = QTableWidgetItem(str(segment["text"]))
+            confidence_item = QTableWidgetItem(confidence_text)
+            self.segment_table.setItem(row, 0, start_item)
+            self.segment_table.setItem(row, 1, end_item)
+            self.segment_table.setItem(row, 2, text_item)
+            self.segment_table.setItem(row, 3, confidence_item)
+
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        minutes, sec = divmod(seconds, 60)
+        hours, minutes = divmod(int(minutes), 60)
+        return f"{hours:02d}:{minutes:02d}:{sec:05.2f}"
+
+    def play_selected_segment(self, _index=None) -> None:
+        row = self.segment_table.currentRow()
+        audio = Path(self.audio_path.text())
+        if row < 0 or not audio.is_file():
+            QMessageBox.warning(self, "Воспроизведение", "Выберите сегмент и существующий аудиофайл")
+            return
+        start = float(self.segment_table.item(row, 0).data(256))
+        end = float(self.segment_table.item(row, 1).data(256))
+        speed = float(self.playback_speed.currentData())
+        self.player.setSource(QUrl.fromLocalFile(str(audio.resolve())))
+        self.player.setPlaybackRate(speed)
+        self.player.setPosition(round(start * 1000))
+        self.player.play()
+        self.play_stop_timer.start(max(100, round((end - start) * 1000 / speed)))
+
     def approve_transcript(self) -> None:
         assert self.lesson
-        self.pipeline.approve_transcript(self.lesson, self.transcript.toPlainText())
+        segment_texts = [
+            self.segment_table.item(row, 2).text().strip()
+            for row in range(self.segment_table.rowCount())
+            if self.segment_table.item(row, 2) and self.segment_table.item(row, 2).text().strip()
+        ]
+        verified_text = " ".join(segment_texts) if segment_texts else self.transcript.toPlainText()
+        self.transcript.setPlainText(verified_text)
+        self.pipeline.approve_transcript(self.lesson, verified_text)
         self.publish_summary.setText(
             f"{self.lesson.student.full_name}\n{self.lesson.lesson_date:%d.%m.%Y}\n"
             f"{self.lesson.topic}\n\nЗадание будет помещено в отдельную Git-ветку."
@@ -234,8 +391,9 @@ class MainWindow(QMainWindow):
         assert self.lesson
         self.publish_button.setEnabled(False)
         worker = Worker(self.pipeline.publish, self.lesson)
-        worker.succeeded.connect(lambda path: QMessageBox.information(
-            self, "Готово", f"Задание опубликовано:\n{path}"
+        worker.succeeded.connect(lambda result: QMessageBox.information(
+            self, "Готово",
+            f"Ветка: {result.branch}\nCommit: {result.commit[:12]}\nПуть: {result.repository_path}",
         ))
         worker.failed.connect(self._worker_failed)
         worker.finished.connect(lambda: self.workers.remove(worker))
@@ -246,6 +404,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 1)
         self.transcribe_button.setEnabled(True)
         self.publish_button.setEnabled(True)
+        self.test_devices_button.setEnabled(True)
         logging.error(details)
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
 
@@ -254,6 +413,10 @@ class MainWindow(QMainWindow):
         hours, remainder = divmod(self.recording_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.duration.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        if self.recorder and self.recorder.active:
+            levels = self.recorder.levels
+            self.mic_level.setValue(round(levels.microphone * 100))
+            self.system_level.setValue(round(levels.system * 100))
 
 
 def main() -> None:

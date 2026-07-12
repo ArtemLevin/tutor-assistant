@@ -1,5 +1,10 @@
 from .devices import AudioDevice, list_input_devices
-from .recorder import DualRecorder, RecordingResult
+from .diagnostics import DeviceTestResult, test_input_device
+from .recorder import (
+    AudioLevels, DualRecorder, RecordingResult, find_recoverable_recordings, recover_recording,
+)
 
-__all__ = ["AudioDevice", "DualRecorder", "RecordingResult", "list_input_devices"]
-
+__all__ = [
+    "AudioDevice", "AudioLevels", "DeviceTestResult", "DualRecorder", "RecordingResult",
+    "find_recoverable_recordings", "list_input_devices", "recover_recording", "test_input_device",
+]
