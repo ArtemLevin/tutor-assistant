@@ -55,6 +55,7 @@ from ..recording import (
     list_system_audio_sources,
     recover_recording,
 )
+from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
 
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self._quick_countdown_remaining = 0
         self.recording_seconds = 0
         self.workers: list[Worker] = []
+        self.transcription_queue = TranscriptionQueue()
         self._loading_segments = False
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -120,7 +122,8 @@ class MainWindow(QMainWindow):
         self.draft_timer.setInterval(1000)
         self.draft_timer.timeout.connect(self._save_transcript_draft)
         QTimer.singleShot(0, self._offer_recovery)
-        QTimer.singleShot(100, self._offer_unfinished_job)
+        QTimer.singleShot(100, self._restore_background_jobs)
+        QTimer.singleShot(150, self._offer_unfinished_job)
         QTimer.singleShot(
             0,
             lambda: self.auto_latex.setChecked(self.config.latex.enabled and self.config.latex.auto_monitor),
@@ -180,6 +183,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._transcript_tab(), "02  Транскрипт")
         self.tabs.addTab(self._publish_tab(), "03  Публикация")
         self.tabs.addTab(self._latex_tab(), "04  PDF")
+        self.tabs.addTab(self._processing_tab(), "05  Обработка")
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -280,7 +284,13 @@ class MainWindow(QMainWindow):
         active = [
             lesson
             for lesson in self.pipeline.store.list()
-            if lesson.status not in {JobStatus.COMPLETED, JobStatus.FAILED}
+            if lesson.status
+            not in {
+                JobStatus.COMPLETED,
+                JobStatus.FAILED,
+                JobStatus.RECORDED,
+                JobStatus.TRANSCRIBING,
+            }
         ]
         if not active:
             return
@@ -292,6 +302,23 @@ class MainWindow(QMainWindow):
         )
         if answer == QMessageBox.Yes:
             self._load_lesson(lesson)
+
+    def _restore_background_jobs(self) -> None:
+        restored = 0
+        for lesson in reversed(self.pipeline.store.list()):
+            if lesson.status not in {JobStatus.RECORDED, JobStatus.TRANSCRIBING}:
+                continue
+            if not lesson.source_audio_local:
+                continue
+            audio = Path(lesson.source_audio_local)
+            if not audio.is_file():
+                continue
+            self.transcription_queue.enqueue(lesson, audio)
+            restored += 1
+        if restored:
+            self._update_transcription_queue_ui()
+            self._pump_transcription_queue()
+            self._set_status(f"Восстановлена фоновая очередь · {restored}", "working")
 
     def _load_lesson(self, lesson: Lesson) -> None:
         self.lesson = lesson
@@ -448,6 +475,9 @@ class MainWindow(QMainWindow):
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         action_layout.addWidget(hint, 1)
+        self.quick_queue_button = set_button_kind(QPushButton("Очередь · 0"), "ghost")
+        self.quick_queue_button.clicked.connect(self._show_processing_queue)
+        action_layout.addWidget(self.quick_queue_button)
         action_layout.addWidget(self.quick_start_button)
         tiles_layout.addWidget(action_tile, 2, 0, 1, 2)
 
@@ -892,6 +922,38 @@ class MainWindow(QMainWindow):
         layout.addStretch(2)
         return page
 
+    def _processing_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+        layout.addWidget(
+            self._page_heading(
+                "Фоновая обработка",
+                "Записывайте следующие занятия, пока Whisper последовательно обрабатывает очередь.",
+            )
+        )
+        summary = QFrame()
+        summary.setObjectName("infoPanel")
+        summary_layout = QHBoxLayout(summary)
+        summary_layout.setContentsMargins(16, 12, 16, 12)
+        self.processing_summary = QLabel("Очередь пуста")
+        self.processing_summary.setObjectName("readinessSummary")
+        summary_layout.addWidget(self.processing_summary, 1)
+        back = set_button_kind(QPushButton("Новый урок"), "primary")
+        back.clicked.connect(lambda: self._set_mode("quick"))
+        summary_layout.addWidget(back)
+        layout.addWidget(summary)
+        self.processing_list = QListWidget()
+        self.processing_list.setAlternatingRowColors(True)
+        self.processing_list.setSpacing(3)
+        self.processing_list.itemDoubleClicked.connect(self._open_processing_item)
+        layout.addWidget(self.processing_list, 1)
+        hint = QLabel("Двойной клик по готовому заданию открывает транскрипт для проверки")
+        hint.setObjectName("muted")
+        layout.addWidget(hint)
+        return page
+
     def _latex_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1055,9 +1117,12 @@ class MainWindow(QMainWindow):
 
     def _recording_ready(self, result, reason: str | None = None) -> None:
         assert self.lesson
+        recorded_lesson = self.lesson
         self.audio_path.setText(str(result.mixed_file))
-        self.lesson.transition(JobStatus.RECORDED)
-        self.pipeline.store.save(self.lesson)
+        recorded_lesson.source_audio_local = str(result.mixed_file.resolve())
+        recorded_lesson.transition(JobStatus.RECORDED)
+        recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
+        self.pipeline.store.save(recorded_lesson)
         self.start_button.setEnabled(True)
         self.quick_start_button.setEnabled(True)
         self.quick_start_button.setText("Начать занятие")
@@ -1078,11 +1143,29 @@ class MainWindow(QMainWindow):
         self.recorder = None
         if self._quick_auto_transcribe_active:
             self._quick_auto_transcribe_active = False
-            self.quick_start_button.setEnabled(False)
-            self.quick_start_button.setText("Запускаю транскрибацию…")
-            QTimer.singleShot(0, self.transcribe)
+            self._enqueue_transcription(recorded_lesson, result.mixed_file)
+            self._prepare_next_lesson()
+            self._set_status(
+                f"{recorded_lesson.student.full_name}: транскрибация в фоне · можно начинать следующий урок",
+                "working",
+            )
         else:
             self._refresh_quick_readiness()
+
+    def _prepare_next_lesson(self) -> None:
+        self.lesson = None
+        self.audio_path.clear()
+        self.topic.clear()
+        self.quick_topic.clear()
+        self.config.quick_start.last_topic = ""
+        self.config.save(self.config_path)
+        self.duration.setText("00:00:00")
+        self.recording_state_label.setText("ГОТОВО К ЗАПИСИ")
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.transcribe_button.setEnabled(True)
+        self.quick_start_button.setText("Начать занятие")
+        self._refresh_quick_readiness()
 
     def _recording_stop_failed(self, details: str) -> None:
         logging.error(details)
@@ -1204,31 +1287,106 @@ class MainWindow(QMainWindow):
             audio = Path(self.audio_path.text())
             if not audio.is_file():
                 raise ValueError("Выберите существующий аудиофайл")
-            self.progress.setRange(0, 0)
-            self.transcribe_button.setEnabled(False)
-            self._set_status("Выполняется локальная транскрибация…", "working")
-            logging.info("Транскрибация начата: lesson=%s audio=%s", self.lesson.lesson_id, audio)
-            worker = Worker(self.pipeline.transcribe, self.lesson, audio)
-            worker.succeeded.connect(self._transcription_ready)
-            worker.failed.connect(self._worker_failed)
-            worker.finished.connect(lambda: self.workers.remove(worker))
-            self.workers.append(worker)
-            worker.start()
+            lesson = self.lesson
+            lesson.source_audio_local = str(audio.resolve())
+            if lesson.status == JobStatus.DRAFT:
+                lesson.transition(JobStatus.RECORDED)
+            lesson.write_json(self.pipeline.lesson_dir(lesson) / "lesson.json")
+            self.pipeline.store.save(lesson)
+            self._enqueue_transcription(lesson, audio)
+            self._prepare_next_lesson()
+            self._set_status(
+                f"{lesson.student.full_name}: добавлено в фоновую очередь",
+                "working",
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", str(exc))
 
-    def _transcription_ready(self, lesson: Lesson) -> None:
-        self.lesson = lesson
-        self.transcript.setPlainText(Path(lesson.artifacts.verified_transcript).read_text(encoding="utf-8"))
-        self._load_segments(Path(lesson.artifacts.segments_json))
-        self.approve.setEnabled(True)
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1)
-        self.transcribe_button.setEnabled(True)
-        self._refresh_quick_readiness()
-        self._set_status("Транскрипт ждёт проверки", "warning")
-        self._go_to(1)
-        logging.info("Транскрибация завершена: lesson=%s", lesson.lesson_id)
+    def _enqueue_transcription(self, lesson: Lesson, audio: Path) -> None:
+        job = self.transcription_queue.enqueue(lesson, audio)
+        logging.info("Транскрибация поставлена в очередь: lesson=%s audio=%s", job.id, audio)
+        self._update_transcription_queue_ui()
+        self._pump_transcription_queue()
+
+    def _pump_transcription_queue(self) -> None:
+        job = self.transcription_queue.start_next()
+        if job is None:
+            return
+        self._update_transcription_queue_ui()
+        worker = Worker(self.pipeline.transcribe, job.lesson, job.audio)
+        worker.purpose = "background-transcription"
+        worker.succeeded.connect(
+            lambda lesson, job_id=job.id: self._background_transcription_ready(job_id, lesson)
+        )
+        worker.failed.connect(
+            lambda details, job_id=job.id: self._background_transcription_failed(job_id, details)
+        )
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
+        self.transcription_queue.complete(job_id, lesson)
+        self._update_transcription_queue_ui()
+        self._set_status(f"Транскрипт готов · {lesson.student.full_name}", "warning")
+        logging.info("Фоновая транскрибация завершена: lesson=%s", lesson.lesson_id)
+        self._pump_transcription_queue()
+
+    def _background_transcription_failed(self, job_id: str, details: str) -> None:
+        job = self.transcription_queue.fail(job_id, details)
+        self._update_transcription_queue_ui()
+        logging.error("Фоновая транскрибация завершилась с ошибкой: lesson=%s\n%s", job_id, details)
+        self._set_status(f"Ошибка транскрибации · {job.lesson.student.full_name}", "error")
+        self._pump_transcription_queue()
+
+    def _update_transcription_queue_ui(self) -> None:
+        if not hasattr(self, "processing_list"):
+            return
+        labels = {
+            QueueStatus.WAITING: "Ожидает",
+            QueueStatus.RUNNING: "Транскрибируется",
+            QueueStatus.READY: "Готов к проверке",
+            QueueStatus.FAILED: "Ошибка",
+        }
+        self.processing_list.clear()
+        for job in reversed(self.transcription_queue.jobs):
+            item = QListWidgetItem(
+                f"{labels[job.status]}  ·  {job.lesson.student.full_name}  ·  {job.lesson.topic}"
+            )
+            item.setData(256, job.id)
+            if job.error:
+                item.setToolTip(job.error[-1500:])
+            self.processing_list.addItem(item)
+        unfinished = self.transcription_queue.unfinished_count
+        ready = sum(job.status == QueueStatus.READY for job in self.transcription_queue.jobs)
+        self.processing_summary.setText(f"В обработке: {unfinished} · готовы к проверке: {ready}")
+        queue_text = f"Очередь · {unfinished}"
+        if ready:
+            queue_text += f" · готово {ready}"
+        self.quick_queue_button.setText(queue_text)
+
+    def _show_processing_queue(self) -> None:
+        self._set_mode("detailed")
+        self.tabs.setCurrentIndex(4)
+
+    def _open_processing_item(self, item: QListWidgetItem) -> None:
+        job = self.transcription_queue.get(str(item.data(256)))
+        if job is None:
+            return
+        if self.recorder and self.recorder.active:
+            QMessageBox.warning(
+                self,
+                "Идёт запись",
+                "Завершите текущую запись перед открытием другого занятия.",
+            )
+            return
+        if job.status == QueueStatus.FAILED:
+            QMessageBox.critical(self, "Ошибка транскрибации", job.error or "Неизвестная ошибка")
+            return
+        if job.status != QueueStatus.READY:
+            self._set_status("Транскрипт ещё обрабатывается", "working")
+            return
+        self._load_lesson(job.lesson)
 
     def _load_segments(self, path: Path) -> None:
         segments = json.loads(path.read_text(encoding="utf-8"))
