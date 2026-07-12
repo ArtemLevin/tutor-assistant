@@ -41,6 +41,27 @@ QFrame#successPanel {
     border-radius: 12px;
 }
 
+QFrame#bentoTile, QFrame#bentoPrimary, QFrame#bentoAction {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 18px;
+}
+
+QFrame#bentoPrimary {
+    background: #F8FAFD;
+    border-color: #DCE4EF;
+}
+
+QFrame#bentoAction {
+    background: #FFFFFF;
+}
+
+QFrame#readinessItem {
+    background: #FFFFFF;
+    border: 1px solid #E4E9F0;
+    border-radius: 11px;
+}
+
 QLabel#eyebrow {
     color: #65758B;
     font-size: 11px;
@@ -70,6 +91,24 @@ QLabel#pageTitle {
     color: #111827;
     font-size: 21px;
     font-weight: 700;
+}
+
+QLabel#tileTitle {
+    color: #111827;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QLabel#readinessSummary {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QLabel#readinessMark {
+    min-width: 24px;
+    max-width: 24px;
+    font-size: 17px;
+    font-weight: 800;
 }
 
 QLabel#subtitle, QLabel#muted {
@@ -243,6 +282,20 @@ QPushButton[kind="ghost"] {
     color: #526174;
     background: transparent;
     border-color: #D9E0E8;
+}
+
+QPushButton[kind="link"] {
+    min-height: 24px;
+    padding: 0;
+    color: #356BC4;
+    background: transparent;
+    border: 0;
+    font-weight: 650;
+}
+
+QPushButton[kind="link"]:hover {
+    color: #244F91;
+    background: transparent;
 }
 
 QTabWidget::pane {
