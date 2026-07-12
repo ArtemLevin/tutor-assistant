@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -160,10 +161,10 @@ class MainWindow(QMainWindow):
         self.support_button.setToolTip("Создать ZIP без аудио и транскриптов")
         self.support_button.clicked.connect(self._create_support_bundle)
         header_layout.addWidget(self.support_button, 0, Qt.AlignVCenter)
-        logs_button = set_button_kind(QPushButton("Журнал"), "ghost")
-        logs_button.setToolTip("Открыть каталог с журналами приложения")
-        logs_button.clicked.connect(self._open_logs)
-        header_layout.addWidget(logs_button, 0, Qt.AlignVCenter)
+        self.logs_button = set_button_kind(QPushButton("Журнал"), "ghost")
+        self.logs_button.setToolTip("Открыть каталог с журналами приложения")
+        self.logs_button.clicked.connect(self._open_logs)
+        header_layout.addWidget(self.logs_button, 0, Qt.AlignVCenter)
         self.quick_mode_button = set_button_kind(QPushButton("Быстрый урок"), "primary")
         self.quick_mode_button.clicked.connect(lambda: self._set_mode("quick"))
         header_layout.addWidget(self.quick_mode_button, 0, Qt.AlignVCenter)
@@ -215,6 +216,8 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str) -> None:
         quick = mode == "quick"
         self.content_stack.setCurrentIndex(0 if quick else 1)
+        self.support_button.setVisible(not quick)
+        self.logs_button.setVisible(not quick)
         set_button_kind(self.quick_mode_button, "primary" if quick else "ghost")
         set_button_kind(self.detailed_mode_button, "ghost" if quick else "primary")
         refresh_style(self.quick_mode_button)
@@ -339,22 +342,15 @@ class MainWindow(QMainWindow):
     def _quick_start_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(36, 24, 36, 24)
-        layout.setSpacing(18)
+        layout.setContentsMargins(28, 12, 28, 18)
+        layout.setSpacing(14)
         layout.addWidget(
             self._page_heading(
                 "Быстрый урок",
-                "Сохранённый профиль проверит аудио, запустит запись и передаст её в транскрибацию.",
+                "Выберите ученика, обозначьте тему и начинайте занятие.",
             )
         )
 
-        card = QGroupBox("Один следующий шаг")
-        card.setMaximumWidth(820)
-        card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(16)
-        form = QFormLayout()
-        form.setHorizontalSpacing(20)
-        form.setVerticalSpacing(12)
         self.quick_profile = QComboBox()
         for profile in self.config.quick_start.profiles:
             self.quick_profile.addItem(profile.name, profile.id)
@@ -377,26 +373,64 @@ class MainWindow(QMainWindow):
             self.quick_subject.setCurrentIndex(subject_index)
         self.quick_topic = QLineEdit(self.config.quick_start.last_topic)
         self.quick_topic.setPlaceholderText("Тема сегодняшнего занятия")
-        form.addRow("Профиль", self.quick_profile)
-        form.addRow("Ученик", self.quick_student)
-        form.addRow("Предмет", self.quick_subject)
-        form.addRow("Тема", self.quick_topic)
-        card_layout.addLayout(form)
 
-        readiness = QFrame()
-        readiness.setObjectName("statusPanel")
-        readiness_layout = QVBoxLayout(readiness)
-        readiness_layout.setContentsMargins(16, 13, 16, 13)
-        readiness_title = QLabel("ГОТОВНОСТЬ К ЗАПУСКУ")
-        readiness_title.setObjectName("eyebrow")
-        readiness_layout.addWidget(readiness_title)
-        self.quick_readiness_labels: dict[str, QLabel] = {}
-        for code in ("student", "topic", "microphone", "system"):
-            label = QLabel()
-            label.setWordWrap(True)
-            readiness_layout.addWidget(label)
-            self.quick_readiness_labels[code] = label
-        card_layout.addWidget(readiness)
+        tiles = QWidget()
+        tiles.setMaximumWidth(900)
+        tiles_layout = QGridLayout(tiles)
+        tiles_layout.setContentsMargins(0, 0, 0, 0)
+        tiles_layout.setHorizontalSpacing(12)
+        tiles_layout.setVerticalSpacing(12)
+        tiles_layout.setColumnStretch(0, 3)
+        tiles_layout.setColumnStretch(1, 2)
+
+        lesson_tile = QFrame()
+        lesson_tile.setObjectName("bentoPrimary")
+        lesson_layout = QVBoxLayout(lesson_tile)
+        lesson_layout.setContentsMargins(22, 18, 22, 20)
+        lesson_layout.setSpacing(10)
+        lesson_eyebrow = QLabel("СЕГОДНЯШНЕЕ ЗАНЯТИЕ")
+        lesson_eyebrow.setObjectName("eyebrow")
+        lesson_title = QLabel("Кто занимается и над чем работаем?")
+        lesson_title.setObjectName("tileTitle")
+        lesson_layout.addWidget(lesson_eyebrow)
+        lesson_layout.addWidget(lesson_title)
+        lesson_layout.addSpacing(4)
+        lesson_layout.addWidget(self.quick_student)
+        lesson_layout.addWidget(self.quick_topic)
+        lesson_layout.addWidget(self.quick_subject)
+        tiles_layout.addWidget(lesson_tile, 0, 0, 2, 1)
+
+        profile_tile = QFrame()
+        profile_tile.setObjectName("bentoTile")
+        profile_layout = QVBoxLayout(profile_tile)
+        profile_layout.setContentsMargins(18, 16, 18, 17)
+        profile_layout.setSpacing(8)
+        profile_eyebrow = QLabel("ПРОФИЛЬ")
+        profile_eyebrow.setObjectName("eyebrow")
+        profile_layout.addWidget(profile_eyebrow)
+        profile_layout.addWidget(self.quick_profile)
+        profile_hint = QLabel("Настройки звука и автоматизации")
+        profile_hint.setObjectName("muted")
+        profile_layout.addWidget(profile_hint)
+        tiles_layout.addWidget(profile_tile, 0, 1)
+
+        readiness_tile = QFrame()
+        readiness_tile.setObjectName("bentoTile")
+        readiness_layout = QVBoxLayout(readiness_tile)
+        readiness_layout.setContentsMargins(18, 16, 18, 16)
+        readiness_layout.setSpacing(7)
+        readiness_eyebrow = QLabel("СИСТЕМА")
+        readiness_eyebrow.setObjectName("eyebrow")
+        self.quick_readiness_summary = QLabel()
+        self.quick_readiness_summary.setObjectName("readinessSummary")
+        self.quick_readiness_summary.setWordWrap(True)
+        readiness_details = set_button_kind(QPushButton("Проверить готовность  →"), "link")
+        readiness_details.clicked.connect(self._show_readiness_dialog)
+        readiness_layout.addWidget(readiness_eyebrow)
+        readiness_layout.addWidget(self.quick_readiness_summary)
+        readiness_layout.addStretch(1)
+        readiness_layout.addWidget(readiness_details, 0, Qt.AlignLeft)
+        tiles_layout.addWidget(readiness_tile, 1, 1)
 
         self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
         self.quick_start_button.setObjectName("quickStartButton")
@@ -404,19 +438,25 @@ class MainWindow(QMainWindow):
         self.quick_start_button.setShortcut(QKeySequence("F9"))
         self.quick_start_button.setToolTip("Начать или завершить быстрый урок · F9")
         self.quick_start_button.clicked.connect(self._quick_start_clicked)
-        card_layout.addWidget(self.quick_start_button)
-        hint = QLabel(
-            "Перед записью выполняется короткий тест обоих каналов. Отсчёт можно отменить повторным нажатием."
-        )
+
+        action_tile = QFrame()
+        action_tile.setObjectName("bentoAction")
+        action_layout = QHBoxLayout(action_tile)
+        action_layout.setContentsMargins(18, 14, 18, 14)
+        action_layout.setSpacing(16)
+        hint = QLabel("Аудиотест и транскрибация выполнятся автоматически")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
-        card_layout.addWidget(hint)
+        action_layout.addWidget(hint, 1)
+        action_layout.addWidget(self.quick_start_button)
+        tiles_layout.addWidget(action_tile, 2, 0, 1, 2)
 
         row = QHBoxLayout()
         row.addStretch(1)
-        row.addWidget(card)
+        row.addWidget(tiles, 1)
         row.addStretch(1)
-        layout.addLayout(row, 1)
+        layout.addLayout(row)
+        layout.addStretch(1)
         self.quick_profile.currentIndexChanged.connect(self._apply_quick_profile)
         self.quick_student.currentIndexChanged.connect(self._refresh_quick_readiness)
         self.quick_subject.currentIndexChanged.connect(self._refresh_quick_readiness)
@@ -436,7 +476,7 @@ class MainWindow(QMainWindow):
         self._refresh_quick_readiness()
 
     def _refresh_quick_readiness(self) -> None:
-        if not hasattr(self, "quick_readiness_labels"):
+        if not hasattr(self, "quick_readiness_summary"):
             return
         readiness = evaluate_readiness(
             self.config,
@@ -446,14 +486,58 @@ class MainWindow(QMainWindow):
             self.quick_student.currentData(),
             self.quick_topic.text(),
         )
-        for item in readiness.items:
-            mark = "✓" if item.ready else "!"
-            self.quick_readiness_labels[item.code].setText(f"{mark}  {item.label}: {item.detail}")
-            self.quick_readiness_labels[item.code].setProperty("tone", "ready" if item.ready else "blocked")
-            refresh_style(self.quick_readiness_labels[item.code])
+        if readiness.ready:
+            self.quick_readiness_summary.setText("✓  Всё готово")
+            self.quick_readiness_summary.setProperty("tone", "ready")
+        else:
+            count = len(readiness.blockers)
+            self.quick_readiness_summary.setText(f"Требуют внимания: {count}")
+            self.quick_readiness_summary.setProperty("tone", "blocked")
+        refresh_style(self.quick_readiness_summary)
         if not self.quick_countdown_timer.isActive() and not (self.recorder and self.recorder.active):
             self.quick_start_button.setText("Начать занятие")
             self.quick_start_button.setEnabled(readiness.ready)
+
+    def _show_readiness_dialog(self) -> None:
+        readiness = evaluate_readiness(
+            self.config,
+            self.students,
+            self.devices,
+            self.system_sources,
+            self.quick_student.currentData(),
+            self.quick_topic.text(),
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Готовность к старту")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(520)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(22, 20, 22, 18)
+        dialog_layout.setSpacing(10)
+        title = QLabel("Готовность к старту")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Проверяем только то, что требуется для записи занятия")
+        subtitle.setObjectName("muted")
+        dialog_layout.addWidget(title)
+        dialog_layout.addWidget(subtitle)
+        dialog_layout.addSpacing(5)
+        for item in readiness.items:
+            item_frame = QFrame()
+            item_frame.setObjectName("readinessItem")
+            item_layout = QHBoxLayout(item_frame)
+            item_layout.setContentsMargins(13, 10, 13, 10)
+            mark = QLabel("✓" if item.ready else "!")
+            mark.setObjectName("readinessMark")
+            mark.setProperty("tone", "ready" if item.ready else "blocked")
+            text = QLabel(f"{item.label}\n{item.detail}")
+            text.setWordWrap(True)
+            item_layout.addWidget(mark, 0, Qt.AlignTop)
+            item_layout.addWidget(text, 1)
+            dialog_layout.addWidget(item_frame)
+        close_button = set_button_kind(QPushButton("Закрыть"), "primary")
+        close_button.clicked.connect(dialog.accept)
+        dialog_layout.addWidget(close_button, 0, Qt.AlignRight)
+        dialog.exec()
 
     def _sync_quick_to_lesson(self) -> None:
         student_index = self.student.findData(self.quick_student.currentData())
