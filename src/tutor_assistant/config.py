@@ -62,6 +62,24 @@ class LatexConfig(BaseModel):
     poll_seconds: int = 60
 
 
+class LaunchProfile(BaseModel):
+    id: str = "online_lesson"
+    name: str = "Обычный онлайн-урок"
+    subject: str = "mathematics"
+    student_id: str | None = None
+    auto_transcribe: bool = True
+    countdown_seconds: int = 3
+
+
+class QuickStartConfig(BaseModel):
+    start_in_quick_mode: bool = True
+    default_profile_id: str = "online_lesson"
+    last_student_id: str | None = None
+    last_subject: str = "mathematics"
+    last_topic: str = ""
+    profiles: list[LaunchProfile] = Field(default_factory=lambda: [LaunchProfile()])
+
+
 class AppConfig(BaseModel):
     setup_completed: bool = False
     workspace: Path = Path("data")
@@ -70,6 +88,7 @@ class AppConfig(BaseModel):
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
     latex: LatexConfig = Field(default_factory=LatexConfig)
+    quick_start: QuickStartConfig = Field(default_factory=QuickStartConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

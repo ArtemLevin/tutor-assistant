@@ -49,3 +49,17 @@ latex:
   render_preview: true
   preview_dpi: 120
   poll_seconds: 60
+
+quick_start:
+  start_in_quick_mode: true
+  default_profile_id: online_lesson
+  last_student_id: null
+  last_subject: mathematics
+  last_topic: ''
+  profiles:
+    - id: online_lesson
+      name: Обычный онлайн-урок
+      subject: mathematics
+      student_id: null
+      auto_transcribe: true
+      countdown_seconds: 3

@@ -122,6 +122,14 @@ QLabel#recordingState[active="true"] {
     color: #C83F49;
 }
 
+QLabel[tone="ready"] {
+    color: #216E50;
+}
+
+QLabel[tone="blocked"] {
+    color: #A15C00;
+}
+
 QGroupBox {
     background: #FFFFFF;
     border: 1px solid #E4E9F0;
@@ -207,6 +215,13 @@ QPushButton[kind="primary"] {
     color: #FFFFFF;
     background: #356BC4;
     border-color: #356BC4;
+}
+
+QPushButton#quickStartButton {
+    min-height: 58px;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 700;
 }
 
 QPushButton[kind="primary"]:hover {
