@@ -7,8 +7,8 @@ import traceback
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QKeySequence
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -47,6 +48,7 @@ from ..recording import (
     recover_recording,
     test_input_device,
 )
+from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
 
 class Worker(QThread):
@@ -68,6 +70,7 @@ class Worker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self, config_path: Path) -> None:
         super().__init__()
+        self.config_path = config_path
         self.config = AppConfig.load(config_path)
         self.pipeline = LessonPipeline(self.config)
         self.students = load_students(self.config.students_file)
@@ -86,8 +89,9 @@ class MainWindow(QMainWindow):
         self.latex_poll_timer = QTimer(self)
         self.latex_poll_timer.setInterval(self.config.latex.poll_seconds * 1000)
         self.latex_poll_timer.timeout.connect(self.scan_remote_latex)
-        self.setWindowTitle("Tutor Assistant")
-        self.resize(1000, 720)
+        self.setWindowTitle("Tutor Assistant — рабочее пространство преподавателя")
+        self.setMinimumSize(1040, 720)
+        self.resize(1180, 820)
         self._build()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -103,13 +107,71 @@ class MainWindow(QMainWindow):
         )
 
     def _build(self) -> None:
-        tabs = QTabWidget()
-        tabs.addTab(self._lesson_tab(), "1. Занятие")
-        tabs.addTab(self._transcript_tab(), "2. Транскрипт")
-        tabs.addTab(self._publish_tab(), "3. Публикация")
-        tabs.addTab(self._latex_tab(), "4. PDF")
-        self.setCentralWidget(tabs)
-        self.statusBar().showMessage("Готово")
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(24, 22, 24, 16)
+        shell_layout.setSpacing(14)
+
+        header = QFrame()
+        header.setObjectName("appHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(22, 16, 22, 16)
+        header_layout.setSpacing(18)
+        brand_mark = QLabel("TA")
+        brand_mark.setObjectName("brandMark")
+        brand_mark.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(brand_mark, 0, Qt.AlignVCenter)
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        eyebrow = QLabel("ЛОКАЛЬНОЕ РАБОЧЕЕ ПРОСТРАНСТВО")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("Tutor Assistant")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("Запись занятия, проверка транскрипта и выпуск материалов в одном окне")
+        subtitle.setObjectName("subtitle")
+        brand.addWidget(eyebrow)
+        brand.addWidget(title)
+        brand.addWidget(subtitle)
+        header_layout.addLayout(brand, 1)
+        self.app_status = QLabel()
+        self.app_status.setObjectName("statusPill")
+        self.app_status.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self.app_status, 0, Qt.AlignVCenter)
+        shell_layout.addWidget(header)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().setExpanding(False)
+        self.tabs.addTab(self._lesson_tab(), "01  Занятие")
+        self.tabs.addTab(self._transcript_tab(), "02  Транскрипт")
+        self.tabs.addTab(self._publish_tab(), "03  Публикация")
+        self.tabs.addTab(self._latex_tab(), "04  PDF")
+        shell_layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(shell)
+        self.statusBar().setSizeGripEnabled(False)
+        self._set_status("Готово к работе")
+
+    @staticmethod
+    def _page_heading(title: str, description: str) -> QWidget:
+        heading = QWidget()
+        layout = QVBoxLayout(heading)
+        layout.setContentsMargins(2, 2, 2, 4)
+        layout.setSpacing(3)
+        title_label = QLabel(title)
+        title_label.setObjectName("pageTitle")
+        description_label = QLabel(description)
+        description_label.setObjectName("subtitle")
+        description_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(description_label)
+        return heading
+
+    def _set_status(self, message: str, tone: str = "success") -> None:
+        set_status(self.app_status, message, tone)
+        self.statusBar().showMessage(message)
+
+    def _go_to(self, index: int) -> None:
+        self.tabs.setCurrentIndex(index)
 
     def _offer_recovery(self) -> None:
         sessions = find_recoverable_recordings(self.config.workspace)
@@ -184,13 +246,39 @@ class MainWindow(QMainWindow):
         }:
             self.latex_monitor_status.setText(f"Восстановлено занятие: {lesson.status.value}")
         self.open_pr_button.setEnabled(bool(lesson.publication and lesson.publication.pr_url))
-        self.statusBar().showMessage(f"Занятие восстановлено: {lesson.student.full_name}")
+        if lesson.status == JobStatus.REVIEW_REQUIRED:
+            self._go_to(1)
+        elif lesson.status == JobStatus.READY:
+            self._go_to(2)
+        elif lesson.status in {
+            JobStatus.PUBLISHED,
+            JobStatus.GENERATED_TEX,
+            JobStatus.COMPILING_PDF,
+            JobStatus.COMPILE_FAILED,
+            JobStatus.PDF_REVIEW_REQUIRED,
+        }:
+            self._go_to(3)
+        self._set_status(f"Занятие восстановлено · {lesson.student.full_name}")
 
     def _lesson_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+        layout.addWidget(
+            self._page_heading(
+                "Подготовьте занятие",
+                "Укажите контекст, проверьте оба источника звука и запустите запись.",
+            )
+        )
+
+        columns = QHBoxLayout()
+        columns.setSpacing(12)
         form_box = QGroupBox("Параметры занятия")
         form = QFormLayout(form_box)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(11)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.student = QComboBox()
         for item in self.students:
             self.student.addItem(item.full_name, item.id)
@@ -220,150 +308,259 @@ class MainWindow(QMainWindow):
         form.addRow("Дата", self.lesson_date)
         form.addRow("Микрофон", self.mic)
         form.addRow("Системный звук / loopback", self.loopback)
-        layout.addWidget(form_box)
+        columns.addWidget(form_box, 3)
 
-        diagnostics = QGroupBox("Проверка устройств")
+        diagnostics = QGroupBox("Уровни и стабильность")
         diagnostics_layout = QFormLayout(diagnostics)
+        diagnostics_layout.setVerticalSpacing(13)
         self.mic_level = QProgressBar()
         self.mic_level.setRange(0, 100)
+        self.mic_level.setTextVisible(False)
         self.system_level = QProgressBar()
         self.system_level.setRange(0, 100)
+        self.system_level.setTextVisible(False)
         diagnostics_layout.addRow("Микрофон", self.mic_level)
         diagnostics_layout.addRow("Системный звук", self.system_level)
         self.recording_health_label = QLabel("Очереди: 0% / 0%; потеряно блоков: 0")
+        self.recording_health_label.setObjectName("muted")
+        self.recording_health_label.setWordWrap(True)
         diagnostics_layout.addRow("Состояние записи", self.recording_health_label)
-        self.test_devices_button = QPushButton("Записать тестовый сигнал")
+        self.test_devices_button = set_button_kind(QPushButton("Проверить оба устройства"), "ghost")
         self.test_devices_button.clicked.connect(self.test_devices)
         diagnostics_layout.addRow(self.test_devices_button)
-        layout.addWidget(diagnostics)
+        columns.addWidget(diagnostics, 2)
+        layout.addLayout(columns)
 
-        row = QHBoxLayout()
-        self.start_button = QPushButton("Начать запись")
-        self.stop_button = QPushButton("Завершить запись")
+        recording = QGroupBox("Запись и транскрибация")
+        recording_layout = QVBoxLayout(recording)
+        recording_layout.setSpacing(12)
+        recording_header = QHBoxLayout()
+        timer_block = QVBoxLayout()
+        timer_block.setSpacing(1)
+        self.recording_state_label = QLabel("ГОТОВО К ЗАПИСИ")
+        self.recording_state_label.setObjectName("recordingState")
+        self.duration = QLabel("00:00:00")
+        self.duration.setObjectName("timerDisplay")
+        timer_block.addWidget(self.recording_state_label)
+        timer_block.addWidget(self.duration)
+        recording_header.addLayout(timer_block)
+        recording_header.addStretch()
+        self.start_button = set_button_kind(QPushButton("Начать запись"), "primary")
+        self.stop_button = set_button_kind(QPushButton("Завершить"), "danger")
+        self.start_button.setShortcut(QKeySequence("Ctrl+R"))
+        self.start_button.setToolTip("Начать запись · Ctrl+R")
+        self.stop_button.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.stop_button.setToolTip("Завершить запись · Ctrl+Shift+R")
         self.stop_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_recording)
         self.stop_button.clicked.connect(self.stop_recording)
-        row.addWidget(self.start_button)
-        row.addWidget(self.stop_button)
-        self.duration = QLabel("00:00:00")
-        row.addWidget(self.duration)
-        row.addStretch()
-        layout.addLayout(row)
+        recording_header.addWidget(self.start_button)
+        recording_header.addWidget(self.stop_button)
+        recording_layout.addLayout(recording_header)
+
         audio_row = QHBoxLayout()
         self.audio_path = QLineEdit()
-        choose = QPushButton("Выбрать готовое аудио")
+        self.audio_path.setPlaceholderText("Путь появится после записи или выберите готовый файл")
+        choose = set_button_kind(QPushButton("Выбрать аудио"), "ghost")
         choose.clicked.connect(self.choose_audio)
-        audio_row.addWidget(self.audio_path)
+        audio_row.addWidget(self.audio_path, 1)
         audio_row.addWidget(choose)
-        layout.addLayout(audio_row)
-        self.transcribe_button = QPushButton("Запустить локальную транскрибацию")
+        recording_layout.addLayout(audio_row)
+        action_row = QHBoxLayout()
+        action_row.addStretch()
+        self.transcribe_button = set_button_kind(QPushButton("Запустить локальную транскрибацию"), "primary")
+        self.transcribe_button.setShortcut(QKeySequence("Ctrl+T"))
+        self.transcribe_button.setToolTip("Запустить транскрибацию · Ctrl+T")
         self.transcribe_button.clicked.connect(self.transcribe)
-        layout.addWidget(self.transcribe_button)
+        action_row.addWidget(self.transcribe_button)
+        recording_layout.addLayout(action_row)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
-        layout.addWidget(self.progress)
+        self.progress.setTextVisible(False)
+        recording_layout.addWidget(self.progress)
+        layout.addWidget(recording)
         layout.addStretch()
         return page
 
     def _transcript_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
         layout.addWidget(
-            QLabel(
-                "Проверьте числа, формулы и спорные фрагменты. "
-                "После подтверждения текст попадёт в репозиторий ученика."
+            self._page_heading(
+                "Проверьте транскрипт",
+                "Исправьте формулы, числа и имена. Двойной клик по строке воспроизводит фрагмент аудио.",
             )
         )
+
+        segments = QGroupBox("Сегменты распознавания")
+        segments_layout = QVBoxLayout(segments)
+        segments_layout.setSpacing(10)
         self.segment_table = QTableWidget(0, 5)
         self.segment_table.setHorizontalHeaderLabels(["Начало", "Конец", "Говорящий", "Текст", "Уверенность"])
         self.segment_table.horizontalHeader().setStretchLastSection(False)
         self.segment_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.segment_table.verticalHeader().setVisible(False)
+        self.segment_table.setShowGrid(False)
         self.segment_table.setAlternatingRowColors(True)
         self.segment_table.doubleClicked.connect(self.play_selected_segment)
         self.segment_table.itemChanged.connect(lambda _item: self._schedule_draft_save())
-        layout.addWidget(self.segment_table, 4)
+        segments_layout.addWidget(self.segment_table, 4)
         controls = QHBoxLayout()
-        self.play_segment_button = QPushButton("▶ Воспроизвести выбранный сегмент")
+        self.play_segment_button = set_button_kind(QPushButton("▶  Воспроизвести сегмент"), "ghost")
         self.play_segment_button.clicked.connect(self.play_selected_segment)
         self.playback_speed = QComboBox()
+        self.playback_speed.setFixedWidth(92)
         for label, value in [("0,75×", 0.75), ("1×", 1.0), ("1,25×", 1.25)]:
             self.playback_speed.addItem(label, value)
         controls.addWidget(self.play_segment_button)
-        controls.addWidget(QLabel("Скорость"))
+        speed_label = QLabel("Скорость")
+        speed_label.setObjectName("muted")
+        controls.addWidget(speed_label)
         controls.addWidget(self.playback_speed)
         controls.addStretch()
-        layout.addLayout(controls)
-        layout.addWidget(QLabel("Сводный текст — используется, если таблица сегментов пуста:"))
+        segments_layout.addLayout(controls)
+        layout.addWidget(segments, 4)
+
+        summary = QGroupBox("Сводный текст")
+        summary_layout = QVBoxLayout(summary)
         self.transcript = QPlainTextEdit()
-        layout.addWidget(self.transcript, 1)
-        self.approve = QPushButton("Подтвердить транскрипт")
+        self.transcript.setPlaceholderText("Здесь появится распознанный текст занятия")
+        self.transcript.setMinimumHeight(100)
+        summary_layout.addWidget(self.transcript, 1)
+        approve_row = QHBoxLayout()
+        hint = QLabel("Подтверждённая версия будет опубликована в папке ученика")
+        hint.setObjectName("muted")
+        approve_row.addWidget(hint, 1)
+        self.approve = set_button_kind(QPushButton("Подтвердить транскрипт"), "primary")
+        self.approve.setShortcut(QKeySequence("Ctrl+Return"))
+        self.approve.setToolTip("Подтвердить транскрипт · Ctrl+Enter")
         self.approve.setEnabled(False)
         self.approve.clicked.connect(self.approve_transcript)
-        layout.addWidget(self.approve)
+        approve_row.addWidget(self.approve)
+        summary_layout.addLayout(approve_row)
+        layout.addWidget(summary, 2)
         return page
 
     def _publish_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+        layout.addWidget(
+            self._page_heading(
+                "Опубликуйте материалы",
+                "Приложение создаст изолированную ветку занятия и draft pull request для проверки.",
+            )
+        )
+        layout.addStretch(1)
+        card_row = QHBoxLayout()
+        card_row.addStretch(1)
+        card = QGroupBox("Готовность задания")
+        card.setMaximumWidth(720)
+        card.setMinimumWidth(560)
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(14)
+        intro = QLabel("Публикация станет доступна после подтверждения транскрипта")
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        card_layout.addWidget(intro)
+        summary_panel = QFrame()
+        summary_panel.setObjectName("infoPanel")
+        summary_panel_layout = QVBoxLayout(summary_panel)
+        summary_panel_layout.setContentsMargins(16, 14, 16, 14)
         self.publish_summary = QLabel("Сначала создайте и подтвердите транскрипт.")
         self.publish_summary.setWordWrap(True)
-        self.publish_button = QPushButton("Создать ветку и отправить задание")
-        self.publish_button.setEnabled(False)
-        self.publish_button.clicked.connect(self.publish)
-        self.open_pr_button = QPushButton("Открыть draft PR")
+        summary_panel_layout.addWidget(self.publish_summary)
+        card_layout.addWidget(summary_panel)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.open_pr_button = set_button_kind(QPushButton("Открыть draft PR"), "ghost")
         self.open_pr_button.setEnabled(False)
         self.open_pr_button.clicked.connect(self._open_current_pr)
-        layout.addWidget(self.publish_summary)
-        layout.addWidget(self.publish_button)
-        layout.addWidget(self.open_pr_button)
-        layout.addStretch()
+        actions.addWidget(self.open_pr_button)
+        self.publish_button = set_button_kind(QPushButton("Создать ветку и опубликовать"), "primary")
+        self.publish_button.setEnabled(False)
+        self.publish_button.clicked.connect(self.publish)
+        actions.addWidget(self.publish_button)
+        card_layout.addLayout(actions)
+        card_row.addWidget(card)
+        card_row.addStretch(1)
+        layout.addLayout(card_row)
+        layout.addStretch(2)
         return page
 
     def _latex_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+        layout.addWidget(
+            self._page_heading(
+                "Соберите и проверьте PDF",
+                "Безопасная локальная компиляция LaTeX, журнал ошибок и предпросмотр страниц.",
+            )
+        )
         environment = QGroupBox("Локальная LaTeX-среда")
         environment_layout = QHBoxLayout(environment)
-        self.latex_doctor_button = QPushButton("Проверить TeX Live")
+        self.latex_doctor_button = set_button_kind(QPushButton("Проверить TeX Live"), "ghost")
         self.latex_doctor_button.clicked.connect(self.latex_doctor)
         self.latex_environment_label = QLabel("Проверка ещё не выполнялась")
+        self.latex_environment_label.setObjectName("muted")
+        self.latex_environment_label.setWordWrap(True)
         environment_layout.addWidget(self.latex_doctor_button)
         environment_layout.addWidget(self.latex_environment_label, 1)
         layout.addWidget(environment)
 
+        source = QGroupBox("Исходный TEX")
+        source_layout = QVBoxLayout(source)
         source_row = QHBoxLayout()
         self.tex_path = QLineEdit()
         self.tex_path.setPlaceholderText("Путь к полученному от ChatGPT .tex")
-        choose = QPushButton("Выбрать TEX")
+        choose = set_button_kind(QPushButton("Выбрать TEX"), "ghost")
         choose.clicked.connect(self.choose_tex)
-        self.compile_tex_button = QPushButton("Скомпилировать PDF")
+        self.compile_tex_button = set_button_kind(QPushButton("Скомпилировать PDF"), "primary")
         self.compile_tex_button.clicked.connect(self.compile_local_tex)
         source_row.addWidget(self.tex_path, 1)
         source_row.addWidget(choose)
         source_row.addWidget(self.compile_tex_button)
-        layout.addLayout(source_row)
+        source_layout.addLayout(source_row)
 
         monitor_row = QHBoxLayout()
         self.auto_latex = QCheckBox("Автоматически проверять ветки занятий")
         self.auto_latex.toggled.connect(self.toggle_latex_monitor)
-        scan = QPushButton("Проверить сейчас")
+        scan = set_button_kind(QPushButton("Проверить сейчас"), "ghost")
         scan.clicked.connect(self.scan_remote_latex)
         self.latex_monitor_status = QLabel("Мониторинг выключен")
+        self.latex_monitor_status.setObjectName("muted")
+        self.latex_monitor_status.setWordWrap(True)
         monitor_row.addWidget(self.auto_latex)
         monitor_row.addWidget(scan)
         monitor_row.addWidget(self.latex_monitor_status, 1)
-        layout.addLayout(monitor_row)
+        source_layout.addLayout(monitor_row)
+        layout.addWidget(source)
 
+        results = QHBoxLayout()
+        log_box = QGroupBox("Журнал компиляции")
+        log_layout = QVBoxLayout(log_box)
         self.compilation_log = QPlainTextEdit()
         self.compilation_log.setReadOnly(True)
         self.compilation_log.setPlaceholderText("Здесь появится журнал компиляции и понятное описание ошибок")
-        layout.addWidget(self.compilation_log, 3)
-        layout.addWidget(QLabel("Предпросмотр страниц — двойной клик открывает изображение:"))
+        log_layout.addWidget(self.compilation_log)
+        results.addWidget(log_box, 3)
+        preview_box = QGroupBox("Предпросмотр страниц")
+        preview_layout = QVBoxLayout(preview_box)
+        preview_hint = QLabel("Двойной клик открывает страницу")
+        preview_hint.setObjectName("muted")
+        preview_layout.addWidget(preview_hint)
         self.pdf_previews = QListWidget()
         self.pdf_previews.itemDoubleClicked.connect(
             lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(256)))
         )
-        layout.addWidget(self.pdf_previews, 2)
+        preview_layout.addWidget(self.pdf_previews)
+        results.addWidget(preview_box, 2)
+        layout.addLayout(results, 1)
         return page
 
     def _make_lesson(self) -> Lesson:
@@ -398,7 +595,10 @@ class MainWindow(QMainWindow):
             self.timer.start(1000)
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
-            self.statusBar().showMessage("Идёт запись")
+            self.recording_state_label.setText("●  ИДЁТ ЗАПИСЬ")
+            self.recording_state_label.setProperty("active", True)
+            refresh_style(self.recording_state_label)
+            self._set_status("Идёт запись", "working")
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка записи", str(exc))
 
@@ -412,7 +612,10 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            self.statusBar().showMessage("Запись сохранена")
+            self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
+            self.recording_state_label.setProperty("active", False)
+            refresh_style(self.recording_state_label)
+            self._set_status("Запись сохранена")
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка", str(exc))
 
@@ -420,10 +623,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Аудиозапись", "", "Audio (*.wav *.mp3 *.m4a *.flac)")
         if path:
             self.audio_path.setText(path)
+            self._set_status("Аудиофайл выбран")
 
     def test_devices(self) -> None:
         self.test_devices_button.setEnabled(False)
-        self.statusBar().showMessage("Проверяю микрофон и системный звук…")
+        self._set_status("Проверяю микрофон и системный звук…", "working")
         mic_device = int(self.mic.currentData())
         loopback_device = int(self.loopback.currentData())
         seconds = self.config.recording.diagnostics_seconds
@@ -455,7 +659,7 @@ class MainWindow(QMainWindow):
         message = "Проверка пройдена." if not warnings else "Проверьте настройки: " + "; ".join(warnings)
         QMessageBox.information(self, "Диагностика аудио", message)
         self.test_devices_button.setEnabled(True)
-        self.statusBar().showMessage(message)
+        self._set_status(message, "warning" if warnings else "success")
 
     def transcribe(self) -> None:
         try:
@@ -466,6 +670,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("Выберите существующий аудиофайл")
             self.progress.setRange(0, 0)
             self.transcribe_button.setEnabled(False)
+            self._set_status("Выполняется локальная транскрибация…", "working")
             worker = Worker(self.pipeline.transcribe, self.lesson, audio)
             worker.succeeded.connect(self._transcription_ready)
             worker.failed.connect(self._worker_failed)
@@ -483,7 +688,8 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         self.transcribe_button.setEnabled(True)
-        self.statusBar().showMessage("Транскрипт ждёт проверки")
+        self._set_status("Транскрипт ждёт проверки", "warning")
+        self._go_to(1)
 
     def _load_segments(self, path: Path) -> None:
         segments = json.loads(path.read_text(encoding="utf-8"))
@@ -596,11 +802,13 @@ class MainWindow(QMainWindow):
             f"{self.lesson.topic}\n\nЗадание будет помещено в отдельную Git-ветку."
         )
         self.publish_button.setEnabled(True)
-        self.statusBar().showMessage("Транскрипт подтверждён")
+        self._set_status("Транскрипт подтверждён")
+        self._go_to(2)
 
     def publish(self) -> None:
         assert self.lesson
         self.publish_button.setEnabled(False)
+        self._set_status("Создаю ветку и публикую занятие…", "working")
         worker = Worker(self.pipeline.publish, self.lesson)
         worker.succeeded.connect(self._publication_ready)
         worker.failed.connect(self._worker_failed)
@@ -617,6 +825,8 @@ class MainWindow(QMainWindow):
             details += "\n\n" + "\n".join(result.warnings)
         QMessageBox.information(self, "Готово", details)
         self.latex_monitor_status.setText("Ветка занятия опубликована; ожидаю handbook/*.tex")
+        self._set_status("Занятие опубликовано")
+        self._go_to(3)
 
     def _open_current_pr(self) -> None:
         if self.lesson and self.lesson.publication and self.lesson.publication.pr_url:
@@ -631,6 +841,7 @@ class MainWindow(QMainWindow):
         else:
             message = "; ".join(report.messages) or "LaTeX-среда не готова"
         self.latex_environment_label.setText(message)
+        self._set_status(message, "success" if report.ready else "warning")
         QMessageBox.information(self, "Проверка TeX Live", message)
 
     def choose_tex(self) -> None:
@@ -647,6 +858,7 @@ class MainWindow(QMainWindow):
             return
         self.compile_tex_button.setEnabled(False)
         self.compilation_log.setPlainText("Компиляция запущена…")
+        self._set_status("Компилирую PDF…", "working")
         worker = Worker(LatexCompiler(self.config.latex).compile, path)
         worker.succeeded.connect(self._local_compilation_ready)
         worker.failed.connect(self._worker_failed)
@@ -673,16 +885,19 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(path.name)
             item.setData(256, str(path.resolve()))
             self.pdf_previews.addItem(item)
+        self._set_status(title, "success" if result.success else "error")
         QMessageBox.information(self, "Компиляция", title)
 
     def toggle_latex_monitor(self, enabled: bool) -> None:
         if enabled:
             self.latex_poll_timer.start()
             self.latex_monitor_status.setText(f"Проверка каждые {self.config.latex.poll_seconds} секунд")
+            self._set_status("Автомониторинг LaTeX включён", "working")
             self.scan_remote_latex()
         else:
             self.latex_poll_timer.stop()
             self.latex_monitor_status.setText("Мониторинг выключен")
+            self._set_status("Автомониторинг LaTeX выключен")
 
     def scan_remote_latex(self) -> None:
         from ..latex import RemoteLatexService
@@ -690,6 +905,7 @@ class MainWindow(QMainWindow):
         if any(getattr(worker, "purpose", "") == "latex-monitor" for worker in self.workers):
             return
         self.latex_monitor_status.setText("Проверяю удалённые ветки…")
+        self._set_status("Проверяю ветки занятий…", "working")
 
         def scan():
             service = RemoteLatexService(self.config.repository, self.config.latex)
@@ -711,6 +927,7 @@ class MainWindow(QMainWindow):
     def _remote_compilation_ready(self, remote_result) -> None:
         if remote_result is None:
             self.latex_monitor_status.setText("Новых TEX-файлов нет")
+            self._set_status("Новых TEX-файлов нет")
             return
         lesson = remote_result.lesson
         self.pipeline.store.save(lesson)
@@ -730,6 +947,7 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(path.name)
             item.setData(256, str(path.resolve()))
             self.pdf_previews.addItem(item)
+        self._set_status(message, "success" if result.success else "warning")
         QMessageBox.information(self, "Автоматическая компиляция", message)
 
     def _worker_failed(self, details: str) -> None:
@@ -739,6 +957,7 @@ class MainWindow(QMainWindow):
         self.test_devices_button.setEnabled(True)
         self.compile_tex_button.setEnabled(True)
         logging.error(details)
+        self._set_status("Фоновая операция завершилась с ошибкой", "error")
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
 
     def _tick(self) -> None:
@@ -765,7 +984,9 @@ def main() -> None:
         sys.argv.remove("--setup")
     config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("config/app.yaml")
     app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    app.setApplicationName("Tutor Assistant")
+    app.setOrganizationName("Tutor Assistant")
+    apply_theme(app)
     config = AppConfig.load(config_path)
     if force_setup or not config.setup_completed:
         from .setup_wizard import SetupWizard

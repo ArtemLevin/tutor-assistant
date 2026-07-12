@@ -21,26 +21,39 @@ from PySide6.QtWidgets import (
 from ..config import AppConfig
 from ..latex import inspect_latex_environment
 from ..recording import list_input_devices, test_input_device
+from .theme import set_button_kind
 
 
 class IntroPage(QWizardPage):
     def __init__(self) -> None:
         super().__init__()
-        self.setTitle("Первичная настройка Tutor Assistant")
+        self.setTitle("Добро пожаловать в Tutor Assistant")
+        self.setSubTitle("За несколько шагов подготовим локальное рабочее пространство.")
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 22, 20, 20)
+        layout.setSpacing(16)
         text = QLabel(
-            "Мастер проверит рабочие каталоги, аудиоустройства, Git, FFmpeg, Whisper, "
-            "TeX Live, Poppler и GitHub CLI. Настройки можно изменить позже в config/app.yaml."
+            "Все аудиозаписи и распознавание останутся на вашем компьютере. Мастер проверит "
+            "рабочие каталоги, аудиоустройства, Git, FFmpeg, Whisper, TeX Live, Poppler и GitHub CLI."
         )
+        text.setObjectName("subtitle")
         text.setWordWrap(True)
         layout.addWidget(text)
+        note = QLabel("Настройки сохраняются в config/app.yaml и доступны для ручного редактирования.")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        layout.addStretch()
 
 
 class PathsPage(QWizardPage):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.setTitle("Рабочие каталоги")
+        self.setSubTitle("Выберите, где хранить локальные занятия и где расположен репозиторий учеников.")
         form = QFormLayout(self)
+        form.setContentsMargins(20, 22, 20, 20)
+        form.setVerticalSpacing(14)
         self.workspace = QLineEdit(str(config.workspace))
         self.students_repo = QLineEdit(str(config.repository.students_repo))
         form.addRow("Локальные данные", self._path_row(self.workspace, False))
@@ -48,7 +61,7 @@ class PathsPage(QWizardPage):
 
     def _path_row(self, field: QLineEdit, existing: bool):
         row = QHBoxLayout()
-        button = QPushButton("Обзор")
+        button = set_button_kind(QPushButton("Обзор"), "ghost")
         button.clicked.connect(lambda: self._choose(field, existing))
         row.addWidget(field)
         row.addWidget(button)
@@ -71,7 +84,10 @@ class AudioPage(QWizardPage):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.setTitle("Аудиоустройства")
+        self.setSubTitle("Выберите микрофон и loopback-вход, затем проверьте уровень сигнала.")
         layout = QFormLayout(self)
+        layout.setContentsMargins(20, 22, 20, 20)
+        layout.setVerticalSpacing(14)
         self.mic = QComboBox()
         self.loopback = QComboBox()
         try:
@@ -85,8 +101,9 @@ class AudioPage(QWizardPage):
         self._select(self.mic, config.recording.mic_device)
         self._select(self.loopback, config.recording.loopback_device)
         self.result = QLabel("Выберите устройства и запустите тест")
+        self.result.setObjectName("muted")
         self.result.setWordWrap(True)
-        test = QPushButton("Проверить оба устройства")
+        test = set_button_kind(QPushButton("Проверить оба устройства"), "primary")
         test.clicked.connect(lambda: self._test(config))
         layout.addRow("Микрофон", self.mic)
         layout.addRow("Системный звук", self.loopback)
@@ -136,10 +153,13 @@ class DiagnosticsPage(QWizardPage):
         super().__init__()
         self.config = config
         self.setTitle("Диагностика окружения")
+        self.setSubTitle("Финальная проверка компонентов для полного конвейера занятия.")
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 22, 20, 20)
         layout.addWidget(self.summary)
+        layout.addStretch()
 
     def initializePage(self) -> None:
         rows = []
@@ -176,13 +196,22 @@ class SetupWizard(QWizard):
         self.config = config
         self.config_path = config_path
         self.setWindowTitle("Настройка Tutor Assistant")
-        self.resize(720, 480)
+        self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
+        self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
+        self.resize(780, 540)
         self.addPage(IntroPage())
         self.paths_page = PathsPage(config)
         self.audio_page = AudioPage(config)
         self.addPage(self.paths_page)
         self.addPage(self.audio_page)
         self.addPage(DiagnosticsPage(config))
+        self.setButtonText(QWizard.WizardButton.BackButton, "Назад")
+        self.setButtonText(QWizard.WizardButton.NextButton, "Продолжить")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "Сохранить и открыть")
+        self.setButtonText(QWizard.WizardButton.CancelButton, "Отмена")
+        set_button_kind(self.button(QWizard.WizardButton.NextButton), "primary")
+        set_button_kind(self.button(QWizard.WizardButton.FinishButton), "primary")
+        set_button_kind(self.button(QWizard.WizardButton.CancelButton), "ghost")
 
     def accept(self) -> None:
         self.config.workspace = Path(self.paths_page.workspace.text()).expanduser()
