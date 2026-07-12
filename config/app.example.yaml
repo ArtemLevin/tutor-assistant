@@ -1,0 +1,22 @@
+workspace: data
+students_file: config/students.yaml
+
+recording:
+  sample_rate: 48000
+  channels: 1
+
+whisper:
+  model: small
+  device: cpu
+  compute_type: int8
+  language: ru
+  beam_size: 1
+  vad_filter: true
+
+repository:
+  students_repo: ../students-26-27
+  remote: origin
+  base_branch: main
+  push: true
+  create_branch: true
+

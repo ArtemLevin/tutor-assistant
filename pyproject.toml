@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tutor-assistant"
+version = "0.1.0"
+description = "Desktop pipeline: lesson recording, local transcription and material-generation jobs"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+authors = [{name = "Лёвин Артём Александрович"}]
+dependencies = [
+  "pydantic>=2.10,<3",
+  "PyYAML>=6.0,<7",
+  "platformdirs>=4.3,<5",
+  "numpy>=2.0,<3",
+  "sounddevice>=0.5,<1",
+  "soundfile>=0.13,<1",
+]
+
+[project.optional-dependencies]
+desktop = ["PySide6>=6.8,<7"]
+transcription = ["faster-whisper>=1.1,<2"]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
+all = ["PySide6>=6.8,<7", "faster-whisper>=1.1,<2"]
+
+[project.scripts]
+tutor-assistant = "tutor_assistant.cli:main"
+tutor-assistant-gui = "tutor_assistant.ui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tutor_assistant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

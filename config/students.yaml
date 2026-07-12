@@ -1,0 +1,21 @@
+students:
+  - id: timofey
+    full_name: Тимофей Васильченко
+    grade: 10
+    exam: ЕГЭ
+    subjects: [mathematics, chemistry]
+  - id: nikol_sarkisyants
+    full_name: Николь Саркисянц
+    grade: 11
+    exam: ЕГЭ
+    subjects: [mathematics]
+  - id: xenia_klykova
+    full_name: Ксения Клыкова
+    exam: ЕГЭ
+    subjects: [mathematics, chemistry]
+  - id: sofya_kalney
+    full_name: София Кальней
+    grade: 9
+    exam: ОГЭ
+    subjects: [mathematics]
+

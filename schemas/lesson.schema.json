@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ArtemLevin/tutor-assistant/schemas/lesson.schema.json",
+  "title": "Tutor Assistant lesson job",
+  "type": "object",
+  "required": ["schema_version", "lesson_id", "student", "subject", "lesson_date", "topic", "status", "pipeline"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "lesson_id": {"type": "string", "minLength": 8},
+    "student": {
+      "type": "object",
+      "required": ["id", "full_name"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+        "full_name": {"type": "string", "minLength": 2},
+        "grade": {"type": ["integer", "null"], "minimum": 1, "maximum": 12},
+        "exam": {"type": ["string", "null"]}
+      }
+    },
+    "subject": {"type": "string"},
+    "lesson_date": {"type": "string", "format": "date"},
+    "topic": {"type": "string", "minLength": 2},
+    "status": {
+      "enum": ["draft", "recording", "recorded", "transcribing", "review_required", "ready_for_generation", "published", "generating", "completed", "failed"]
+    },
+    "pipeline": {
+      "type": "object",
+      "required": ["latex", "compile_pdf", "poster", "web", "update_student_index"],
+      "properties": {
+        "latex": {"type": "boolean"},
+        "compile_pdf": {"type": "boolean"},
+        "poster": {"type": "boolean"},
+        "web": {"type": "boolean"},
+        "update_student_index": {"type": "boolean"}
+      }
+    }
+  }
+}
+
