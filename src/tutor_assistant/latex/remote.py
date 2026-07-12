@@ -57,7 +57,8 @@ class RemoteLatexService:
         if not info:
             return False
         if info.blob_sha == lesson.latex.tex_blob_sha and lesson.status in {
-            JobStatus.COMPILE_FAILED, JobStatus.PDF_REVIEW_REQUIRED
+            JobStatus.COMPILE_FAILED,
+            JobStatus.PDF_REVIEW_REQUIRED,
         }:
             return False
         return True
@@ -103,9 +104,7 @@ class RemoteLatexService:
                 report_dir=report_dir,
                 preview_dir=preview_dir,
             )
-            candidate.latex.report_path = str(
-                compilation.report_file.relative_to(worktree).as_posix()
-            )
+            candidate.latex.report_path = str(compilation.report_file.relative_to(worktree).as_posix())
             candidate.latex.preview_paths = [
                 str(path.relative_to(worktree).as_posix()) for path in compilation.preview_files
             ]
@@ -121,7 +120,9 @@ class RemoteLatexService:
             run_git(worktree, "add", str(lesson_root.relative_to(worktree)))
             status = "success" if compilation.success else "failed"
             run_git(
-                worktree, "commit", "-m",
+                worktree,
+                "commit",
+                "-m",
                 f"Compile lesson PDF ({status}, attempt {candidate.latex.attempt})",
             )
             commit = run_git(worktree, "rev-parse", "HEAD")
@@ -184,7 +185,8 @@ class RemoteLatexService:
                     payload[key] = path.name
         payload["preview_files"] = [
             Path(value).relative_to(worktree).as_posix()
-            if Path(value).is_relative_to(worktree) else Path(value).name
+            if Path(value).is_relative_to(worktree)
+            else Path(value).name
             for value in payload.get("preview_files", [])
         ]
         report.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -195,22 +197,24 @@ class RemoteLatexService:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             payload = {}
-        payload.update({
-            "status": lesson.status.value,
-            "stage": "latex",
-            "artifacts": {
-                **payload.get("artifacts", {}),
-                "tex": "completed",
-                "pdf": "completed" if result.success else "failed",
-            },
-            "latex": {
-                "attempt": lesson.latex.attempt,
-                "max_attempts": self.latex.max_attempts,
-                "pdf": lesson.latex.pdf_path,
-                "report": lesson.latex.report_path,
-                "pages": result.pages,
-                "size_bytes": result.size_bytes,
-                "errors": result.errors[:10],
-            },
-        })
+        payload.update(
+            {
+                "status": lesson.status.value,
+                "stage": "latex",
+                "artifacts": {
+                    **payload.get("artifacts", {}),
+                    "tex": "completed",
+                    "pdf": "completed" if result.success else "failed",
+                },
+                "latex": {
+                    "attempt": lesson.latex.attempt,
+                    "max_attempts": self.latex.max_attempts,
+                    "pdf": lesson.latex.pdf_path,
+                    "report": lesson.latex.report_path,
+                    "pages": result.pages,
+                    "size_bytes": result.size_bytes,
+                    "errors": result.errors[:10],
+                },
+            }
+        )
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -17,9 +17,9 @@ def test_recover_recording_concatenates_chunks(tmp_path) -> None:
     for directory, prefix in ((mic, "mic"), (system, "system")):
         sf.write(directory / f"{prefix}_00000.wav", payload, sample_rate)
         sf.write(directory / f"{prefix}_00001.wav", payload, sample_rate)
-    (recording / "session.json").write_text(json.dumps({
-        "sample_rate": sample_rate, "channels": 1, "status": "recording"
-    }), encoding="utf-8")
+    (recording / "session.json").write_text(
+        json.dumps({"sample_rate": sample_rate, "channels": 1, "status": "recording"}), encoding="utf-8"
+    )
     result = recover_recording(recording)
     info = sf.info(result.microphone_file)
     assert info.frames == 1600

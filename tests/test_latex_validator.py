@@ -4,7 +4,6 @@ from tutor_assistant.config import LatexConfig
 from tutor_assistant.latex.compiler import LatexCompiler
 from tutor_assistant.latex.validator import validate_tex
 
-
 SAFE_DOCUMENT = r"""
 \documentclass{article}
 \begin{document}
@@ -21,7 +20,9 @@ def test_safe_document_passes_validation(tmp_path: Path) -> None:
 
 def test_shell_escape_command_is_rejected(tmp_path: Path) -> None:
     tex = tmp_path / "unsafe.tex"
-    tex.write_text(SAFE_DOCUMENT.replace("Безопасный текст.", r"\immediate\write18{calc.exe}"), encoding="utf-8")
+    tex.write_text(
+        SAFE_DOCUMENT.replace("Безопасный текст.", r"\immediate\write18{calc.exe}"), encoding="utf-8"
+    )
     issues = validate_tex(tex)
     assert any(issue.code == "shell-command" for issue in issues)
 

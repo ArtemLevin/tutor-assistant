@@ -69,4 +69,3 @@ class LessonStore:
                 "SELECT payload FROM lessons ORDER BY updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [Lesson.model_validate_json(row["payload"]) for row in rows]
-

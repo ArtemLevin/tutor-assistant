@@ -37,4 +37,3 @@ def list_input_devices() -> list[AudioDevice]:
             )
         )
     return result
-

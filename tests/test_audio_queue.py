@@ -11,8 +11,14 @@ def test_writer_thread_persists_blocks_outside_callback(tmp_path: Path) -> None:
     chunks = []
     levels = []
     writer = QueuedChunkWriter(
-        tmp_path, "mic", 8000, 1, 1, 8,
-        lambda: chunks.append(True), levels.append,
+        tmp_path,
+        "mic",
+        8000,
+        1,
+        1,
+        8,
+        lambda: chunks.append(True),
+        levels.append,
     )
     writer.enqueue(np.full((4000, 1), 0.1, dtype="float32"), 1.0)
     writer.enqueue(np.full((4000, 1), 0.1, dtype="float32"), 2.0)

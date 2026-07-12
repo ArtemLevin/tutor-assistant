@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tutor-assistant"
-version = "0.4.0"
+version = "0.4.1"
 description = "Desktop pipeline: lesson recording, local transcription and material-generation jobs"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -24,6 +24,9 @@ desktop = ["PySide6>=6.8,<7"]
 transcription = ["faster-whisper>=1.1,<2"]
 dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
 all = ["PySide6>=6.8,<7", "faster-whisper>=1.1,<2"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
 
 [project.scripts]
 tutor-assistant = "tutor_assistant.cli:main"

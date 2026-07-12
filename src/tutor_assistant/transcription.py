@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
@@ -34,8 +34,16 @@ class TranscriptionResult:
 
 
 SIGNALS = [
-    "не понимаю", "не понял", "не поняла", "можно ещё раз", "можно еще раз",
-    "не получается", "другой ответ", "не сходится", "я запутался", "я запуталась",
+    "не понимаю",
+    "не понял",
+    "не поняла",
+    "можно ещё раз",
+    "можно еще раз",
+    "не получается",
+    "другой ответ",
+    "не сходится",
+    "я запутался",
+    "я запуталась",
 ]
 
 
@@ -62,7 +70,7 @@ def extract_signals(text: str, speaker: str | None = None) -> list[dict[str, str
             item: dict[str, str | int] = {
                 "signal": signal,
                 "position": position,
-                "snippet": text[max(0, position - 100): position + len(signal) + 100],
+                "snippet": text[max(0, position - 100) : position + len(signal) + 100],
             }
             if speaker:
                 item["speaker"] = speaker
@@ -91,21 +99,27 @@ class WhisperTranscriber:
         self, audio: Path, *, speaker: str | None = None, offset_seconds: float = 0.0
     ) -> tuple[list[Segment], dict]:
         generator, info = self._load().transcribe(
-            str(audio), language=self.config.language, beam_size=self.config.beam_size,
-            vad_filter=self.config.vad_filter, temperature=0.0, condition_on_previous_text=False,
+            str(audio),
+            language=self.config.language,
+            beam_size=self.config.beam_size,
+            vad_filter=self.config.vad_filter,
+            temperature=0.0,
+            condition_on_previous_text=False,
         )
         segments: list[Segment] = []
         for item in generator:
             text = str(item.text).strip()
             if text:
-                segments.append(Segment(
-                    float(item.start) + offset_seconds,
-                    float(item.end) + offset_seconds,
-                    text,
-                    float(item.avg_logprob) if item.avg_logprob is not None else None,
-                    float(item.no_speech_prob) if item.no_speech_prob is not None else None,
-                    speaker,
-                ))
+                segments.append(
+                    Segment(
+                        float(item.start) + offset_seconds,
+                        float(item.end) + offset_seconds,
+                        text,
+                        float(item.avg_logprob) if item.avg_logprob is not None else None,
+                        float(item.no_speech_prob) if item.no_speech_prob is not None else None,
+                        speaker,
+                    )
+                )
         return segments, {
             "source_audio": str(audio),
             "language": getattr(info, "language", self.config.language),
@@ -143,11 +157,19 @@ class WhisperTranscriber:
         student_json = output_dir / "student_segments.json"
         teacher_text.write_text(" ".join(item.text for item in teacher), encoding="utf-8")
         student_text.write_text(" ".join(item.text for item in student), encoding="utf-8")
-        teacher_json.write_text(json.dumps([asdict(item) for item in teacher], ensure_ascii=False, indent=2), encoding="utf-8")
-        student_json.write_text(json.dumps([asdict(item) for item in student], ensure_ascii=False, indent=2), encoding="utf-8")
+        teacher_json.write_text(
+            json.dumps([asdict(item) for item in teacher], ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        student_json.write_text(
+            json.dumps([asdict(item) for item in student], ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return self._write_result(
-            output_dir, merged, [teacher_source, student_source], started,
-            teacher_transcript=teacher_text, student_transcript=student_text,
+            output_dir,
+            merged,
+            [teacher_source, student_source],
+            started,
+            teacher_transcript=teacher_text,
+            student_transcript=student_text,
             student_segments=student,
         )
 
@@ -175,33 +197,53 @@ class WhisperTranscriber:
         signals = output_dir / "important_student_signals.json"
         manifest = output_dir / "manifest.json"
         raw.write_text(raw_text, encoding="utf-8")
-        timestamped.write_text("\n".join(
-            f"[{item.start:08.2f} — {item.end:08.2f}] "
-            f"{f'[{item.speaker}] ' if item.speaker else ''}{item.text}"
-            for item in segments
-        ), encoding="utf-8")
+        timestamped.write_text(
+            "\n".join(
+                f"[{item.start:08.2f} — {item.end:08.2f}] "
+                f"{f'[{item.speaker}] ' if item.speaker else ''}{item.text}"
+                for item in segments
+            ),
+            encoding="utf-8",
+        )
         cleaned.write_text(cleaned_text, encoding="utf-8")
         segments_file.write_text(
             json.dumps([asdict(item) for item in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        signal_source = " ".join(item.text for item in student_segments) if student_segments is not None else raw_text
+        signal_source = (
+            " ".join(item.text for item in student_segments) if student_segments is not None else raw_text
+        )
         signals.write_text(
             json.dumps(
                 extract_signals(signal_source, "Ученик" if student_segments is not None else None),
-                ensure_ascii=False, indent=2,
+                ensure_ascii=False,
+                indent=2,
             ),
             encoding="utf-8",
         )
-        manifest.write_text(json.dumps({
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "model": self.config.model,
-            "dual_channel": dual,
-            "sources": sources,
-            "elapsed_seconds": round(perf_counter() - started, 3),
-            "segment_count": len(segments),
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        manifest.write_text(
+            json.dumps(
+                {
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "model": self.config.model,
+                    "dual_channel": dual,
+                    "sources": sources,
+                    "elapsed_seconds": round(perf_counter() - started, 3),
+                    "segment_count": len(segments),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         return TranscriptionResult(
-            output_dir, raw, timestamped, cleaned, segments_file, signals, manifest,
-            teacher_transcript, student_transcript,
+            output_dir,
+            raw,
+            timestamped,
+            cleaned,
+            segments_file,
+            signals,
+            manifest,
+            teacher_transcript,
+            student_transcript,
         )

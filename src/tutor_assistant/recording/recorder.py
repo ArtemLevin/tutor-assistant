@@ -7,11 +7,11 @@ import queue
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Callable
 
 import numpy as np
 
@@ -132,7 +132,7 @@ class QueuedChunkWriter:
                 cursor = 0
                 while cursor < len(block.data):
                     remaining = self.max_frames - self.frames_in_chunk
-                    part = block.data[cursor: cursor + remaining]
+                    part = block.data[cursor : cursor + remaining]
                     file.write(part)
                     count = len(part)
                     self.frames_in_chunk += count
@@ -204,10 +204,14 @@ class DualRecorder:
             system.queue_percent if system else 0,
             mic.dropped_blocks if mic else 0,
             system.dropped_blocks if system else 0,
-            round(max(
-                mic.max_latency_seconds if mic else 0,
-                system.max_latency_seconds if system else 0,
-            ) * 1000, 2),
+            round(
+                max(
+                    mic.max_latency_seconds if mic else 0,
+                    system.max_latency_seconds if system else 0,
+                )
+                * 1000,
+                2,
+            ),
         )
 
     def _set_level(self, source: str, value: float) -> None:
@@ -221,11 +225,11 @@ class DualRecorder:
         if not self._session_file or not self._output_dir:
             return
         with self._session_lock:
-            self._session["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._session["updated_at"] = datetime.now(UTC).isoformat()
             for source, writer in self._writers.items():
-                self._session[f"{source}_chunks"] = len(list(
-                    (self._output_dir / "chunks" / source).glob("*.wav")
-                ))
+                self._session[f"{source}_chunks"] = len(
+                    list((self._output_dir / "chunks" / source).glob("*.wav"))
+                )
                 self._session[f"{source}_first_callback"] = writer.first_callback_monotonic
                 self._session[f"{source}_last_callback"] = writer.last_callback_monotonic
                 self._session[f"{source}_dropped_blocks"] = writer.dropped_blocks
@@ -250,7 +254,7 @@ class DualRecorder:
         self._session = {
             "version": 2,
             "status": "recording",
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": datetime.now(UTC).isoformat(),
             "channels": self.channels,
             "chunk_seconds": self.chunk_seconds,
             "target_sample_rate": self.target_sample_rate,
@@ -264,13 +268,23 @@ class DualRecorder:
         self._write_session()
         self._writers = {
             "microphone": QueuedChunkWriter(
-                output_dir / "chunks" / "microphone", "mic", mic_rate, self.channels,
-                self.chunk_seconds, self.queue_blocks, self._write_session,
+                output_dir / "chunks" / "microphone",
+                "mic",
+                mic_rate,
+                self.channels,
+                self.chunk_seconds,
+                self.queue_blocks,
+                self._write_session,
                 lambda value: self._set_level("microphone", value),
             ),
             "system": QueuedChunkWriter(
-                output_dir / "chunks" / "system", "system", system_rate, self.channels,
-                self.chunk_seconds, self.queue_blocks, self._write_session,
+                output_dir / "chunks" / "system",
+                "system",
+                system_rate,
+                self.channels,
+                self.chunk_seconds,
+                self.queue_blocks,
+                self._write_session,
                 lambda value: self._set_level("system", value),
             ),
         }
@@ -280,16 +294,23 @@ class DualRecorder:
                 if status:
                     logging.warning("Audio callback %s: %s", source, status)
                 self._writers[source].enqueue(indata, monotonic())
+
             return enqueue
 
         try:
             mic_stream = sd.InputStream(
-                device=mic_device, samplerate=mic_rate, channels=self.channels,
-                dtype="float32", callback=callback("microphone"),
+                device=mic_device,
+                samplerate=mic_rate,
+                channels=self.channels,
+                dtype="float32",
+                callback=callback("microphone"),
             )
             system_stream = sd.InputStream(
-                device=loopback_device, samplerate=system_rate, channels=self.channels,
-                dtype="float32", callback=callback("system"),
+                device=loopback_device,
+                samplerate=system_rate,
+                channels=self.channels,
+                dtype="float32",
+                callback=callback("system"),
             )
             mic_stream.start()
             system_stream.start()
@@ -312,7 +333,7 @@ class DualRecorder:
             writer.stop()
         self._active = False
         self._session["status"] = "recorded"
-        self._session["completed_at"] = datetime.now(timezone.utc).isoformat()
+        self._session["completed_at"] = datetime.now(UTC).isoformat()
         health = self.health
         self._session["health"] = health.__dict__
         self._write_session()
@@ -354,9 +375,9 @@ def _resample_linear(data: np.ndarray, source_rate: int, target_rate: int) -> np
     size = round(len(data) * target_rate / source_rate)
     source_axis = np.linspace(0.0, 1.0, len(data), endpoint=False)
     target_axis = np.linspace(0.0, 1.0, size, endpoint=False)
-    return np.column_stack([
-        np.interp(target_axis, source_axis, data[:, channel]) for channel in range(data.shape[1])
-    ])
+    return np.column_stack(
+        [np.interp(target_axis, source_axis, data[:, channel]) for channel in range(data.shape[1])]
+    )
 
 
 def mix_tracks(
@@ -379,11 +400,27 @@ def mix_tracks(
             f"adelay={system_delay_ms}:all=1[s];"
             "[m][s]amix=inputs=2:duration=longest:normalize=0[out]"
         )
-        subprocess.run([
-            "ffmpeg", "-y", "-i", str(microphone), "-i", str(system),
-            "-filter_complex", filters, "-map", "[out]", "-ar", str(target_rate),
-            "-c:a", "pcm_s16le", str(output),
-        ], check=True, capture_output=True)
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(microphone),
+                "-i",
+                str(system),
+                "-filter_complex",
+                filters,
+                "-map",
+                "[out]",
+                "-ar",
+                str(target_rate),
+                "-c:a",
+                "pcm_s16le",
+                str(output),
+            ],
+            check=True,
+            capture_output=True,
+        )
         return
     import soundfile as sf
 
@@ -399,8 +436,8 @@ def mix_tracks(
     sys = np.pad(sys, ((round(system_delay_ms * target_rate / 1000), 0), (0, 0)))
     size = max(len(mic), len(sys))
     result = np.zeros((size, max(mic.shape[1], sys.shape[1])))
-    result[:len(mic), :mic.shape[1]] += mic
-    result[:len(sys), :sys.shape[1]] += sys
+    result[: len(mic), : mic.shape[1]] += mic
+    result[: len(sys), : sys.shape[1]] += sys
     peak = float(np.max(np.abs(result))) or 1.0
     if peak > 1:
         result /= peak
@@ -423,7 +460,9 @@ def recover_recording(output_dir: Path) -> RecordingResult:
     system_file = output_dir / "system.wav"
     mixed_file = output_dir / "lesson.wav"
     sync_report = output_dir / "sync_report.json"
-    concatenate_chunks(_valid_chunks(output_dir / "chunks" / "microphone"), microphone_file, mic_rate, channels)
+    concatenate_chunks(
+        _valid_chunks(output_dir / "chunks" / "microphone"), microphone_file, mic_rate, channels
+    )
     concatenate_chunks(_valid_chunks(output_dir / "chunks" / "system"), system_file, sys_rate, channels)
     mic_start = session.get("microphone_first_callback")
     sys_start = session.get("system_first_callback")
@@ -450,8 +489,16 @@ def recover_recording(output_dir: Path) -> RecordingResult:
             sys_tempo = max(0.5, min(2.0, sys_duration / desired))
             drift_correction = True
     mix_tracks(
-        microphone_file, system_file, mixed_file, mic_rate, sys_rate, target_rate,
-        mic_delay_ms, sys_delay_ms, mic_tempo, sys_tempo,
+        microphone_file,
+        system_file,
+        mixed_file,
+        mic_rate,
+        sys_rate,
+        target_rate,
+        mic_delay_ms,
+        sys_delay_ms,
+        mic_tempo,
+        sys_tempo,
     )
     report = {
         "microphone_sample_rate": mic_rate,

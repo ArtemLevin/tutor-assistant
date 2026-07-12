@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from uuid import uuid4
@@ -113,8 +113,8 @@ class Lesson(BaseModel):
     lesson_date: date
     topic: str
     status: JobStatus = JobStatus.DRAFT
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_audio_local: str | None = None
     artifacts: ArtifactPaths = Field(default_factory=ArtifactPaths)
     pipeline: PipelineOptions = Field(default_factory=PipelineOptions)
@@ -126,7 +126,7 @@ class Lesson(BaseModel):
         if status != self.status and not force and status not in ALLOWED_TRANSITIONS[self.status]:
             raise InvalidStatusTransition(f"Недопустимый переход: {self.status.value} → {status.value}")
         self.status = status
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         self.error = error
 
     @property
@@ -143,5 +143,5 @@ class Lesson(BaseModel):
         path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
 
     @classmethod
-    def read_json(cls, path: Path) -> "Lesson":
+    def read_json(cls, path: Path) -> Lesson:
         return cls.model_validate_json(path.read_text(encoding="utf-8"))

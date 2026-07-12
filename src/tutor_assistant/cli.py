@@ -16,6 +16,9 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", type=Path, default=Path("config/app.yaml"))
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="Показать входные аудиоустройства")
+    doctor = commands.add_parser("doctor", help="Проверить всё окружение приложения")
+    doctor.add_argument("--json", action="store_true", help="Вывести машиночитаемый JSON")
+    doctor.add_argument("--strict", action="store_true", help="Вернуть код 1 при обязательных ошибках")
     create = commands.add_parser("create", help="Создать занятие")
     create.add_argument("--student", required=True)
     create.add_argument("--subject", required=True)
@@ -43,6 +46,14 @@ def main() -> None:
     if args.command == "devices":
         print(json.dumps([device.__dict__ for device in list_input_devices()], ensure_ascii=False, indent=2))
         return
+    if args.command == "doctor":
+        from .diagnostics import format_diagnostics, report_json, run_diagnostics
+
+        report = run_diagnostics(config, args.config)
+        print(report_json(report) if args.json else format_diagnostics(report))
+        if args.strict and not report.ready:
+            raise SystemExit(1)
+        return
     if args.command == "latex-doctor":
         from .latex import inspect_latex_environment
 
@@ -58,8 +69,10 @@ def main() -> None:
     if args.command == "create":
         students = {item.id: item for item in load_students(config.students_file)}
         lesson = Lesson(
-            student=students[args.student], subject=args.subject,
-            lesson_date=date.fromisoformat(args.date), topic=args.topic,
+            student=students[args.student],
+            subject=args.subject,
+            lesson_date=date.fromisoformat(args.date),
+            topic=args.topic,
         )
         print(pipeline.create(lesson) / "lesson.json")
     elif args.command == "transcribe":
@@ -74,17 +87,24 @@ def main() -> None:
 
         lesson = Lesson.read_json(args.lesson_json)
         result = RemoteLatexService(config.repository, config.latex).compile_lesson(
-            lesson, force=args.force,
+            lesson,
+            force=args.force,
             cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
         )
         result.lesson.write_json(args.lesson_json)
         pipeline.store.save(result.lesson)
-        print(json.dumps({
-            "success": result.compilation.success,
-            "branch": result.branch,
-            "commit": result.commit,
-            "pdf": result.lesson.latex.pdf_path,
-        }, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "success": result.compilation.success,
+                    "branch": result.branch,
+                    "commit": result.commit,
+                    "pdf": result.lesson.latex.pdf_path,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     elif args.command == "scan-latex":
         from .latex import RemoteLatexService
 
@@ -93,12 +113,14 @@ def main() -> None:
         for lesson in pipeline.store.list():
             try:
                 if service.is_ready(lesson):
-                    ready.append({
-                        "lesson_id": lesson.lesson_id,
-                        "student": lesson.student.full_name,
-                        "topic": lesson.topic,
-                        "branch": lesson.publication.branch,
-                    })
+                    ready.append(
+                        {
+                            "lesson_id": lesson.lesson_id,
+                            "student": lesson.student.full_name,
+                            "topic": lesson.topic,
+                            "branch": lesson.publication.branch,
+                        }
+                    )
             except Exception as exc:
                 ready.append({"lesson_id": lesson.lesson_id, "error": str(exc)})
         print(json.dumps(ready, ensure_ascii=False, indent=2))

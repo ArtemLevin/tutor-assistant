@@ -20,7 +20,9 @@ def test_create_draft_pr(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("tutor_assistant.publisher.subprocess.run", fake_run)
     lesson = Lesson(
         student=Student(id="student", full_name="Ученик"),
-        subject="mathematics", lesson_date=date(2026, 7, 12), topic="Метод интервалов",
+        subject="mathematics",
+        lesson_date=date(2026, 7, 12),
+        topic="Метод интервалов",
     )
     url, warnings = create_draft_pr(
         RepositoryConfig(repository_full_name="example/repo"), tmp_path, lesson, "lesson/test"

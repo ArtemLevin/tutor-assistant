@@ -1,6 +1,6 @@
 # Tutor Assistant
 
-Текущая версия: **0.4.0**.
+Текущая версия: **0.4.1**.
 
 Десктоп-сервис для полного цикла подготовки материалов после занятия:
 
@@ -78,10 +78,21 @@
 - автоматическое создание draft PR через GitHub CLI;
 - сохранение URL pull request в `lesson.json` и кнопка открытия PR.
 
+## Что добавлено в 0.4.1
+
+- воспроизводимое окружение и запуск проекта через `uv`;
+- `Makefile` с едиными командами установки, запуска, проверки и сборки;
+- общая команда `doctor` для Python, зависимостей, аудио, Git/GitHub, FFmpeg, TeX Live и Poppler;
+- текстовый и JSON-форматы диагностического отчёта;
+- строгий режим диагностики с ненулевым кодом завершения;
+- отдельная uv-группа зависимостей для разработки;
+- безопасные вспомогательные команды подготовки конфигурации и очистки кешей.
+
 ## Требования
 
 - Windows 10/11;
 - Python 3.11–3.14;
+- `uv`;
 - Git;
 - FFmpeg в `PATH` — рекомендуется;
 - TeX Live с `latexmk` и выбранным LaTeX-движком;
@@ -94,16 +105,39 @@
 ```powershell
 git clone https://github.com/ArtemLevin/tutor-assistant.git
 cd tutor-assistant
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -e ".[all]"
+uv sync --all-extras
+uv run python scripts\bootstrap.py
 ```
 
-Для разработки:
+`uv` создаёт `.venv`, фиксирует разрешённые версии в `uv.lock` и устанавливает GUI,
+транскрибацию и инструменты разработки. Если доступен GNU Make, те же действия выполняются короче:
 
 ```powershell
-pip install -e ".[all,dev]"
+make init
+```
+
+В Windows `make` можно запускать из Git Bash/MSYS2 или установить через привычный пакетный менеджер.
+Все цели Make используют `uv`; активация виртуального окружения вручную не требуется.
+
+Основные команды:
+
+```powershell
+make help
+make run
+make setup
+make doctor
+make check
+make build
+```
+
+Прямые uv-эквиваленты работают и без Make:
+
+```powershell
+uv run --all-extras tutor-assistant-gui config\app.yaml
+uv run --all-extras tutor-assistant --config config\app.yaml doctor
+uv run --all-extras pytest -q
+uv run --all-extras ruff check .
+uv build
 ```
 
 Проверьте FFmpeg:
@@ -173,14 +207,20 @@ latex:
 ## Запуск GUI
 
 ```powershell
-tutor-assistant-gui
+make run
+```
+
+Прямой запуск через uv:
+
+```powershell
+uv run --all-extras tutor-assistant-gui config\app.yaml
 ```
 
 При первом запуске открывается мастер настройки. Он проверяет рабочие каталоги, аудиоустройства,
 Git, FFmpeg, Whisper, TeX Live, Poppler и GitHub CLI. Повторный запуск мастера:
 
 ```powershell
-tutor-assistant-gui --setup
+make setup
 ```
 
 или:
@@ -417,6 +457,22 @@ tutor-assistant scan-latex
 
 ## CLI
 
+Полная диагностика в удобном для чтения виде:
+
+```powershell
+make doctor
+```
+
+Для CI или автоматизации:
+
+```powershell
+make doctor-json
+make doctor-strict
+```
+
+`doctor-strict` возвращает код `1`, когда обязательный компонент отсутствует. Обычный `doctor`
+показывает тот же отчёт и позволяет продолжить настройку.
+
 Показать аудиоустройства:
 
 ```powershell
@@ -468,9 +524,16 @@ draft
 ## Проверка проекта
 
 ```powershell
-python -m compileall src tests scripts
-pytest
-ruff check .
+make check
+```
+
+Цель проверяет `uv.lock`, Ruff, форматирование, тесты и компиляцию Python-модулей. Отдельные этапы:
+
+```powershell
+make lock-check
+make lint
+make format-check
+make test
 ```
 
 Проверить конкретный `lesson.json`:
@@ -479,7 +542,7 @@ ruff check .
 python scripts\check_job.py path\to\lesson.json
 ```
 
-## Ограничения версии 0.4.0
+## Ограничения версии 0.4.1
 
 - loopback должен быть доступен Windows как входное устройство;
 - коррекция дрейфа автоматически применяется для расхождений до двух секунд; более крупные

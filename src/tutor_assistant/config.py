@@ -67,7 +67,7 @@ class AppConfig(BaseModel):
     latex: LatexConfig = Field(default_factory=LatexConfig)
 
     @classmethod
-    def load(cls, path: Path) -> "AppConfig":
+    def load(cls, path: Path) -> AppConfig:
         if not path.exists():
             return cls()
         return cls.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})

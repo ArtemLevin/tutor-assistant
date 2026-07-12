@@ -24,13 +24,12 @@ def test_dual_transcription_merges_speakers(monkeypatch, tmp_path) -> None:
         text = "Объяснение" if speaker == "Преподаватель" else "Я не понимаю"
         start = 1.0 if speaker == "Преподаватель" else 2.0
         return [Segment(start + offset_seconds, start + offset_seconds + 0.5, text, -0.1, 0.0, speaker)], {
-            "speaker": speaker, "source_audio": str(audio)
+            "speaker": speaker,
+            "source_audio": str(audio),
         }
 
     monkeypatch.setattr(transcriber, "_recognize", recognize)
-    result = transcriber.transcribe_dual(
-        tmp_path / "mic.wav", tmp_path / "system.wav", tmp_path / "out"
-    )
+    result = transcriber.transcribe_dual(tmp_path / "mic.wav", tmp_path / "system.wav", tmp_path / "out")
     segments = json.loads(result.segments.read_text(encoding="utf-8"))
     signals = json.loads(result.signals.read_text(encoding="utf-8"))
     assert [item["speaker"] for item in segments] == ["Преподаватель", "Ученик"]

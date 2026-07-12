@@ -5,8 +5,17 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QVBoxLayout, QWizard, QWizardPage,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWizard,
+    QWizardPage,
 )
 
 from ..config import AppConfig
@@ -95,11 +104,15 @@ class AudioPage(QWizardPage):
     def _test(self, config: AppConfig) -> None:
         try:
             mic = test_input_device(
-                int(self.mic.currentData()), 2, None,
+                int(self.mic.currentData()),
+                2,
+                None,
                 config.recording.channels,
             )
             system = test_input_device(
-                int(self.loopback.currentData()), 2, None,
+                int(self.loopback.currentData()),
+                2,
+                None,
                 config.recording.channels,
             )
             messages = [f"Микрофон RMS: {mic.rms:.4f}", f"Системный звук RMS: {system.rms:.4f}"]
@@ -139,9 +152,9 @@ class DiagnosticsPage(QWizardPage):
         rows.append(("pdftoppm", bool(latex.pdftoppm)))
         rows.append(("GitHub CLI", bool(shutil.which("gh"))))
         if shutil.which("gh"):
-            authenticated = subprocess.run(
-                ["gh", "auth", "status"], capture_output=True, timeout=15
-            ).returncode == 0
+            authenticated = (
+                subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=15).returncode == 0
+            )
             rows.append(("GitHub authentication", authenticated))
         text = "<br>".join(f"{'✓' if ok else '⚠'} {name}" for name, ok in rows)
         if latex.messages:

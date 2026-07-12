@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import sys
 import traceback
 from datetime import date
@@ -11,18 +11,41 @@ from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QFileDialog, QFormLayout, QGroupBox,
-    QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QTabWidget, QTableWidget,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QTableWidget,
     QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ..config import AppConfig, load_students
 from ..domain import JobStatus, Lesson
 from ..pipeline import LessonPipeline
 from ..recording import (
-    DualRecorder, find_recoverable_recordings, list_input_devices, recover_recording, test_input_device,
+    DualRecorder,
+    find_recoverable_recordings,
+    list_input_devices,
+    recover_recording,
+    test_input_device,
 )
 
 
@@ -75,9 +98,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._offer_recovery)
         QTimer.singleShot(100, self._offer_unfinished_job)
         QTimer.singleShot(
-            0, lambda: self.auto_latex.setChecked(
-                self.config.latex.enabled and self.config.latex.auto_monitor
-            )
+            0,
+            lambda: self.auto_latex.setChecked(self.config.latex.enabled and self.config.latex.auto_monitor),
         )
 
     def _build(self) -> None:
@@ -115,7 +137,8 @@ class MainWindow(QMainWindow):
 
     def _offer_unfinished_job(self) -> None:
         active = [
-            lesson for lesson in self.pipeline.store.list()
+            lesson
+            for lesson in self.pipeline.store.list()
             if lesson.status not in {JobStatus.COMPLETED, JobStatus.FAILED}
         ]
         if not active:
@@ -153,8 +176,11 @@ class MainWindow(QMainWindow):
         self.approve.setEnabled(lesson.status == JobStatus.REVIEW_REQUIRED)
         self.publish_button.setEnabled(lesson.status == JobStatus.READY)
         if lesson.status in {
-            JobStatus.PUBLISHED, JobStatus.GENERATED_TEX, JobStatus.COMPILING_PDF,
-            JobStatus.COMPILE_FAILED, JobStatus.PDF_REVIEW_REQUIRED,
+            JobStatus.PUBLISHED,
+            JobStatus.GENERATED_TEX,
+            JobStatus.COMPILING_PDF,
+            JobStatus.COMPILE_FAILED,
+            JobStatus.PDF_REVIEW_REQUIRED,
         }:
             self.latex_monitor_status.setText(f"Восстановлено занятие: {lesson.status.value}")
         self.open_pr_button.setEnabled(bool(lesson.publication and lesson.publication.pr_url))
@@ -242,13 +268,14 @@ class MainWindow(QMainWindow):
     def _transcript_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel(
-            "Проверьте числа, формулы и спорные фрагменты. После подтверждения текст попадёт в репозиторий ученика."
-        ))
-        self.segment_table = QTableWidget(0, 5)
-        self.segment_table.setHorizontalHeaderLabels(
-            ["Начало", "Конец", "Говорящий", "Текст", "Уверенность"]
+        layout.addWidget(
+            QLabel(
+                "Проверьте числа, формулы и спорные фрагменты. "
+                "После подтверждения текст попадёт в репозиторий ученика."
+            )
         )
+        self.segment_table = QTableWidget(0, 5)
+        self.segment_table.setHorizontalHeaderLabels(["Начало", "Конец", "Говорящий", "Текст", "Уверенность"])
         self.segment_table.horizontalHeader().setStretchLastSection(False)
         self.segment_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.segment_table.setAlternatingRowColors(True)
@@ -466,7 +493,9 @@ class MainWindow(QMainWindow):
             start = float(segment["start"])
             end = float(segment["end"])
             confidence = segment.get("avg_logprob")
-            confidence_text = "—" if confidence is None else f"{min(100, max(0, round((1 + float(confidence)) * 100)))}%"
+            confidence_text = (
+                "—" if confidence is None else f"{min(100, max(0, round((1 + float(confidence)) * 100)))}%"
+            )
             start_item = QTableWidgetItem(self._format_time(start))
             start_item.setData(256, start)
             end_item = QTableWidgetItem(self._format_time(end))
@@ -496,12 +525,14 @@ class MainWindow(QMainWindow):
             return
         rows = []
         for row in range(self.segment_table.rowCount()):
-            rows.append({
-                "start": self.segment_table.item(row, 0).data(256),
-                "end": self.segment_table.item(row, 1).data(256),
-                "speaker": self.segment_table.item(row, 2).text(),
-                "text": self.segment_table.item(row, 3).text(),
-            })
+            rows.append(
+                {
+                    "start": self.segment_table.item(row, 0).data(256),
+                    "end": self.segment_table.item(row, 1).data(256),
+                    "speaker": self.segment_table.item(row, 2).text(),
+                    "text": self.segment_table.item(row, 3).text(),
+                }
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -516,7 +547,7 @@ class MainWindow(QMainWindow):
         except (OSError, json.JSONDecodeError):
             return
         self._loading_segments = True
-        for row, item in enumerate(rows[:self.segment_table.rowCount()]):
+        for row, item in enumerate(rows[: self.segment_table.rowCount()]):
             self.segment_table.item(row, 2).setText(str(item.get("speaker", "—")))
             self.segment_table.item(row, 3).setText(str(item.get("text", "")))
         self._loading_segments = False
@@ -547,8 +578,7 @@ class MainWindow(QMainWindow):
         segment_texts = [
             (
                 f"[{self.segment_table.item(row, 2).text()}] "
-                if self.segment_table.item(row, 2)
-                and self.segment_table.item(row, 2).text() not in {"", "—"}
+                if self.segment_table.item(row, 2) and self.segment_table.item(row, 2).text() not in {"", "—"}
                 else ""
             )
             + self.segment_table.item(row, 3).text().strip()
@@ -648,9 +678,7 @@ class MainWindow(QMainWindow):
     def toggle_latex_monitor(self, enabled: bool) -> None:
         if enabled:
             self.latex_poll_timer.start()
-            self.latex_monitor_status.setText(
-                f"Проверка каждые {self.config.latex.poll_seconds} секунд"
-            )
+            self.latex_monitor_status.setText(f"Проверка каждые {self.config.latex.poll_seconds} секунд")
             self.scan_remote_latex()
         else:
             self.latex_poll_timer.stop()

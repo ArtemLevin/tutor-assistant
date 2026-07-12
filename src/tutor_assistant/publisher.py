@@ -38,17 +38,26 @@ def create_draft_pr(
         return None, warnings
     if shutil.which("gh") is None:
         return None, ["GitHub CLI не найден: draft PR нужно создать вручную"]
-    auth = subprocess.run(
-        ["gh", "auth", "status"], cwd=checkout, capture_output=True, text=True, timeout=30
-    )
+    auth = subprocess.run(["gh", "auth", "status"], cwd=checkout, capture_output=True, text=True, timeout=30)
     if auth.returncode:
         return None, ["GitHub CLI не авторизован: выполните gh auth login"]
     existing = subprocess.run(
         [
-            "gh", "pr", "view", branch, "--repo", config.repository_full_name,
-            "--json", "url", "--jq", ".url",
+            "gh",
+            "pr",
+            "view",
+            branch,
+            "--repo",
+            config.repository_full_name,
+            "--json",
+            "url",
+            "--jq",
+            ".url",
         ],
-        cwd=checkout, capture_output=True, text=True, timeout=30,
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if existing.returncode == 0 and existing.stdout.strip():
         return existing.stdout.strip(), warnings
@@ -73,11 +82,25 @@ PR создан Tutor Assistant и остаётся draft до завершен�
 """
     result = subprocess.run(
         [
-            "gh", "pr", "create", "--draft", "--repo", config.repository_full_name,
-            "--base", config.pr_base_branch, "--head", branch,
-            "--title", title, "--body", body,
+            "gh",
+            "pr",
+            "create",
+            "--draft",
+            "--repo",
+            config.repository_full_name,
+            "--base",
+            config.pr_base_branch,
+            "--head",
+            branch,
+            "--title",
+            title,
+            "--body",
+            body,
         ],
-        cwd=checkout, capture_output=True, text=True, timeout=60,
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     if result.returncode:
         warnings.append("Не удалось создать draft PR: " + (result.stderr.strip() or result.stdout.strip()))
@@ -129,7 +152,12 @@ class LessonPublisher:
                 worktree_path = Path(tempfile.mkdtemp(prefix="lesson-", dir=root))
                 worktree_path.rmdir()
                 run_git(
-                    repo, "worktree", "add", "-b", branch, str(worktree_path),
+                    repo,
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    str(worktree_path),
                     f"{self.config.remote}/{self.config.base_branch}",
                 )
                 checkout = worktree_path
@@ -142,7 +170,9 @@ class LessonPublisher:
             target = self._copy_job(lesson, checkout)
             run_git(checkout, "add", str(target.relative_to(checkout)))
             run_git(
-                checkout, "commit", "-m",
+                checkout,
+                "commit",
+                "-m",
                 f"Add lesson job for {lesson.student.full_name} ({lesson.lesson_date})",
             )
             commit = run_git(checkout, "rev-parse", "HEAD")

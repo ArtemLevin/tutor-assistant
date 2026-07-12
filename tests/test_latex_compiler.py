@@ -5,7 +5,6 @@ from tutor_assistant.latex import compiler as compiler_module
 from tutor_assistant.latex.compiler import LatexCompiler
 from tutor_assistant.latex.models import EnvironmentReport
 
-
 DOCUMENT = r"\documentclass{article}\begin{document}OK\end{document}"
 
 

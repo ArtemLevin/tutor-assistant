@@ -7,15 +7,14 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
 from ..config import LatexConfig
 from .diagnostics import inspect_latex_environment
-from .models import CompilationResult, ValidationIssue
+from .models import CompilationResult
 from .validator import validate_tex
-
 
 ERROR_LINE = re.compile(r"(?:^|\n)([^\n:]+\.tex):(\d+):\s*(.+)")
 LATEX_ERROR = re.compile(r"(?:^|\n)!\s*(.+)")
@@ -23,9 +22,7 @@ LATEX_ERROR = re.compile(r"(?:^|\n)!\s*(.+)")
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False
-        )
+        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
     else:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -37,8 +34,12 @@ def _run_with_timeout(
     command: list[str], cwd: Path, timeout: int, environment: dict[str, str] | None = None
 ) -> tuple[int, str, bool]:
     kwargs: dict = {
-        "cwd": cwd, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
-        "text": True, "encoding": "utf-8", "errors": "replace",
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
         "env": environment,
     }
     if os.name == "nt":
@@ -100,7 +101,9 @@ def _render_preview(pdf: Path, destination: Path, dpi: int) -> tuple[list[Path],
     prefix = destination / "page"
     result = subprocess.run(
         [command, "-png", "-r", str(dpi), str(pdf), str(prefix)],
-        capture_output=True, text=True, timeout=180,
+        capture_output=True,
+        text=True,
+        timeout=180,
     )
     if result.returncode:
         return [], ["Не удалось отрисовать PNG-предпросмотр: " + result.stderr.strip()]
@@ -142,8 +145,14 @@ class LatexCompiler:
         mode = {"pdflatex": "-pdf", "xelatex": "-xelatex", "lualatex": "-lualatex"}[engine]
         engine_option = f"-{engine}={engine} -no-shell-escape -recorder %O %S"
         return [
-            self.config.latexmk_command, mode, "-interaction=nonstopmode", "-halt-on-error",
-            "-file-line-error", f"-outdir={output_dir}", engine_option, tex_name,
+            self.config.latexmk_command,
+            mode,
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-file-line-error",
+            f"-outdir={output_dir}",
+            engine_option,
+            tex_name,
         ]
 
     def compile(
@@ -170,8 +179,14 @@ class LatexCompiler:
             )
             log_file.write_text(log, encoding="utf-8")
             result = CompilationResult(
-                False, tex_file, None, log_file, report_file, perf_counter() - started,
-                errors=[issue.message for issue in issues], validation_issues=issues,
+                False,
+                tex_file,
+                None,
+                log_file,
+                report_file,
+                perf_counter() - started,
+                errors=[issue.message for issue in issues],
+                validation_issues=issues,
             )
             self._finish(result, attempt, log)
             return result
@@ -181,7 +196,12 @@ class LatexCompiler:
             log = "\n".join(environment.messages)
             log_file.write_text(log, encoding="utf-8")
             result = CompilationResult(
-                False, tex_file, None, log_file, report_file, perf_counter() - started,
+                False,
+                tex_file,
+                None,
+                log_file,
+                report_file,
+                perf_counter() - started,
                 errors=environment.messages,
             )
             self._finish(result, attempt, log)
@@ -190,18 +210,21 @@ class LatexCompiler:
         with tempfile.TemporaryDirectory(prefix="tutor-latex-") as raw:
             working = Path(raw) / "source"
             shutil.copytree(
-                tex_file.parent, working,
+                tex_file.parent,
+                working,
                 ignore=shutil.ignore_patterns("build", "preview", "reports", ".git"),
             )
             build = working / ".tutor-build"
             build.mkdir()
             command = self._command(tex_file.name, Path(".tutor-build"))
             environment = os.environ.copy()
-            environment.update({
-                "openin_any": "p",
-                "openout_any": "p",
-                "TEXMFOUTPUT": str(build),
-            })
+            environment.update(
+                {
+                    "openin_any": "p",
+                    "openout_any": "p",
+                    "TEXMFOUTPUT": str(build),
+                }
+            )
             returncode, log, timed_out = _run_with_timeout(
                 command, working, self.config.timeout_seconds, environment
             )
@@ -227,9 +250,18 @@ class LatexCompiler:
                     )
                     warnings.extend(render_warnings)
             result = CompilationResult(
-                success, tex_file, output_pdf, log_file, report_file,
-                round(perf_counter() - started, 3), pages, size, warnings, errors,
-                timed_out=timed_out, preview_files=previews,
+                success,
+                tex_file,
+                output_pdf,
+                log_file,
+                report_file,
+                round(perf_counter() - started, 3),
+                pages,
+                size,
+                warnings,
+                errors,
+                timed_out=timed_out,
+                preview_files=previews,
             )
             self._finish(result, attempt, log)
             return result
@@ -243,11 +275,13 @@ class LatexCompiler:
             )
             result.fix_request_file = request
         payload = result.to_dict()
-        payload.update({
-            "attempt": attempt,
-            "max_attempts": self.config.max_attempts,
-            "engine": self.config.engine,
-            "shell_escape": False,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        payload.update(
+            {
+                "attempt": attempt,
+                "max_attempts": self.config.max_attempts,
+                "engine": self.config.engine,
+                "shell_escape": False,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
         result.report_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

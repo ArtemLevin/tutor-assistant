@@ -36,10 +36,7 @@ class LessonPipeline:
             microphone = recording_dir / "microphone.wav"
             system = recording_dir / "system.wav"
             sync_report = recording_dir / "sync_report.json"
-            if (
-                self.config.recording.dual_channel_transcription
-                and microphone.is_file() and system.is_file()
-            ):
+            if self.config.recording.dual_channel_transcription and microphone.is_file() and system.is_file():
                 sync = json.loads(sync_report.read_text(encoding="utf-8")) if sync_report.exists() else {}
                 result = transcriber.transcribe_dual(
                     microphone,
@@ -61,8 +58,12 @@ class LessonPipeline:
                 segments_json=str(result.segments.resolve()),
                 student_signals=str(result.signals.resolve()),
                 transcription_manifest=str(result.manifest.resolve()),
-                teacher_transcript=str(result.teacher_transcript.resolve()) if result.teacher_transcript else None,
-                student_transcript=str(result.student_transcript.resolve()) if result.student_transcript else None,
+                teacher_transcript=str(result.teacher_transcript.resolve())
+                if result.teacher_transcript
+                else None,
+                student_transcript=str(result.student_transcript.resolve())
+                if result.student_transcript
+                else None,
             )
             lesson.transition(JobStatus.REVIEW_REQUIRED)
         except Exception as exc:
@@ -87,8 +88,11 @@ class LessonPipeline:
     def publish(self, lesson: Lesson) -> PublicationResult:
         target = LessonPublisher(self.config.repository).publish(lesson, self.lesson_dir(lesson))
         lesson.publication = PublicationInfo(
-            branch=target.branch, repository_path=target.repository_path, commit=target.commit,
-            pr_url=target.pr_url, warnings=list(target.warnings),
+            branch=target.branch,
+            repository_path=target.repository_path,
+            commit=target.commit,
+            pr_url=target.pr_url,
+            warnings=list(target.warnings),
         )
         lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)

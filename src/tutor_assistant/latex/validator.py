@@ -5,7 +5,6 @@ from pathlib import Path
 
 from .models import ValidationIssue
 
-
 FORBIDDEN_PATTERNS = {
     "shell-command": re.compile(r"\\(?:immediate\s*)?write18\b", re.I),
     "shell-package": re.compile(r"\\usepackage(?:\[[^]]*])?\{(?:shellesc|catchfile)\}", re.I),
@@ -37,19 +36,24 @@ def validate_tex(tex_file: Path) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     for code, pattern in FORBIDDEN_PATTERNS.items():
         for match in pattern.finditer(text):
-            issues.append(ValidationIssue(
-                code, f"Запрещённая команда LaTeX: {match.group(0)}", _line_number(text, match.start())
-            ))
+            issues.append(
+                ValidationIssue(
+                    code, f"Запрещённая команда LaTeX: {match.group(0)}", _line_number(text, match.start())
+                )
+            )
     for match in PATH_COMMAND.finditer(text):
         raw_targets = [item.strip() for item in match.group(1).split(",")]
         for target in raw_targets:
             normalized = target.replace("\\", "/")
             windows_absolute = bool(re.match(r"^[a-zA-Z]:/", normalized))
             if normalized.startswith("/") or windows_absolute or ".." in Path(normalized).parts:
-                issues.append(ValidationIssue(
-                    "unsafe-path", f"Ссылка выходит за пределы каталога пособия: {target}",
-                    _line_number(text, match.start()),
-                ))
+                issues.append(
+                    ValidationIssue(
+                        "unsafe-path",
+                        f"Ссылка выходит за пределы каталога пособия: {target}",
+                        _line_number(text, match.start()),
+                    )
+                )
     if "\\begin{document}" not in text or "\\end{document}" not in text:
         issues.append(ValidationIssue("document-boundary", "Не найдены обе границы document"))
     return issues
