@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -44,6 +45,7 @@ from ..config import AppConfig, load_students
 from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
 from ..pipeline import LessonPipeline
+from ..quick_start import evaluate_readiness, selected_profile
 from ..recording import (
     DualRecorder,
     SystemAudioSource,
@@ -88,6 +90,9 @@ class MainWindow(QMainWindow):
         self.preflight_result = None
         self._recording_stop_started = False
         self._active_audio_warning = ""
+        self._quick_start_pending = False
+        self._quick_auto_transcribe_active = False
+        self._quick_countdown_remaining = 0
         self.recording_seconds = 0
         self.workers: list[Worker] = []
         self._loading_segments = False
@@ -97,6 +102,9 @@ class MainWindow(QMainWindow):
         self.play_stop_timer = QTimer(self)
         self.play_stop_timer.setSingleShot(True)
         self.play_stop_timer.timeout.connect(self.player.pause)
+        self.quick_countdown_timer = QTimer(self)
+        self.quick_countdown_timer.setInterval(1000)
+        self.quick_countdown_timer.timeout.connect(self._quick_countdown_tick)
         self.latex_poll_timer = QTimer(self)
         self.latex_poll_timer.setInterval(self.config.latex.poll_seconds * 1000)
         self.latex_poll_timer.timeout.connect(self.scan_remote_latex)
@@ -156,6 +164,12 @@ class MainWindow(QMainWindow):
         logs_button.setToolTip("Открыть каталог с журналами приложения")
         logs_button.clicked.connect(self._open_logs)
         header_layout.addWidget(logs_button, 0, Qt.AlignVCenter)
+        self.quick_mode_button = set_button_kind(QPushButton("Быстрый урок"), "primary")
+        self.quick_mode_button.clicked.connect(lambda: self._set_mode("quick"))
+        header_layout.addWidget(self.quick_mode_button, 0, Qt.AlignVCenter)
+        self.detailed_mode_button = set_button_kind(QPushButton("Расширенный режим"), "ghost")
+        self.detailed_mode_button.clicked.connect(lambda: self._set_mode("detailed"))
+        header_layout.addWidget(self.detailed_mode_button, 0, Qt.AlignVCenter)
         shell_layout.addWidget(header)
 
         self.tabs = QTabWidget()
@@ -165,10 +179,15 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._transcript_tab(), "02  Транскрипт")
         self.tabs.addTab(self._publish_tab(), "03  Публикация")
         self.tabs.addTab(self._latex_tab(), "04  PDF")
-        shell_layout.addWidget(self.tabs, 1)
+        self.content_stack = QStackedWidget()
+        self.quick_page = self._quick_start_page()
+        self.content_stack.addWidget(self.quick_page)
+        self.content_stack.addWidget(self.tabs)
+        shell_layout.addWidget(self.content_stack, 1)
         self.setCentralWidget(shell)
         self.statusBar().setSizeGripEnabled(False)
         self._set_status("Готово к работе")
+        self._set_mode("quick" if self.config.quick_start.start_in_quick_mode else "detailed")
 
     @staticmethod
     def _page_heading(title: str, description: str) -> QWidget:
@@ -190,7 +209,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _go_to(self, index: int) -> None:
+        self._set_mode("detailed")
         self.tabs.setCurrentIndex(index)
+
+    def _set_mode(self, mode: str) -> None:
+        quick = mode == "quick"
+        self.content_stack.setCurrentIndex(0 if quick else 1)
+        set_button_kind(self.quick_mode_button, "primary" if quick else "ghost")
+        set_button_kind(self.detailed_mode_button, "ghost" if quick else "primary")
+        refresh_style(self.quick_mode_button)
+        refresh_style(self.detailed_mode_button)
+        if quick:
+            self._refresh_quick_readiness()
 
     def _open_logs(self) -> None:
         directory = log_directory(self.config.workspace)
@@ -305,6 +335,199 @@ class MainWindow(QMainWindow):
         }:
             self._go_to(3)
         self._set_status(f"Занятие восстановлено · {lesson.student.full_name}")
+
+    def _quick_start_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(36, 24, 36, 24)
+        layout.setSpacing(18)
+        layout.addWidget(
+            self._page_heading(
+                "Быстрый урок",
+                "Сохранённый профиль проверит аудио, запустит запись и передаст её в транскрибацию.",
+            )
+        )
+
+        card = QGroupBox("Один следующий шаг")
+        card.setMaximumWidth(820)
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(16)
+        form = QFormLayout()
+        form.setHorizontalSpacing(20)
+        form.setVerticalSpacing(12)
+        self.quick_profile = QComboBox()
+        for profile in self.config.quick_start.profiles:
+            self.quick_profile.addItem(profile.name, profile.id)
+        profile_index = self.quick_profile.findData(self.config.quick_start.default_profile_id)
+        if profile_index >= 0:
+            self.quick_profile.setCurrentIndex(profile_index)
+        self.quick_student = QComboBox()
+        for item in self.students:
+            self.quick_student.addItem(item.full_name, item.id)
+        profile = selected_profile(self.config, self.quick_profile.currentData())
+        student_id = self.config.quick_start.last_student_id or profile.student_id
+        student_index = self.quick_student.findData(student_id)
+        if student_index >= 0:
+            self.quick_student.setCurrentIndex(student_index)
+        self.quick_subject = QComboBox()
+        self.quick_subject.addItems(["mathematics", "physics", "chemistry"])
+        subject = self.config.quick_start.last_subject or profile.subject
+        subject_index = self.quick_subject.findText(subject)
+        if subject_index >= 0:
+            self.quick_subject.setCurrentIndex(subject_index)
+        self.quick_topic = QLineEdit(self.config.quick_start.last_topic)
+        self.quick_topic.setPlaceholderText("Тема сегодняшнего занятия")
+        form.addRow("Профиль", self.quick_profile)
+        form.addRow("Ученик", self.quick_student)
+        form.addRow("Предмет", self.quick_subject)
+        form.addRow("Тема", self.quick_topic)
+        card_layout.addLayout(form)
+
+        readiness = QFrame()
+        readiness.setObjectName("statusPanel")
+        readiness_layout = QVBoxLayout(readiness)
+        readiness_layout.setContentsMargins(16, 13, 16, 13)
+        readiness_title = QLabel("ГОТОВНОСТЬ К ЗАПУСКУ")
+        readiness_title.setObjectName("eyebrow")
+        readiness_layout.addWidget(readiness_title)
+        self.quick_readiness_labels: dict[str, QLabel] = {}
+        for code in ("student", "topic", "microphone", "system"):
+            label = QLabel()
+            label.setWordWrap(True)
+            readiness_layout.addWidget(label)
+            self.quick_readiness_labels[code] = label
+        card_layout.addWidget(readiness)
+
+        self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
+        self.quick_start_button.setObjectName("quickStartButton")
+        self.quick_start_button.setMinimumHeight(58)
+        self.quick_start_button.setShortcut(QKeySequence("F9"))
+        self.quick_start_button.setToolTip("Начать или завершить быстрый урок · F9")
+        self.quick_start_button.clicked.connect(self._quick_start_clicked)
+        card_layout.addWidget(self.quick_start_button)
+        hint = QLabel(
+            "Перед записью выполняется короткий тест обоих каналов. Отсчёт можно отменить повторным нажатием."
+        )
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        card_layout.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(card)
+        row.addStretch(1)
+        layout.addLayout(row, 1)
+        self.quick_profile.currentIndexChanged.connect(self._apply_quick_profile)
+        self.quick_student.currentIndexChanged.connect(self._refresh_quick_readiness)
+        self.quick_subject.currentIndexChanged.connect(self._refresh_quick_readiness)
+        self.quick_topic.textChanged.connect(self._refresh_quick_readiness)
+        self._refresh_quick_readiness()
+        return page
+
+    def _apply_quick_profile(self) -> None:
+        profile = selected_profile(self.config, self.quick_profile.currentData())
+        if profile.student_id:
+            index = self.quick_student.findData(profile.student_id)
+            if index >= 0:
+                self.quick_student.setCurrentIndex(index)
+        index = self.quick_subject.findText(profile.subject)
+        if index >= 0:
+            self.quick_subject.setCurrentIndex(index)
+        self._refresh_quick_readiness()
+
+    def _refresh_quick_readiness(self) -> None:
+        if not hasattr(self, "quick_readiness_labels"):
+            return
+        readiness = evaluate_readiness(
+            self.config,
+            self.students,
+            self.devices,
+            self.system_sources,
+            self.quick_student.currentData(),
+            self.quick_topic.text(),
+        )
+        for item in readiness.items:
+            mark = "✓" if item.ready else "!"
+            self.quick_readiness_labels[item.code].setText(f"{mark}  {item.label}: {item.detail}")
+            self.quick_readiness_labels[item.code].setProperty("tone", "ready" if item.ready else "blocked")
+            refresh_style(self.quick_readiness_labels[item.code])
+        if not self.quick_countdown_timer.isActive() and not (self.recorder and self.recorder.active):
+            self.quick_start_button.setText("Начать занятие")
+            self.quick_start_button.setEnabled(readiness.ready)
+
+    def _sync_quick_to_lesson(self) -> None:
+        student_index = self.student.findData(self.quick_student.currentData())
+        if student_index >= 0:
+            self.student.setCurrentIndex(student_index)
+        subject_index = self.subject.findText(self.quick_subject.currentText())
+        if subject_index >= 0:
+            self.subject.setCurrentIndex(subject_index)
+        self.topic.setText(self.quick_topic.text().strip())
+        self.lesson_date.setDate(QDate.currentDate())
+        self.config.quick_start.default_profile_id = str(self.quick_profile.currentData())
+        self.config.quick_start.last_student_id = self.quick_student.currentData()
+        self.config.quick_start.last_subject = self.quick_subject.currentText()
+        self.config.quick_start.last_topic = self.quick_topic.text().strip()
+        self.config.save(self.config_path)
+
+    def _quick_start_clicked(self) -> None:
+        if self.quick_countdown_timer.isActive():
+            self._cancel_quick_countdown()
+            return
+        if self.recorder and self.recorder.active:
+            self.quick_start_button.setEnabled(False)
+            self.stop_recording()
+            return
+        readiness = evaluate_readiness(
+            self.config,
+            self.students,
+            self.devices,
+            self.system_sources,
+            self.quick_student.currentData(),
+            self.quick_topic.text(),
+        )
+        if not readiness.ready:
+            QMessageBox.warning(
+                self,
+                "Быстрый запуск",
+                "\n".join(item.detail for item in readiness.blockers),
+            )
+            return
+        self._sync_quick_to_lesson()
+        profile = selected_profile(self.config, self.quick_profile.currentData())
+        self._quick_auto_transcribe_active = profile.auto_transcribe
+        if self.preflight_passed:
+            self._start_quick_countdown(profile.countdown_seconds)
+            return
+        self._quick_start_pending = True
+        self.quick_start_button.setEnabled(False)
+        self.quick_start_button.setText("Проверяю аудио…")
+        self._begin_preflight(show_intro=False)
+
+    def _start_quick_countdown(self, seconds: int) -> None:
+        self._quick_start_pending = False
+        self._quick_countdown_remaining = max(1, seconds)
+        self.quick_start_button.setEnabled(True)
+        self.quick_start_button.setText(f"Отменить запуск · {self._quick_countdown_remaining}")
+        self._set_status("Аудио готово · запуск через несколько секунд", "working")
+        self.quick_countdown_timer.start()
+
+    def _quick_countdown_tick(self) -> None:
+        self._quick_countdown_remaining -= 1
+        if self._quick_countdown_remaining > 0:
+            self.quick_start_button.setText(f"Отменить запуск · {self._quick_countdown_remaining}")
+            return
+        self.quick_countdown_timer.stop()
+        self.quick_start_button.setText("Завершить занятие")
+        self.quick_start_button.setEnabled(True)
+        self.start_recording()
+
+    def _cancel_quick_countdown(self) -> None:
+        self.quick_countdown_timer.stop()
+        self._quick_start_pending = False
+        self._quick_auto_transcribe_active = False
+        self._set_status("Быстрый запуск отменён", "warning")
+        self._refresh_quick_readiness()
 
     def _lesson_tab(self) -> QWidget:
         page = QWidget()
@@ -466,7 +689,10 @@ class MainWindow(QMainWindow):
             self.config.recording.system_device_id = source.device_id
             self.config.recording.system_backend = source.backend
             self.config.recording.loopback_device = source.legacy_index
+        self.preflight_passed = False
+        self.preflight_result = None
         self.config.save(self.config_path)
+        self._refresh_quick_readiness()
 
     def _transcript_tab(self) -> QWidget:
         page = QWidget()
@@ -701,6 +927,9 @@ class MainWindow(QMainWindow):
             self.timer.start(1000)
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+            if self._quick_auto_transcribe_active:
+                self.quick_start_button.setText("Завершить занятие")
+                self.quick_start_button.setEnabled(True)
             self.recording_state_label.setText("●  ИДЁТ ЗАПИСЬ")
             self.recording_state_label.setProperty("active", True)
             refresh_style(self.recording_state_label)
@@ -713,6 +942,8 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             logging.exception("Не удалось начать запись")
+            self._quick_auto_transcribe_active = False
+            self._refresh_quick_readiness()
             QMessageBox.critical(self, "Ошибка записи", str(exc))
 
     def stop_recording(self) -> None:
@@ -744,6 +975,8 @@ class MainWindow(QMainWindow):
         self.lesson.transition(JobStatus.RECORDED)
         self.pipeline.store.save(self.lesson)
         self.start_button.setEnabled(True)
+        self.quick_start_button.setEnabled(True)
+        self.quick_start_button.setText("Начать занятие")
         self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
         self.recording_state_label.setProperty("active", False)
         refresh_style(self.recording_state_label)
@@ -759,12 +992,21 @@ class MainWindow(QMainWindow):
         logging.info("Запись сохранена: %s; quality_ready=%s", result.mixed_file, quality.get("ready"))
         self._recording_stop_started = False
         self.recorder = None
+        if self._quick_auto_transcribe_active:
+            self._quick_auto_transcribe_active = False
+            self.quick_start_button.setEnabled(False)
+            self.quick_start_button.setText("Запускаю транскрибацию…")
+            QTimer.singleShot(0, self.transcribe)
+        else:
+            self._refresh_quick_readiness()
 
     def _recording_stop_failed(self, details: str) -> None:
         logging.error(details)
         self._recording_stop_started = False
         self.recorder = None
         self.start_button.setEnabled(True)
+        self._quick_auto_transcribe_active = False
+        self._refresh_quick_readiness()
         self.stop_button.setEnabled(False)
         self.recording_state_label.setText("ЗАПИСЬ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ")
         self.recording_state_label.setProperty("active", False)
@@ -784,18 +1026,24 @@ class MainWindow(QMainWindow):
             self._set_status("Аудиофайл выбран")
 
     def test_devices(self) -> None:
+        self._begin_preflight(show_intro=True)
+
+    def _begin_preflight(self, show_intro: bool) -> None:
         mic_device = int(self.mic.currentData())
         system_source = self.loopback.currentData()
         if not isinstance(system_source, SystemAudioSource):
             self.test_devices_button.setEnabled(True)
+            self._quick_start_pending = False
+            self._refresh_quick_readiness()
             QMessageBox.warning(self, "Системный звук", "WASAPI Loopback-устройство не выбрано")
             return
-        QMessageBox.information(
-            self,
-            "Тестовая запись",
-            "После закрытия окна говорите в микрофон и одновременно воспроизводите звук через G733. "
-            f"Запись продлится {self.config.recording.diagnostics_seconds} секунд.",
-        )
+        if show_intro:
+            QMessageBox.information(
+                self,
+                "Тестовая запись",
+                "После закрытия окна говорите в микрофон и одновременно воспроизводите звук через G733. "
+                f"Запись продлится {self.config.recording.diagnostics_seconds} секунд.",
+            )
         self.test_devices_button.setEnabled(False)
         self._set_status("Записываю тест микрофона и системного звука…", "working")
         logging.info("Тестовая запись начата: mic=%s system=%s", self.mic.currentText(), system_source.name)
@@ -837,12 +1085,20 @@ class MainWindow(QMainWindow):
             if self.preflight_passed
             else "Проверка выявила проблемы: " + "; ".join(warnings)
         )
-        QMessageBox.information(self, "Диагностика аудио", message)
+        if not self._quick_start_pending or not self.preflight_passed:
+            QMessageBox.information(self, "Диагностика аудио", message)
         self.test_devices_button.setEnabled(True)
         self._set_status(message, "warning" if warnings else "success")
         logging.info(
             "Тестовая запись завершена: ready=%s report=%s", self.preflight_passed, results.quality_report
         )
+        if self._quick_start_pending and self.preflight_passed:
+            profile = selected_profile(self.config, self.quick_profile.currentData())
+            self._start_quick_countdown(profile.countdown_seconds)
+        elif self._quick_start_pending:
+            self._quick_start_pending = False
+            self._quick_auto_transcribe_active = False
+            self._refresh_quick_readiness()
 
     def _play_preflight_track(self, source: str) -> None:
         if not self.preflight_result:
@@ -885,6 +1141,7 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
         self.transcribe_button.setEnabled(True)
+        self._refresh_quick_readiness()
         self._set_status("Транскрипт ждёт проверки", "warning")
         self._go_to(1)
         logging.info("Транскрибация завершена: lesson=%s", lesson.lesson_id)
@@ -1162,6 +1419,10 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._recording_stop_started = False
+        self._quick_start_pending = False
+        self._quick_auto_transcribe_active = False
+        self.quick_countdown_timer.stop()
+        self._refresh_quick_readiness()
         logging.error(details)
         self._set_status("Фоновая операция завершилась с ошибкой", "error")
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
