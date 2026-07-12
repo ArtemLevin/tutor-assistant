@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 from pathlib import Path
 
@@ -11,13 +10,17 @@ from .publisher import LessonPublisher, PublicationResult
 from .store import LessonStore
 from .transcription import WhisperTranscriber
 
-logger = logging.getLogger(__name__)
-
 
 class LessonPipeline:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.store = LessonStore(config.workspace / "tutor-assistant.sqlite3")
+        self._transcriber: WhisperTranscriber | None = None
+
+    def transcriber(self) -> WhisperTranscriber:
+        if self._transcriber is None:
+            self._transcriber = WhisperTranscriber(self.config.whisper)
+        return self._transcriber
 
     def lesson_dir(self, lesson: Lesson) -> Path:
         return self.config.workspace / "lessons" / lesson.lesson_id
@@ -27,16 +30,14 @@ class LessonPipeline:
         directory.mkdir(parents=True, exist_ok=True)
         lesson.write_json(directory / "lesson.json")
         self.store.save(lesson)
-        logger.info("Занятие создано: lesson=%s student=%s", lesson.lesson_id, lesson.student.id)
         return directory
 
     def transcribe(self, lesson: Lesson, audio: Path) -> Lesson:
-        logger.info("Запуск транскрибации: lesson=%s audio=%s", lesson.lesson_id, audio)
         lesson.transition(JobStatus.TRANSCRIBING)
         self.store.save(lesson)
         directory = self.lesson_dir(lesson)
         try:
-            transcriber = WhisperTranscriber(self.config.whisper)
+            transcriber = self.transcriber()
             recording_dir = audio.parent
             microphone = recording_dir / "microphone.wav"
             system = recording_dir / "system.wav"
@@ -72,7 +73,6 @@ class LessonPipeline:
             )
             lesson.transition(JobStatus.REVIEW_REQUIRED)
         except Exception as exc:
-            logger.exception("Транскрибация завершилась с ошибкой: lesson=%s", lesson.lesson_id)
             lesson.transition(JobStatus.FAILED, str(exc))
             raise
         finally:
@@ -90,10 +90,8 @@ class LessonPipeline:
         lesson.transition(JobStatus.READY)
         lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)
-        logger.info("Транскрипт подтверждён: lesson=%s", lesson.lesson_id)
 
     def publish(self, lesson: Lesson) -> PublicationResult:
-        logger.info("Публикация занятия: lesson=%s", lesson.lesson_id)
         target = LessonPublisher(self.config.repository).publish(lesson, self.lesson_dir(lesson))
         lesson.publication = PublicationInfo(
             branch=target.branch,
@@ -104,5 +102,4 @@ class LessonPipeline:
         )
         lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)
-        logger.info("Занятие опубликовано: lesson=%s branch=%s", lesson.lesson_id, target.branch)
         return target
