@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -30,7 +31,25 @@ class LessonPipeline:
         self.store.save(lesson)
         directory = self.lesson_dir(lesson)
         try:
-            result = WhisperTranscriber(self.config.whisper).transcribe(audio, directory / "transcript")
+            transcriber = WhisperTranscriber(self.config.whisper)
+            recording_dir = audio.parent
+            microphone = recording_dir / "microphone.wav"
+            system = recording_dir / "system.wav"
+            sync_report = recording_dir / "sync_report.json"
+            if (
+                self.config.recording.dual_channel_transcription
+                and microphone.is_file() and system.is_file()
+            ):
+                sync = json.loads(sync_report.read_text(encoding="utf-8")) if sync_report.exists() else {}
+                result = transcriber.transcribe_dual(
+                    microphone,
+                    system,
+                    directory / "transcript",
+                    microphone_offset_seconds=float(sync.get("microphone_delay_ms", 0)) / 1000,
+                    system_offset_seconds=float(sync.get("system_delay_ms", 0)) / 1000,
+                )
+            else:
+                result = transcriber.transcribe(audio, directory / "transcript")
             verified = directory / "transcript" / "transcript_verified.txt"
             shutil.copy2(result.cleaned, verified)
             lesson.source_audio_local = str(audio.resolve())
@@ -42,6 +61,8 @@ class LessonPipeline:
                 segments_json=str(result.segments.resolve()),
                 student_signals=str(result.signals.resolve()),
                 transcription_manifest=str(result.manifest.resolve()),
+                teacher_transcript=str(result.teacher_transcript.resolve()) if result.teacher_transcript else None,
+                student_transcript=str(result.student_transcript.resolve()) if result.student_transcript else None,
             )
             lesson.transition(JobStatus.REVIEW_REQUIRED)
         except Exception as exc:
@@ -66,7 +87,8 @@ class LessonPipeline:
     def publish(self, lesson: Lesson) -> PublicationResult:
         target = LessonPublisher(self.config.repository).publish(lesson, self.lesson_dir(lesson))
         lesson.publication = PublicationInfo(
-            branch=target.branch, repository_path=target.repository_path, commit=target.commit
+            branch=target.branch, repository_path=target.repository_path, commit=target.commit,
+            pr_url=target.pr_url, warnings=list(target.warnings),
         )
         lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)

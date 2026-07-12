@@ -84,12 +84,16 @@ class ArtifactPaths(BaseModel):
     segments_json: str | None = None
     student_signals: str | None = None
     transcription_manifest: str | None = None
+    teacher_transcript: str | None = None
+    student_transcript: str | None = None
 
 
 class PublicationInfo(BaseModel):
     branch: str
     repository_path: str
     commit: str
+    pr_url: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class LatexState(BaseModel):

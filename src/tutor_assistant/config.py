@@ -16,6 +16,9 @@ class RecordingConfig(BaseModel):
     loopback_device: int | None = None
     chunk_seconds: int = 30
     diagnostics_seconds: int = 5
+    queue_blocks: int = 256
+    target_sample_rate: int = 48_000
+    dual_channel_transcription: bool = True
 
 
 class WhisperConfig(BaseModel):
@@ -35,6 +38,9 @@ class RepositoryConfig(BaseModel):
     create_branch: bool = True
     use_worktree: bool = True
     keep_worktree: bool = False
+    auto_create_pr: bool = True
+    repository_full_name: str = "ArtemLevin/students-26-27"
+    pr_base_branch: str = "main"
 
 
 class LatexConfig(BaseModel):
@@ -52,6 +58,7 @@ class LatexConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    setup_completed: bool = False
     workspace: Path = Path("data")
     students_file: Path = Path("config/students.yaml")
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
@@ -64,6 +71,13 @@ class AppConfig(BaseModel):
         if not path.exists():
             return cls()
         return cls.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump(self.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
 
 
 def load_students(path: Path) -> list[Student]:

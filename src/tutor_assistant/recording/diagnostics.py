@@ -15,18 +15,21 @@ class DeviceTestResult:
     silent: bool
 
 
-def test_input_device(device: int, seconds: float = 3.0, sample_rate: int = 48_000, channels: int = 1) -> DeviceTestResult:
+def test_input_device(
+    device: int, seconds: float = 3.0, sample_rate: int | None = None, channels: int = 1
+) -> DeviceTestResult:
     try:
         import sounddevice as sd
     except ImportError as exc:
         raise RuntimeError("Установите sounddevice") from exc
     values: list[np.ndarray] = []
+    effective_rate = sample_rate or int(round(float(sd.query_devices(device)["default_samplerate"])))
 
     def callback(indata, frames, time_info, status):
         values.append(indata.copy())
 
     with sd.InputStream(
-        device=device, samplerate=sample_rate, channels=channels, dtype="float32", callback=callback
+        device=device, samplerate=effective_rate, channels=channels, dtype="float32", callback=callback
     ):
         deadline = monotonic() + seconds
         while monotonic() < deadline:
@@ -37,4 +40,3 @@ def test_input_device(device: int, seconds: float = 3.0, sample_rate: int = 48_0
     peak = float(np.max(np.abs(data)))
     rms = float(np.sqrt(np.mean(np.square(data), dtype=np.float64)))
     return DeviceTestResult(device, peak, rms, peak >= 0.98, rms < 0.002)
-

@@ -19,6 +19,8 @@ class PublicationResult:
     branch: str
     repository_path: str
     commit: str
+    pr_url: str | None = None
+    warnings: tuple[str, ...] = ()
 
 
 def run_git(repo: Path, *args: str) -> str:
@@ -26,6 +28,61 @@ def run_git(repo: Path, *args: str) -> str:
     if result.returncode:
         raise GitError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
+
+
+def create_draft_pr(
+    config: RepositoryConfig, checkout: Path, lesson: Lesson, branch: str
+) -> tuple[str | None, list[str]]:
+    warnings: list[str] = []
+    if not config.auto_create_pr:
+        return None, warnings
+    if shutil.which("gh") is None:
+        return None, ["GitHub CLI не найден: draft PR нужно создать вручную"]
+    auth = subprocess.run(
+        ["gh", "auth", "status"], cwd=checkout, capture_output=True, text=True, timeout=30
+    )
+    if auth.returncode:
+        return None, ["GitHub CLI не авторизован: выполните gh auth login"]
+    existing = subprocess.run(
+        [
+            "gh", "pr", "view", branch, "--repo", config.repository_full_name,
+            "--json", "url", "--jq", ".url",
+        ],
+        cwd=checkout, capture_output=True, text=True, timeout=30,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        return existing.stdout.strip(), warnings
+    title = f"Lesson: {lesson.student.full_name} — {lesson.topic}"
+    body = f"""## Занятие
+
+- Ученик: {lesson.student.full_name}
+- Дата: {lesson.lesson_date:%d.%m.%Y}
+- Предмет: {lesson.subject}
+- Тема: {lesson.topic}
+
+## Конвейер
+
+- [x] Подтверждённый транскрипт
+- [ ] LaTeX-пособие
+- [ ] PDF
+- [ ] Образовательный плакат
+- [ ] Web-эквивалент
+- [ ] Проверка ссылок и index.html
+
+PR создан Tutor Assistant и остаётся draft до завершения проверок.
+"""
+    result = subprocess.run(
+        [
+            "gh", "pr", "create", "--draft", "--repo", config.repository_full_name,
+            "--base", config.pr_base_branch, "--head", branch,
+            "--title", title, "--body", body,
+        ],
+        cwd=checkout, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode:
+        warnings.append("Не удалось создать draft PR: " + (result.stderr.strip() or result.stdout.strip()))
+        return None, warnings
+    return result.stdout.strip().splitlines()[-1], warnings
 
 
 class LessonPublisher:
@@ -43,6 +100,8 @@ class LessonPublisher:
             "segments_json": "segments.json",
             "student_signals": "important_student_signals.json",
             "transcription_manifest": "transcription_manifest.json",
+            "teacher_transcript": "teacher_transcript.txt",
+            "student_transcript": "student_transcript.txt",
         }
         for field, filename in mapping.items():
             value = getattr(lesson.artifacts, field)
@@ -89,9 +148,12 @@ class LessonPublisher:
             commit = run_git(checkout, "rev-parse", "HEAD")
             if self.config.push:
                 run_git(checkout, "push", "-u", self.config.remote, "HEAD")
+            pr_url, warnings = create_draft_pr(self.config, checkout, lesson, branch)
             lesson.transition(JobStatus.PUBLISHED)
             lesson.write_json(lesson_dir / "lesson.json")
-            return PublicationResult(branch, str(target.relative_to(checkout)), commit)
+            return PublicationResult(
+                branch, str(target.relative_to(checkout)), commit, pr_url, tuple(warnings)
+            )
         finally:
             if worktree_path and worktree_path.exists() and not self.config.keep_worktree:
                 try:

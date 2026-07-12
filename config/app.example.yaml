@@ -1,3 +1,4 @@
+setup_completed: false
 workspace: data
 students_file: config/students.yaml
 
@@ -6,6 +7,9 @@ recording:
   channels: 1
   chunk_seconds: 30
   diagnostics_seconds: 5
+  queue_blocks: 256
+  target_sample_rate: 48000
+  dual_channel_transcription: true
 
 whisper:
   model: small
@@ -23,6 +27,9 @@ repository:
   create_branch: true
   use_worktree: true
   keep_worktree: false
+  auto_create_pr: true
+  repository_full_name: ArtemLevin/students-26-27
+  pr_base_branch: main
 
 latex:
   enabled: true
