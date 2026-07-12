@@ -43,10 +43,13 @@ from ..domain import JobStatus, Lesson
 from ..pipeline import LessonPipeline
 from ..recording import (
     DualRecorder,
+    SystemAudioSource,
     find_recoverable_recordings,
     list_input_devices,
+    list_system_audio_sources,
     recover_recording,
     test_input_device,
+    test_system_audio_source,
 )
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
@@ -75,6 +78,9 @@ class MainWindow(QMainWindow):
         self.pipeline = LessonPipeline(self.config)
         self.students = load_students(self.config.students_file)
         self.devices = list_input_devices()
+        self.system_sources = list_system_audio_sources(
+            self.devices, self.config.recording.target_sample_rate
+        )
         self.lesson: Lesson | None = None
         self.recorder: DualRecorder | None = None
         self.recording_seconds = 0
@@ -294,14 +300,17 @@ class MainWindow(QMainWindow):
         for device in self.devices:
             label = f"{device.index}: {device.name} [{device.host_api}]"
             self.mic.addItem(label, device.index)
-            self.loopback.addItem(label, device.index)
-        for combo, configured in (
-            (self.mic, self.config.recording.mic_device),
-            (self.loopback, self.config.recording.loopback_device),
-        ):
-            index = combo.findData(configured)
-            if index >= 0:
-                combo.setCurrentIndex(index)
+        for source in self.system_sources:
+            self.loopback.addItem(source.display_name, source)
+        if not self.system_sources:
+            self.loopback.addItem("WASAPI Loopback-устройства не найдены", None)
+            self.loopback.setEnabled(False)
+        mic_index = self.mic.findData(self.config.recording.mic_device)
+        if mic_index >= 0:
+            self.mic.setCurrentIndex(mic_index)
+        self._select_system_source()
+        self.mic.currentIndexChanged.connect(lambda _index: self._persist_audio_selection())
+        self.loopback.currentIndexChanged.connect(lambda _index: self._persist_audio_selection())
         form.addRow("Ученик", self.student)
         form.addRow("Предмет", self.subject)
         form.addRow("Тема", self.topic)
@@ -381,6 +390,33 @@ class MainWindow(QMainWindow):
         layout.addWidget(recording)
         layout.addStretch()
         return page
+
+    def _select_system_source(self) -> None:
+        configured_id = self.config.recording.system_device_id
+        configured_backend = self.config.recording.system_backend
+        for index in range(self.loopback.count()):
+            source = self.loopback.itemData(index)
+            if not isinstance(source, SystemAudioSource):
+                continue
+            matches_current = source.device_id == configured_id and source.backend == configured_backend
+            matches_legacy = (
+                configured_id is None
+                and source.legacy_index is not None
+                and source.legacy_index == self.config.recording.loopback_device
+            )
+            if matches_current or matches_legacy:
+                self.loopback.setCurrentIndex(index)
+                return
+
+    def _persist_audio_selection(self) -> None:
+        if self.mic.currentData() is not None:
+            self.config.recording.mic_device = int(self.mic.currentData())
+        source = self.loopback.currentData()
+        if isinstance(source, SystemAudioSource):
+            self.config.recording.system_device_id = source.device_id
+            self.config.recording.system_backend = source.backend
+            self.config.recording.loopback_device = source.legacy_index
+        self.config.save(self.config_path)
 
     def _transcript_tab(self) -> QWidget:
         page = QWidget()
@@ -588,7 +624,10 @@ class MainWindow(QMainWindow):
                 self.config.recording.queue_blocks,
                 self.config.recording.target_sample_rate,
             )
-            self.recorder.start(directory, int(self.mic.currentData()), int(self.loopback.currentData()))
+            system_source = self.loopback.currentData()
+            if not isinstance(system_source, SystemAudioSource):
+                raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
+            self.recorder.start(directory, int(self.mic.currentData()), system_source)
             self.lesson.transition(JobStatus.RECORDING)
             self.pipeline.store.save(self.lesson)
             self.recording_seconds = 0
@@ -629,13 +668,19 @@ class MainWindow(QMainWindow):
         self.test_devices_button.setEnabled(False)
         self._set_status("Проверяю микрофон и системный звук…", "working")
         mic_device = int(self.mic.currentData())
-        loopback_device = int(self.loopback.currentData())
+        system_source = self.loopback.currentData()
+        if not isinstance(system_source, SystemAudioSource):
+            self.test_devices_button.setEnabled(True)
+            QMessageBox.warning(self, "Системный звук", "WASAPI Loopback-устройство не выбрано")
+            return
         seconds = self.config.recording.diagnostics_seconds
         channels = self.config.recording.channels
 
         def run_tests():
             mic = test_input_device(mic_device, seconds, None, channels)
-            system = test_input_device(loopback_device, seconds, None, channels)
+            system = test_system_audio_source(
+                system_source, seconds, self.config.recording.target_sample_rate
+            )
             return mic, system
 
         worker = Worker(run_tests)

@@ -14,6 +14,8 @@ class RecordingConfig(BaseModel):
     subtype: str = "PCM_16"
     mic_device: int | None = None
     loopback_device: int | None = None
+    system_device_id: str | None = None
+    system_backend: str = "soundcard"
     chunk_seconds: int = 30
     diagnostics_seconds: int = 5
     queue_blocks: int = 256

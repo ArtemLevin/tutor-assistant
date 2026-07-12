@@ -20,7 +20,13 @@ from PySide6.QtWidgets import (
 
 from ..config import AppConfig
 from ..latex import inspect_latex_environment
-from ..recording import list_input_devices, test_input_device
+from ..recording import (
+    SystemAudioSource,
+    list_input_devices,
+    list_system_audio_sources,
+    test_input_device,
+    test_system_audio_source,
+)
 from .theme import set_button_kind
 
 
@@ -84,7 +90,7 @@ class AudioPage(QWizardPage):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.setTitle("Аудиоустройства")
-        self.setSubTitle("Выберите микрофон и loopback-вход, затем проверьте уровень сигнала.")
+        self.setSubTitle("Выберите микрофон и устройство воспроизведения ученика, затем проверьте сигнал.")
         layout = QFormLayout(self)
         layout.setContentsMargins(20, 22, 20, 20)
         layout.setVerticalSpacing(14)
@@ -94,29 +100,51 @@ class AudioPage(QWizardPage):
             devices = list_input_devices()
         except Exception:
             devices = []
+        sources = list_system_audio_sources(devices, config.recording.target_sample_rate)
         for device in devices:
             label = f"{device.index}: {device.name} [{device.host_api}]"
             self.mic.addItem(label, device.index)
-            self.loopback.addItem(label, device.index)
-        self._select(self.mic, config.recording.mic_device)
-        self._select(self.loopback, config.recording.loopback_device)
+        for source in sources:
+            self.loopback.addItem(source.display_name, source)
+        if not sources:
+            self.loopback.addItem("WASAPI Loopback-устройства не найдены", None)
+            self.loopback.setEnabled(False)
+        self._select_input(self.mic, config.recording.mic_device)
+        self._select_system(config)
         self.result = QLabel("Выберите устройства и запустите тест")
         self.result.setObjectName("muted")
         self.result.setWordWrap(True)
         test = set_button_kind(QPushButton("Проверить оба устройства"), "primary")
         test.clicked.connect(lambda: self._test(config))
         layout.addRow("Микрофон", self.mic)
-        layout.addRow("Системный звук", self.loopback)
+        layout.addRow("Звук ученика / выход", self.loopback)
         layout.addRow(test)
         layout.addRow(self.result)
 
     @staticmethod
-    def _select(combo: QComboBox, device: int | None) -> None:
+    def _select_input(combo: QComboBox, device: int | None) -> None:
         if device is None:
             return
         index = combo.findData(device)
         if index >= 0:
             combo.setCurrentIndex(index)
+
+    def _select_system(self, config: AppConfig) -> None:
+        for index in range(self.loopback.count()):
+            source = self.loopback.itemData(index)
+            if not isinstance(source, SystemAudioSource):
+                continue
+            matches_current = (
+                source.device_id == config.recording.system_device_id
+                and source.backend == config.recording.system_backend
+            )
+            matches_legacy = (
+                config.recording.system_device_id is None
+                and source.legacy_index == config.recording.loopback_device
+            )
+            if matches_current or matches_legacy:
+                self.loopback.setCurrentIndex(index)
+                return
 
     def _test(self, config: AppConfig) -> None:
         try:
@@ -126,12 +154,10 @@ class AudioPage(QWizardPage):
                 None,
                 config.recording.channels,
             )
-            system = test_input_device(
-                int(self.loopback.currentData()),
-                2,
-                None,
-                config.recording.channels,
-            )
+            source = self.loopback.currentData()
+            if not isinstance(source, SystemAudioSource):
+                raise RuntimeError("Выберите WASAPI Loopback-устройство")
+            system = test_system_audio_source(source, 2, config.recording.target_sample_rate)
             messages = [f"Микрофон RMS: {mic.rms:.4f}", f"Системный звук RMS: {system.rms:.4f}"]
             if mic.silent:
                 messages.append("Микрофон: слабый или отсутствующий сигнал")
@@ -217,7 +243,13 @@ class SetupWizard(QWizard):
         self.config.workspace = Path(self.paths_page.workspace.text()).expanduser()
         self.config.repository.students_repo = Path(self.paths_page.students_repo.text()).expanduser()
         self.config.recording.mic_device = int(self.audio_page.mic.currentData())
-        self.config.recording.loopback_device = int(self.audio_page.loopback.currentData())
+        system_source = self.audio_page.loopback.currentData()
+        if not isinstance(system_source, SystemAudioSource):
+            QMessageBox.warning(self, "Аудио", "Выберите WASAPI Loopback-устройство")
+            return
+        self.config.recording.system_device_id = system_source.device_id
+        self.config.recording.system_backend = system_source.backend
+        self.config.recording.loopback_device = system_source.legacy_index
         self.config.setup_completed = True
         self.config.save(self.config_path)
         super().accept()

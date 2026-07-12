@@ -142,6 +142,7 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
         ("PySide6", "Desktop UI"),
         ("faster_whisper", "Whisper"),
         ("sounddevice", "SoundDevice"),
+        ("soundcard", "WASAPI Loopback"),
         ("soundfile", "SoundFile"),
         ("pypdf", "PDF"),
     ):
@@ -201,6 +202,21 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
         )
     except Exception as exc:
         checks.append(DiagnosticCheck("Аудиоустройства", "error", str(exc), required=True))
+
+    try:
+        from .recording import list_loopback_devices
+
+        system_sources = list_loopback_devices(config.recording.target_sample_rate)
+        checks.append(
+            _check(
+                "WASAPI Loopback",
+                bool(system_sources),
+                f"Найдено loopback-устройств: {len(system_sources)}",
+                "WASAPI Loopback-устройства не найдены",
+            )
+        )
+    except Exception as exc:
+        checks.append(DiagnosticCheck("WASAPI Loopback", "error", str(exc), required=True))
 
     if config.latex.enabled:
         try:

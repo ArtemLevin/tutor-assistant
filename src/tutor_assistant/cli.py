@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import AppConfig, load_students
 from .domain import Lesson
 from .pipeline import LessonPipeline
-from .recording import list_input_devices
+from .recording import list_input_devices, list_system_audio_sources
 
 
 def parser() -> argparse.ArgumentParser:
@@ -44,7 +44,18 @@ def main() -> None:
     args = parser().parse_args()
     config = AppConfig.load(args.config)
     if args.command == "devices":
-        print(json.dumps([device.__dict__ for device in list_input_devices()], ensure_ascii=False, indent=2))
+        inputs = list_input_devices()
+        system_sources = list_system_audio_sources(inputs, config.recording.target_sample_rate)
+        print(
+            json.dumps(
+                {
+                    "microphones": [device.to_dict() for device in inputs],
+                    "system_audio": [source.to_dict() for source in system_sources],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
     if args.command == "doctor":
         from .diagnostics import format_diagnostics, report_json, run_diagnostics

@@ -5,6 +5,9 @@ students_file: config/students.yaml
 recording:
   sample_rate: 48000
   channels: 1
+  mic_device: null
+  system_device_id: null
+  system_backend: soundcard
   chunk_seconds: 30
   diagnostics_seconds: 5
   queue_blocks: 256

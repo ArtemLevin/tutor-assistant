@@ -15,6 +15,8 @@ from time import monotonic
 
 import numpy as np
 
+from .devices import SystemAudioSource
+
 
 @dataclass(frozen=True)
 class RecordingResult:
@@ -162,6 +164,87 @@ class QueuedChunkWriter:
         )
 
 
+class SoundCardLoopbackStream:
+    """Adapts SoundCard's blocking WASAPI recorder to the stream interface used by DualRecorder."""
+
+    def __init__(
+        self,
+        device_id: str,
+        sample_rate: int,
+        channels: int,
+        callback: Callable[[np.ndarray], None],
+        block_frames: int | None = None,
+    ) -> None:
+        self.device_id = device_id
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.callback = callback
+        self.block_frames = block_frames or max(1024, sample_rate // 20)
+        self._stop_event = threading.Event()
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.error: BaseException | None = None
+
+    @staticmethod
+    def normalize_channels(data: np.ndarray, channels: int) -> np.ndarray:
+        values = np.asarray(data, dtype="float32")
+        if values.ndim == 1:
+            values = values[:, np.newaxis]
+        if not len(values):
+            return np.empty((0, channels), dtype="float32")
+        if channels == 1:
+            return np.mean(values, axis=1, keepdims=True, dtype="float32")
+        if values.shape[1] >= channels:
+            return values[:, :channels]
+        return np.pad(values, ((0, 0), (0, channels - values.shape[1])))
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            raise RuntimeError("WASAPI Loopback уже запущен")
+        self._stop_event.clear()
+        self._ready.clear()
+        self.error = None
+        self._thread = threading.Thread(target=self._run, name="wasapi-loopback", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(15):
+            self._stop_event.set()
+            raise RuntimeError("WASAPI Loopback не запустился за 15 секунд")
+        if self.error:
+            raise RuntimeError(f"Не удалось запустить WASAPI Loopback: {self.error}") from self.error
+
+    def _run(self) -> None:
+        try:
+            import soundcard as sc
+
+            device = sc.get_microphone(self.device_id, include_loopback=True)
+            with device.recorder(
+                samplerate=self.sample_rate,
+                blocksize=max(self.block_frames * 4, 2048),
+            ) as recorder:
+                self._ready.set()
+                while not self._stop_event.is_set():
+                    data = recorder.record(numframes=self.block_frames)
+                    normalized = self.normalize_channels(data, self.channels)
+                    if len(normalized):
+                        self.callback(normalized)
+        except BaseException as exc:
+            self.error = exc
+            logging.exception("Ошибка WASAPI Loopback")
+            self._ready.set()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(15)
+            if self._thread.is_alive():
+                raise RuntimeError("Поток WASAPI Loopback не завершился за 15 секунд")
+        if self.error:
+            raise RuntimeError(f"Ошибка WASAPI Loopback: {self.error}") from self.error
+
+    def close(self) -> None:
+        return
+
+
 class DualRecorder:
     def __init__(
         self,
@@ -236,7 +319,7 @@ class DualRecorder:
                 self._session[f"{source}_frames"] = writer.total_frames
             _atomic_json(self._session_file, self._session)
 
-    def start(self, output_dir: Path, mic_device: int, loopback_device: int) -> None:
+    def start(self, output_dir: Path, mic_device: int, system_source: SystemAudioSource | int) -> None:
         if self._active:
             raise RuntimeError("Запись уже запущена")
         try:
@@ -248,11 +331,20 @@ class DualRecorder:
         self._output_dir = output_dir
         self._session_file = output_dir / "session.json"
         mic_info = sd.query_devices(mic_device)
-        system_info = sd.query_devices(loopback_device)
         mic_rate = int(round(float(mic_info["default_samplerate"]))) or self.sample_rate
-        system_rate = int(round(float(system_info["default_samplerate"]))) or self.sample_rate
+        if isinstance(system_source, int):
+            legacy_info = sd.query_devices(system_source)
+            system_source = SystemAudioSource(
+                device_id=str(system_source),
+                name=str(legacy_info["name"]),
+                backend="sounddevice",
+                channels=int(legacy_info["max_input_channels"]),
+                default_sample_rate=int(round(float(legacy_info["default_samplerate"]))) or self.sample_rate,
+                legacy_index=system_source,
+            )
+        system_rate = system_source.default_sample_rate or self.target_sample_rate
         self._session = {
-            "version": 2,
+            "version": 3,
             "status": "recording",
             "started_at": datetime.now(UTC).isoformat(),
             "channels": self.channels,
@@ -261,9 +353,11 @@ class DualRecorder:
             "microphone_sample_rate": mic_rate,
             "system_sample_rate": system_rate,
             "mic_device": mic_device,
-            "loopback_device": loopback_device,
+            "loopback_device": system_source.legacy_index,
+            "system_device_id": system_source.device_id,
+            "system_backend": system_source.backend,
             "mic_device_name": str(mic_info["name"]),
-            "loopback_device_name": str(system_info["name"]),
+            "loopback_device_name": system_source.name,
         }
         self._write_session()
         self._writers = {
@@ -297,6 +391,7 @@ class DualRecorder:
 
             return enqueue
 
+        streams: list[object] = []
         try:
             mic_stream = sd.InputStream(
                 device=mic_device,
@@ -305,33 +400,70 @@ class DualRecorder:
                 dtype="float32",
                 callback=callback("microphone"),
             )
-            system_stream = sd.InputStream(
-                device=loopback_device,
-                samplerate=system_rate,
-                channels=self.channels,
-                dtype="float32",
-                callback=callback("system"),
-            )
             mic_stream.start()
+            streams.append(mic_stream)
+            if system_source.backend == "soundcard":
+                system_stream = SoundCardLoopbackStream(
+                    system_source.device_id,
+                    system_rate,
+                    self.channels,
+                    lambda data: self._writers["system"].enqueue(data, monotonic()),
+                )
+            elif system_source.backend == "sounddevice" and system_source.legacy_index is not None:
+                system_stream = sd.InputStream(
+                    device=system_source.legacy_index,
+                    samplerate=system_rate,
+                    channels=self.channels,
+                    dtype="float32",
+                    callback=callback("system"),
+                )
+            else:
+                raise RuntimeError(f"Неподдерживаемый источник системного звука: {system_source.backend}")
             system_stream.start()
+            streams.append(system_stream)
         except Exception:
+            for stream in reversed(streams):
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    logging.exception("Ошибка остановки аудиопотока после неудачного запуска")
             for writer in self._writers.values():
                 writer.stop()
             self._session["status"] = "failed_to_start"
             self._write_session()
             raise
-        self._streams = [mic_stream, system_stream]
+        self._streams = streams
         self._active = True
 
     def stop(self) -> RecordingResult:
         if not self._active or self._output_dir is None or self._session_file is None:
             raise RuntimeError("Активная запись отсутствует")
+        errors: list[str] = []
         for stream in self._streams:
-            stream.stop()
-            stream.close()
+            try:
+                stream.stop()
+            except Exception as exc:
+                errors.append(str(exc))
+                logging.exception("Ошибка остановки аудиопотока")
+            finally:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    errors.append(str(exc))
+                    logging.exception("Ошибка закрытия аудиопотока")
         for writer in self._writers.values():
-            writer.stop()
+            try:
+                writer.stop()
+            except Exception as exc:
+                errors.append(str(exc))
+                logging.exception("Ошибка остановки writer-потока")
         self._active = False
+        if errors:
+            self._session["status"] = "failed_to_stop"
+            self._session["errors"] = errors
+            self._write_session()
+            raise RuntimeError("; ".join(errors))
         self._session["status"] = "recorded"
         self._session["completed_at"] = datetime.now(UTC).isoformat()
         health = self.health
