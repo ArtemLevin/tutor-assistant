@@ -9,6 +9,7 @@ def test_config_round_trip(tmp_path: Path) -> None:
     config.recording.queue_blocks = 512
     config.recording.system_device_id = "{g733-device-id}"
     config.recording.system_backend = "soundcard"
+    config.recording.silence_warning_seconds = 30
     config.repository.auto_create_pr = True
     config.save(path)
     restored = AppConfig.load(path)
@@ -16,6 +17,7 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert restored.recording.queue_blocks == 512
     assert restored.recording.system_device_id == "{g733-device-id}"
     assert restored.recording.system_backend == "soundcard"
+    assert restored.recording.silence_warning_seconds == 30
     assert restored.repository.auto_create_pr
 
 

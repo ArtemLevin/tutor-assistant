@@ -24,3 +24,4 @@ def test_recover_recording_concatenates_chunks(tmp_path) -> None:
     info = sf.info(result.microphone_file)
     assert info.frames == 1600
     assert result.mixed_file.exists()
+    assert result.quality_report.exists()

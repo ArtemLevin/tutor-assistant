@@ -98,3 +98,36 @@ def test_loopback_stream_delivers_blocks(monkeypatch) -> None:
     assert blocks
     assert blocks[0].shape == (80, 1)
     assert np.allclose(blocks[0], 0.25)
+
+
+def test_loopback_stream_reconnects_before_giving_up(monkeypatch) -> None:
+    attempts = 0
+
+    class Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def record(self, numframes):
+            time.sleep(0.002)
+            return np.ones((numframes, 2), dtype="float32")
+
+    def get_microphone(device_id, include_loopback):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("device temporarily unavailable")
+        return SimpleNamespace(recorder=lambda **kwargs: Recorder())
+
+    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(get_microphone=get_microphone))
+    blocks: list[np.ndarray] = []
+    stream = SoundCardLoopbackStream("speaker-g733", 8_000, 1, blocks.append, block_frames=80)
+
+    stream.start()
+    stream.stop()
+
+    assert attempts == 3
+    assert stream.reconnect_attempts == 2
+    assert stream.error is None

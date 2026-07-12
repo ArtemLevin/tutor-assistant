@@ -21,6 +21,9 @@ class RecordingConfig(BaseModel):
     queue_blocks: int = 256
     target_sample_rate: int = 48_000
     dual_channel_transcription: bool = True
+    require_preflight: bool = True
+    silence_warning_seconds: int = 20
+    device_timeout_seconds: int = 5
 
 
 class WhisperConfig(BaseModel):

@@ -11,7 +11,7 @@ export UV_CACHE_DIR
 
 .PHONY: help init sync lock lock-check upgrade run setup doctor doctor-json doctor-strict \
 	devices latex-doctor test lint format format-check check build clean compile compile-remote \
-	scan-latex recover
+	scan-latex recover support
 
 help: ## Показать список команд
 	@$(UV) run --no-project python scripts/make_help.py
@@ -47,6 +47,9 @@ doctor-json: ## Вывести диагностический отчёт в JSON
 
 doctor-strict: ## Завершиться с ошибкой при обязательной проблеме
 	$(UV) run --all-extras tutor-assistant --config "$(CONFIG)" doctor --strict
+
+support: ## Собрать безопасный ZIP диагностики
+	$(UV) run --all-extras tutor-assistant --config "$(CONFIG)" support-bundle
 
 devices: ## Показать входные аудиоустройства
 	$(UV) run --all-extras tutor-assistant --config "$(CONFIG)" devices

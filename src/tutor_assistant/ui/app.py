@@ -4,8 +4,9 @@ import json
 import logging
 import sys
 import traceback
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from time import sleep
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from ..config import AppConfig, load_students
 from ..domain import JobStatus, Lesson
+from ..logging_config import configure_logging, install_exception_hook, log_directory
 from ..pipeline import LessonPipeline
 from ..recording import (
     DualRecorder,
@@ -48,8 +51,6 @@ from ..recording import (
     list_input_devices,
     list_system_audio_sources,
     recover_recording,
-    test_input_device,
-    test_system_audio_source,
 )
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
@@ -83,6 +84,10 @@ class MainWindow(QMainWindow):
         )
         self.lesson: Lesson | None = None
         self.recorder: DualRecorder | None = None
+        self.preflight_passed = False
+        self.preflight_result = None
+        self._recording_stop_started = False
+        self._active_audio_warning = ""
         self.recording_seconds = 0
         self.workers: list[Worker] = []
         self._loading_segments = False
@@ -143,6 +148,14 @@ class MainWindow(QMainWindow):
         self.app_status.setObjectName("statusPill")
         self.app_status.setAlignment(Qt.AlignCenter)
         header_layout.addWidget(self.app_status, 0, Qt.AlignVCenter)
+        self.support_button = set_button_kind(QPushButton("Собрать диагностику"), "ghost")
+        self.support_button.setToolTip("Создать ZIP без аудио и транскриптов")
+        self.support_button.clicked.connect(self._create_support_bundle)
+        header_layout.addWidget(self.support_button, 0, Qt.AlignVCenter)
+        logs_button = set_button_kind(QPushButton("Журнал"), "ghost")
+        logs_button.setToolTip("Открыть каталог с журналами приложения")
+        logs_button.clicked.connect(self._open_logs)
+        header_layout.addWidget(logs_button, 0, Qt.AlignVCenter)
         shell_layout.addWidget(header)
 
         self.tabs = QTabWidget()
@@ -178,6 +191,33 @@ class MainWindow(QMainWindow):
 
     def _go_to(self, index: int) -> None:
         self.tabs.setCurrentIndex(index)
+
+    def _open_logs(self) -> None:
+        directory = log_directory(self.config.workspace)
+        directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def _create_support_bundle(self) -> None:
+        from ..support import create_support_bundle
+
+        self.support_button.setEnabled(False)
+        self._set_status("Собираю диагностический пакет…", "working")
+        worker = Worker(create_support_bundle, self.config, self.config_path)
+        worker.succeeded.connect(self._support_bundle_ready)
+        worker.failed.connect(self._worker_failed)
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _support_bundle_ready(self, path: Path) -> None:
+        self.support_button.setEnabled(True)
+        self._set_status("Диагностический пакет создан")
+        QMessageBox.information(
+            self,
+            "Диагностика",
+            f"ZIP создан без аудио и транскриптов:\n{path}",
+        )
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def _offer_recovery(self) -> None:
         sessions = find_recoverable_recordings(self.config.workspace)
@@ -337,6 +377,16 @@ class MainWindow(QMainWindow):
         self.test_devices_button = set_button_kind(QPushButton("Проверить оба устройства"), "ghost")
         self.test_devices_button.clicked.connect(self.test_devices)
         diagnostics_layout.addRow(self.test_devices_button)
+        preflight_controls = QHBoxLayout()
+        self.play_mic_test_button = set_button_kind(QPushButton("Прослушать микрофон"), "ghost")
+        self.play_system_test_button = set_button_kind(QPushButton("Прослушать звук ученика"), "ghost")
+        self.play_mic_test_button.setEnabled(False)
+        self.play_system_test_button.setEnabled(False)
+        self.play_mic_test_button.clicked.connect(lambda: self._play_preflight_track("microphone"))
+        self.play_system_test_button.clicked.connect(lambda: self._play_preflight_track("system"))
+        preflight_controls.addWidget(self.play_mic_test_button)
+        preflight_controls.addWidget(self.play_system_test_button)
+        diagnostics_layout.addRow(preflight_controls)
         columns.addWidget(diagnostics, 2)
         layout.addLayout(columns)
 
@@ -457,13 +507,11 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.playback_speed)
         controls.addStretch()
         segments_layout.addLayout(controls)
-        layout.addWidget(segments, 4)
-
         summary = QGroupBox("Сводный текст")
         summary_layout = QVBoxLayout(summary)
         self.transcript = QPlainTextEdit()
         self.transcript.setPlaceholderText("Здесь появится распознанный текст занятия")
-        self.transcript.setMinimumHeight(100)
+        self.transcript.setMinimumHeight(210)
         summary_layout.addWidget(self.transcript, 1)
         approve_row = QHBoxLayout()
         hint = QLabel("Подтверждённая версия будет опубликована в папке ученика")
@@ -476,7 +524,14 @@ class MainWindow(QMainWindow):
         self.approve.clicked.connect(self.approve_transcript)
         approve_row.addWidget(self.approve)
         summary_layout.addLayout(approve_row)
-        layout.addWidget(summary, 2)
+        transcript_splitter = QSplitter(Qt.Vertical)
+        transcript_splitter.setChildrenCollapsible(False)
+        transcript_splitter.addWidget(segments)
+        transcript_splitter.addWidget(summary)
+        transcript_splitter.setStretchFactor(0, 3)
+        transcript_splitter.setStretchFactor(1, 2)
+        transcript_splitter.setSizes([390, 290])
+        layout.addWidget(transcript_splitter, 1)
         return page
 
     def _publish_tab(self) -> QWidget:
@@ -615,6 +670,16 @@ class MainWindow(QMainWindow):
 
     def start_recording(self) -> None:
         try:
+            if self.config.recording.require_preflight and not self.preflight_passed:
+                answer = QMessageBox.question(
+                    self,
+                    "Проверка аудио",
+                    "Тестовая запись ещё не прошла проверку. Продолжить занятие без неё?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                if answer != QMessageBox.Yes:
+                    return
             self.lesson = self._make_lesson()
             directory = self.pipeline.lesson_dir(self.lesson) / "recording"
             self.recorder = DualRecorder(
@@ -631,6 +696,8 @@ class MainWindow(QMainWindow):
             self.lesson.transition(JobStatus.RECORDING)
             self.pipeline.store.save(self.lesson)
             self.recording_seconds = 0
+            self._recording_stop_started = False
+            self._active_audio_warning = ""
             self.timer.start(1000)
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
@@ -638,25 +705,77 @@ class MainWindow(QMainWindow):
             self.recording_state_label.setProperty("active", True)
             refresh_style(self.recording_state_label)
             self._set_status("Идёт запись", "working")
+            logging.info(
+                "Запись начата: lesson=%s mic=%s system=%s",
+                self.lesson.lesson_id,
+                self.mic.currentText(),
+                system_source.display_name,
+            )
         except Exception as exc:
+            logging.exception("Не удалось начать запись")
             QMessageBox.critical(self, "Ошибка записи", str(exc))
 
     def stop_recording(self) -> None:
-        try:
-            assert self.recorder and self.lesson
-            result = self.recorder.stop()
-            self.audio_path.setText(str(result.mixed_file))
-            self.lesson.transition(JobStatus.RECORDED)
-            self.pipeline.store.save(self.lesson)
-            self.timer.stop()
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
-            self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
-            self.recording_state_label.setProperty("active", False)
-            refresh_style(self.recording_state_label)
-            self._set_status("Запись сохранена")
-        except Exception as exc:
-            QMessageBox.critical(self, "Ошибка", str(exc))
+        self._stop_recording_async()
+
+    def _stop_recording_async(self, reason: str | None = None) -> None:
+        if self._recording_stop_started or not self.recorder or not self.lesson:
+            return
+        self._recording_stop_started = True
+        self.timer.stop()
+        self.stop_button.setEnabled(False)
+        self.recording_state_label.setText("СОХРАНЯЮ ЗАПИСЬ…")
+        self._set_status("Сохраняю и проверяю аудиодорожки…", "working")
+        if reason:
+            logging.warning("Аварийное завершение записи: %s", reason)
+        else:
+            logging.info("Завершение записи запрошено")
+        worker = Worker(self.recorder.stop)
+        worker.purpose = "recording-stop"
+        worker.succeeded.connect(lambda result: self._recording_ready(result, reason))
+        worker.failed.connect(self._recording_stop_failed)
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _recording_ready(self, result, reason: str | None = None) -> None:
+        assert self.lesson
+        self.audio_path.setText(str(result.mixed_file))
+        self.lesson.transition(JobStatus.RECORDED)
+        self.pipeline.store.save(self.lesson)
+        self.start_button.setEnabled(True)
+        self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
+        self.recording_state_label.setProperty("active", False)
+        refresh_style(self.recording_state_label)
+        quality = json.loads(result.quality_report.read_text(encoding="utf-8"))
+        warnings = list(quality.get("warnings", []))
+        if reason:
+            warnings.insert(0, reason)
+        if warnings:
+            self._set_status("Запись сохранена с предупреждениями", "warning")
+            QMessageBox.warning(self, "Проверка записи", "\n".join(warnings))
+        else:
+            self._set_status("Запись сохранена и проверена")
+        logging.info("Запись сохранена: %s; quality_ready=%s", result.mixed_file, quality.get("ready"))
+        self._recording_stop_started = False
+        self.recorder = None
+
+    def _recording_stop_failed(self, details: str) -> None:
+        logging.error(details)
+        self._recording_stop_started = False
+        self.recorder = None
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.recording_state_label.setText("ЗАПИСЬ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ")
+        self.recording_state_label.setProperty("active", False)
+        refresh_style(self.recording_state_label)
+        self._set_status("Запись сохранена частично; доступно восстановление", "error")
+        QMessageBox.critical(
+            self,
+            "Ошибка завершения записи",
+            "Доступные аудиочанки сохранены. После перезапуска приложение предложит восстановление.\n\n"
+            + details[-2000:],
+        )
 
     def choose_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Аудиозапись", "", "Audio (*.wav *.mp3 *.m4a *.flac)")
@@ -665,23 +784,35 @@ class MainWindow(QMainWindow):
             self._set_status("Аудиофайл выбран")
 
     def test_devices(self) -> None:
-        self.test_devices_button.setEnabled(False)
-        self._set_status("Проверяю микрофон и системный звук…", "working")
         mic_device = int(self.mic.currentData())
         system_source = self.loopback.currentData()
         if not isinstance(system_source, SystemAudioSource):
             self.test_devices_button.setEnabled(True)
             QMessageBox.warning(self, "Системный звук", "WASAPI Loopback-устройство не выбрано")
             return
+        QMessageBox.information(
+            self,
+            "Тестовая запись",
+            "После закрытия окна говорите в микрофон и одновременно воспроизводите звук через G733. "
+            f"Запись продлится {self.config.recording.diagnostics_seconds} секунд.",
+        )
+        self.test_devices_button.setEnabled(False)
+        self._set_status("Записываю тест микрофона и системного звука…", "working")
+        logging.info("Тестовая запись начата: mic=%s system=%s", self.mic.currentText(), system_source.name)
         seconds = self.config.recording.diagnostics_seconds
-        channels = self.config.recording.channels
 
         def run_tests():
-            mic = test_input_device(mic_device, seconds, None, channels)
-            system = test_system_audio_source(
-                system_source, seconds, self.config.recording.target_sample_rate
+            directory = self.config.workspace / "diagnostics" / datetime.now().strftime("%Y%m%d-%H%M%S")
+            recorder = DualRecorder(
+                self.config.recording.sample_rate,
+                self.config.recording.channels,
+                max(self.config.recording.chunk_seconds, seconds + 1),
+                self.config.recording.queue_blocks,
+                self.config.recording.target_sample_rate,
             )
-            return mic, system
+            recorder.start(directory, mic_device, system_source)
+            sleep(seconds)
+            return recorder.stop()
 
         worker = Worker(run_tests)
         worker.succeeded.connect(self._device_test_ready)
@@ -691,20 +822,40 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _device_test_ready(self, results) -> None:
-        mic, system = results
-        self.mic_level.setValue(round(min(1.0, mic.rms * 5) * 100))
-        self.system_level.setValue(round(min(1.0, system.rms * 5) * 100))
-        warnings = []
-        if mic.silent:
-            warnings.append("микрофон почти не передаёт сигнал")
-        if system.silent:
-            warnings.append("системный вход почти не передаёт сигнал")
-        if mic.clipped or system.clipped:
-            warnings.append("обнаружен перегруз")
-        message = "Проверка пройдена." if not warnings else "Проверьте настройки: " + "; ".join(warnings)
+        quality = json.loads(results.quality_report.read_text(encoding="utf-8"))
+        mic = quality["microphone"]
+        system = quality["system"]
+        self.mic_level.setValue(round(min(1.0, float(mic["rms"]) * 5) * 100))
+        self.system_level.setValue(round(min(1.0, float(system["rms"]) * 5) * 100))
+        warnings = list(quality.get("warnings", []))
+        self.preflight_passed = bool(quality.get("ready"))
+        self.preflight_result = results
+        self.play_mic_test_button.setEnabled(True)
+        self.play_system_test_button.setEnabled(True)
+        message = (
+            "Тестовая запись прошла проверку. Прослушайте обе дорожки."
+            if self.preflight_passed
+            else "Проверка выявила проблемы: " + "; ".join(warnings)
+        )
         QMessageBox.information(self, "Диагностика аудио", message)
         self.test_devices_button.setEnabled(True)
         self._set_status(message, "warning" if warnings else "success")
+        logging.info(
+            "Тестовая запись завершена: ready=%s report=%s", self.preflight_passed, results.quality_report
+        )
+
+    def _play_preflight_track(self, source: str) -> None:
+        if not self.preflight_result:
+            return
+        path = (
+            self.preflight_result.microphone_file
+            if source == "microphone"
+            else self.preflight_result.system_file
+        )
+        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
+        self.player.setPlaybackRate(1.0)
+        self.player.play()
+        self._set_status(f"Воспроизвожу {path.name}", "working")
 
     def transcribe(self) -> None:
         try:
@@ -716,6 +867,7 @@ class MainWindow(QMainWindow):
             self.progress.setRange(0, 0)
             self.transcribe_button.setEnabled(False)
             self._set_status("Выполняется локальная транскрибация…", "working")
+            logging.info("Транскрибация начата: lesson=%s audio=%s", self.lesson.lesson_id, audio)
             worker = Worker(self.pipeline.transcribe, self.lesson, audio)
             worker.succeeded.connect(self._transcription_ready)
             worker.failed.connect(self._worker_failed)
@@ -735,6 +887,7 @@ class MainWindow(QMainWindow):
         self.transcribe_button.setEnabled(True)
         self._set_status("Транскрипт ждёт проверки", "warning")
         self._go_to(1)
+        logging.info("Транскрибация завершена: lesson=%s", lesson.lesson_id)
 
     def _load_segments(self, path: Path) -> None:
         segments = json.loads(path.read_text(encoding="utf-8"))
@@ -849,11 +1002,13 @@ class MainWindow(QMainWindow):
         self.publish_button.setEnabled(True)
         self._set_status("Транскрипт подтверждён")
         self._go_to(2)
+        logging.info("Транскрипт подтверждён: lesson=%s", self.lesson.lesson_id)
 
     def publish(self) -> None:
         assert self.lesson
         self.publish_button.setEnabled(False)
         self._set_status("Создаю ветку и публикую занятие…", "working")
+        logging.info("Публикация начата: lesson=%s", self.lesson.lesson_id)
         worker = Worker(self.pipeline.publish, self.lesson)
         worker.succeeded.connect(self._publication_ready)
         worker.failed.connect(self._worker_failed)
@@ -872,6 +1027,7 @@ class MainWindow(QMainWindow):
         self.latex_monitor_status.setText("Ветка занятия опубликована; ожидаю handbook/*.tex")
         self._set_status("Занятие опубликовано")
         self._go_to(3)
+        logging.info("Публикация завершена: branch=%s commit=%s", result.branch, result.commit)
 
     def _open_current_pr(self) -> None:
         if self.lesson and self.lesson.publication and self.lesson.publication.pr_url:
@@ -904,6 +1060,7 @@ class MainWindow(QMainWindow):
         self.compile_tex_button.setEnabled(False)
         self.compilation_log.setPlainText("Компиляция запущена…")
         self._set_status("Компилирую PDF…", "working")
+        logging.info("Локальная компиляция LaTeX начата: %s", path)
         worker = Worker(LatexCompiler(self.config.latex).compile, path)
         worker.succeeded.connect(self._local_compilation_ready)
         worker.failed.connect(self._worker_failed)
@@ -913,6 +1070,7 @@ class MainWindow(QMainWindow):
 
     def _local_compilation_ready(self, result) -> None:
         self.compile_tex_button.setEnabled(True)
+        self.support_button.setEnabled(True)
         try:
             log = result.log_file.read_text(encoding="utf-8")
         except OSError:
@@ -1001,6 +1159,9 @@ class MainWindow(QMainWindow):
         self.publish_button.setEnabled(True)
         self.test_devices_button.setEnabled(True)
         self.compile_tex_button.setEnabled(True)
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self._recording_stop_started = False
         logging.error(details)
         self._set_status("Фоновая операция завершилась с ошибкой", "error")
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
@@ -1018,27 +1179,58 @@ class MainWindow(QMainWindow):
             dropped = health.microphone_dropped_blocks + health.system_dropped_blocks
             self.recording_health_label.setText(
                 f"Очереди: {health.microphone_queue_percent}% / {health.system_queue_percent}%; "
-                f"потеряно блоков: {dropped}; задержка writer: {health.max_writer_latency_ms:.1f} мс"
+                f"потеряно блоков: {dropped}; задержка writer: {health.max_writer_latency_ms:.1f} мс; "
+                f"тишина: {health.microphone_silence_seconds:.0f} / "
+                f"{health.system_silence_seconds:.0f} с; переподключения: {health.reconnect_attempts}"
             )
+            timeout = self.config.recording.device_timeout_seconds
+            if health.stream_errors:
+                self._stop_recording_async("Ошибка аудиоустройства: " + "; ".join(health.stream_errors))
+                return
+            if self.recording_seconds > timeout and (
+                health.microphone_callback_age_seconds > timeout
+                or health.system_callback_age_seconds > timeout
+            ):
+                self._stop_recording_async("Потерян поток аудиоустройства; сохранены доступные чанки записи")
+                return
+            silence_limit = self.config.recording.silence_warning_seconds
+            warnings = []
+            if health.microphone_silence_seconds >= silence_limit:
+                warnings.append(f"микрофон молчит {health.microphone_silence_seconds:.0f} с")
+            if health.system_silence_seconds >= silence_limit:
+                warnings.append(f"звук ученика отсутствует {health.system_silence_seconds:.0f} с")
+            if dropped:
+                warnings.append(f"потеряно блоков: {dropped}")
+            warning = "; ".join(warnings)
+            if warning and warning != self._active_audio_warning:
+                self._active_audio_warning = warning
+                self._set_status("Проверьте аудио · " + warning, "warning")
+                logging.warning("Контроль записи: %s", warning)
+            elif not warning and self._active_audio_warning:
+                self._active_audio_warning = ""
+                self._set_status("Идёт запись", "working")
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     force_setup = "--setup" in sys.argv
     if force_setup:
         sys.argv.remove("--setup")
     config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("config/app.yaml")
+    config = AppConfig.load(config_path)
+    configure_logging(config.workspace)
+    install_exception_hook()
     app = QApplication(sys.argv)
     app.setApplicationName("Tutor Assistant")
     app.setOrganizationName("Tutor Assistant")
     apply_theme(app)
-    config = AppConfig.load(config_path)
     if force_setup or not config.setup_completed:
         from .setup_wizard import SetupWizard
 
         wizard = SetupWizard(config, config_path)
         if wizard.exec() != QDialog.Accepted:
             raise SystemExit(0)
+        config = AppConfig.load(config_path)
+        configure_logging(config.workspace)
     window = MainWindow(config_path)
     window.show()
     raise SystemExit(app.exec())

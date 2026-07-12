@@ -25,6 +25,7 @@ class RecordingResult:
     mixed_file: Path
     session_file: Path
     sync_report: Path
+    quality_report: Path
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,12 @@ class RecorderHealth:
     microphone_dropped_blocks: int = 0
     system_dropped_blocks: int = 0
     max_writer_latency_ms: float = 0.0
+    microphone_silence_seconds: float = 0.0
+    system_silence_seconds: float = 0.0
+    microphone_callback_age_seconds: float = 0.0
+    system_callback_age_seconds: float = 0.0
+    stream_errors: tuple[str, ...] = ()
+    reconnect_attempts: int = 0
 
 
 @dataclass
@@ -84,6 +91,8 @@ class QueuedChunkWriter:
         self.first_callback_monotonic: float | None = None
         self.last_callback_monotonic: float | None = None
         self.error: BaseException | None = None
+        self.last_non_silent_monotonic: float | None = None
+        self.current_level = 0.0
         self.directory.mkdir(parents=True, exist_ok=True)
         self.thread = threading.Thread(target=self._run, name=f"audio-writer-{prefix}", daemon=True)
         self.thread.start()
@@ -130,7 +139,10 @@ class QueuedChunkWriter:
                 latency = monotonic() - block.queued_at
                 self.max_latency_seconds = max(self.max_latency_seconds, latency)
                 rms = float(np.sqrt(np.mean(np.square(block.data), dtype=np.float64)))
-                self.on_level(min(1.0, max(0.0, rms * 5.0)))
+                self.current_level = min(1.0, max(0.0, rms * 5.0))
+                if rms >= 0.002:
+                    self.last_non_silent_monotonic = monotonic()
+                self.on_level(self.current_level)
                 cursor = 0
                 while cursor < len(block.data):
                     remaining = self.max_frames - self.frames_in_chunk
@@ -184,6 +196,8 @@ class SoundCardLoopbackStream:
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self.error: BaseException | None = None
+        self.reconnect_attempts = 0
+        self.last_error: str | None = None
 
     @staticmethod
     def normalize_channels(data: np.ndarray, channels: int) -> np.ndarray:
@@ -204,6 +218,8 @@ class SoundCardLoopbackStream:
         self._stop_event.clear()
         self._ready.clear()
         self.error = None
+        self.reconnect_attempts = 0
+        self.last_error = None
         self._thread = threading.Thread(target=self._run, name="wasapi-loopback", daemon=True)
         self._thread.start()
         if not self._ready.wait(15):
@@ -213,24 +229,39 @@ class SoundCardLoopbackStream:
             raise RuntimeError(f"Не удалось запустить WASAPI Loopback: {self.error}") from self.error
 
     def _run(self) -> None:
-        try:
-            import soundcard as sc
+        while not self._stop_event.is_set():
+            try:
+                import soundcard as sc
 
-            device = sc.get_microphone(self.device_id, include_loopback=True)
-            with device.recorder(
-                samplerate=self.sample_rate,
-                blocksize=max(self.block_frames * 4, 2048),
-            ) as recorder:
-                self._ready.set()
-                while not self._stop_event.is_set():
-                    data = recorder.record(numframes=self.block_frames)
-                    normalized = self.normalize_channels(data, self.channels)
-                    if len(normalized):
-                        self.callback(normalized)
-        except BaseException as exc:
-            self.error = exc
-            logging.exception("Ошибка WASAPI Loopback")
-            self._ready.set()
+                device = sc.get_microphone(self.device_id, include_loopback=True)
+                with device.recorder(
+                    samplerate=self.sample_rate,
+                    blocksize=max(self.block_frames * 4, 2048),
+                ) as recorder:
+                    self.last_error = None
+                    self._ready.set()
+                    while not self._stop_event.is_set():
+                        data = recorder.record(numframes=self.block_frames)
+                        normalized = self.normalize_channels(data, self.channels)
+                        if len(normalized):
+                            self.callback(normalized)
+                return
+            except BaseException as exc:
+                if self._stop_event.is_set():
+                    return
+                self.reconnect_attempts += 1
+                self.last_error = str(exc)
+                logging.warning(
+                    "WASAPI Loopback потерян, попытка переподключения %s/5: %s",
+                    self.reconnect_attempts,
+                    exc,
+                )
+                if self.reconnect_attempts >= 5:
+                    self.error = exc
+                    logging.exception("WASAPI Loopback не восстановлен")
+                    self._ready.set()
+                    return
+                self._stop_event.wait(1)
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -282,6 +313,22 @@ class DualRecorder:
     def health(self) -> RecorderHealth:
         mic = self._writers.get("microphone")
         system = self._writers.get("system")
+        now = monotonic()
+
+        def silence_seconds(writer: QueuedChunkWriter | None) -> float:
+            if not writer or writer.first_callback_monotonic is None:
+                return 0.0
+            baseline = writer.last_non_silent_monotonic or writer.first_callback_monotonic
+            return max(0.0, now - baseline)
+
+        def callback_age(writer: QueuedChunkWriter | None) -> float:
+            if not writer or writer.last_callback_monotonic is None:
+                return 0.0
+            return max(0.0, now - writer.last_callback_monotonic)
+
+        stream_errors = tuple(
+            str(error) for stream in self._streams if (error := getattr(stream, "error", None)) is not None
+        )
         return RecorderHealth(
             mic.queue_percent if mic else 0,
             system.queue_percent if system else 0,
@@ -295,6 +342,12 @@ class DualRecorder:
                 * 1000,
                 2,
             ),
+            round(silence_seconds(mic), 2),
+            round(silence_seconds(system), 2),
+            round(callback_age(mic), 2),
+            round(callback_age(system), 2),
+            stream_errors,
+            sum(int(getattr(stream, "reconnect_attempts", 0)) for stream in self._streams),
         )
 
     def _set_level(self, source: str, value: float) -> None:
@@ -592,6 +645,7 @@ def recover_recording(output_dir: Path) -> RecordingResult:
     system_file = output_dir / "system.wav"
     mixed_file = output_dir / "lesson.wav"
     sync_report = output_dir / "sync_report.json"
+    quality_report = output_dir / "audio_quality_report.json"
     concatenate_chunks(
         _valid_chunks(output_dir / "chunks" / "microphone"), microphone_file, mic_rate, channels
     )
@@ -649,7 +703,17 @@ def recover_recording(output_dir: Path) -> RecordingResult:
         "system_dropped_blocks": session.get("system_dropped_blocks", 0),
     }
     _atomic_json(sync_report, report)
-    return RecordingResult(microphone_file, system_file, mixed_file, session_file, sync_report)
+    from .quality import create_quality_report
+
+    create_quality_report(microphone_file, system_file, quality_report)
+    return RecordingResult(
+        microphone_file,
+        system_file,
+        mixed_file,
+        session_file,
+        sync_report,
+        quality_report,
+    )
 
 
 def find_recoverable_recordings(workspace: Path) -> list[Path]:

@@ -259,6 +259,17 @@ QTabBar::tab:selected {
     border-color: #DCE4ED;
 }
 
+QSplitter::handle:vertical {
+    height: 6px;
+    margin: 2px 80px;
+    background: #D7DEE8;
+    border-radius: 3px;
+}
+
+QSplitter::handle:vertical:hover {
+    background: #9FB3CF;
+}
+
 QHeaderView::section {
     min-height: 38px;
     padding: 0 10px;

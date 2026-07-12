@@ -13,6 +13,9 @@ recording:
   queue_blocks: 256
   target_sample_rate: 48000
   dual_channel_transcription: true
+  require_preflight: true
+  silence_warning_seconds: 20
+  device_timeout_seconds: 5
 
 whisper:
   model: small

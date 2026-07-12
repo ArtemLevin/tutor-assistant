@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import AppConfig, load_students
 from .domain import Lesson
+from .logging_config import configure_logging, install_exception_hook
 from .pipeline import LessonPipeline
 from .recording import list_input_devices, list_system_audio_sources
 
@@ -16,6 +17,8 @@ def parser() -> argparse.ArgumentParser:
     root.add_argument("--config", type=Path, default=Path("config/app.yaml"))
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="Показать входные аудиоустройства")
+    support = commands.add_parser("support-bundle", help="Собрать безопасный ZIP диагностики")
+    support.add_argument("--output", type=Path)
     doctor = commands.add_parser("doctor", help="Проверить всё окружение приложения")
     doctor.add_argument("--json", action="store_true", help="Вывести машиночитаемый JSON")
     doctor.add_argument("--strict", action="store_true", help="Вернуть код 1 при обязательных ошибках")
@@ -43,6 +46,8 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parser().parse_args()
     config = AppConfig.load(args.config)
+    configure_logging(config.workspace)
+    install_exception_hook()
     if args.command == "devices":
         inputs = list_input_devices()
         system_sources = list_system_audio_sources(inputs, config.recording.target_sample_rate)
@@ -56,6 +61,11 @@ def main() -> None:
                 indent=2,
             )
         )
+        return
+    if args.command == "support-bundle":
+        from .support import create_support_bundle
+
+        print(create_support_bundle(config, args.config, args.output))
         return
     if args.command == "doctor":
         from .diagnostics import format_diagnostics, report_json, run_diagnostics
