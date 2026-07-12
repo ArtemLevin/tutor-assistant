@@ -1,6 +1,6 @@
 # Tutor Assistant
 
-Текущая версия: **0.2.0**.
+Текущая версия: **0.3.0**.
 
 Десктоп-сервис для полного цикла подготовки материалов после занятия:
 
@@ -43,12 +43,33 @@
 - строгая таблица разрешённых переходов задания;
 - Git worktree для изоляции публикации от основной рабочей копии.
 
+## Что добавлено в 0.3.0
+
+- локальная компиляция полученного от ChatGPT `.tex` через `latexmk`;
+- поддержка `pdflatex`, `xelatex` и `lualatex`;
+- обязательный `-no-shell-escape`;
+- блокировка опасных LaTeX-команд и путей за пределы занятия;
+- тайм-аут и завершение всего дерева процессов при зависании;
+- диагностика TeX Live и обязательных пакетов;
+- извлечение ошибок с именем файла и номером строки;
+- проверка количества страниц и размера PDF;
+- обнаружение вероятно пустых страниц;
+- PNG-предпросмотр через `pdftoppm`;
+- отдельная вкладка PDF в GUI;
+- автоматический мониторинг Git-веток занятий;
+- компиляция в изолированном worktree;
+- commit и push PDF, логов и отчётов в ветку занятия;
+- `latex_fix_request.md` для управляемого исправления через ChatGPT Work;
+- максимум две автоматические попытки на одну версию пособия.
+
 ## Требования
 
 - Windows 10/11;
 - Python 3.11–3.14;
 - Git;
 - FFmpeg в `PATH` — рекомендуется;
+- TeX Live с `latexmk` и выбранным LaTeX-движком;
+- Poppler с `pdftoppm` — для PNG-предпросмотра;
 - loopback-устройство Windows, доступное как вход;
 - локальная копия `students-26-27` рядом с проектом или путь к ней в конфигурации.
 
@@ -96,6 +117,23 @@ repository:
 ```yaml
 repository:
   students_repo: C:/Users/Артем/IdeaProjects/students-26-27
+```
+
+Настройки компилятора:
+
+```yaml
+latex:
+  enabled: true
+  auto_monitor: true
+  engine: pdflatex
+  latexmk_command: latexmk
+  timeout_seconds: 180
+  keep_build_files: false
+  publish_pdf: true
+  max_attempts: 2
+  render_preview: true
+  preview_dpi: 120
+  poll_seconds: 60
 ```
 
 Список учеников хранится в `config/students.yaml`. `id` должен совпадать с именем каталога внутри `students/`.
@@ -228,6 +266,88 @@ automation/chatgpt-work-prompt.md
 
 Задача ищет `job.status.json` со статусом `ready_for_generation`, выполняет три промпта из `pipline/prompts`, создаёт пособие, плакат и HTML, обновляет `index.html`, затем выставляет статус `completed`.
 
+После создания TEX агент устанавливает `status=generated_tex`. Tutor Assistant обнаруживает новую
+версию файла, компилирует её локально и публикует PDF в ту же ветку. При ошибке агент получает
+`reports/latex/latex_fix_request.md`, исправляет TEX, и локальный сервис выполняет следующую попытку.
+
+## Локальная компиляция PDF
+
+Проверить окружение:
+
+```powershell
+tutor-assistant latex-doctor
+```
+
+Ожидаемые команды:
+
+```powershell
+latexmk --version
+pdflatex --version
+kpsewhich tikz.sty
+kpsewhich tkz-euclide.sty
+pdftoppm -h
+```
+
+Скомпилировать отдельный файл:
+
+```powershell
+tutor-assistant compile C:\lessons\12.07.26.tex
+```
+
+Результаты сохраняются рядом с пособием:
+
+```text
+handbook/
+├── 12.07.26.tex
+├── 12.07.26.pdf
+├── build/
+│   ├── compilation.log
+│   ├── compilation.json
+│   └── latex_fix_request.md
+└── preview/
+    ├── page-1.png
+    └── page-2.png
+```
+
+Скомпилировать TEX непосредственно в опубликованной ветке занятия:
+
+```powershell
+tutor-assistant compile-remote data\lessons\<id>\lesson.json
+```
+
+Найти занятия, где появился новый TEX:
+
+```powershell
+tutor-assistant scan-latex
+```
+
+В GUI откройте вкладку «4. PDF». Там доступны:
+
+- проверка TeX Live;
+- ручной выбор `.tex`;
+- просмотр журнала;
+- открытие PNG-страниц;
+- ручная проверка удалённых веток;
+- фоновый мониторинг с интервалом из `latex.poll_seconds`.
+
+### Безопасность компиляции
+
+Компилятор блокирует:
+
+```latex
+\write18
+\immediate\write18
+\openin
+\openout
+\input{|command}
+\input{/absolute/path}
+\input{../outside}
+```
+
+Компиляция всегда выполняется с `-no-shell-escape`, `openin_any=p`, `openout_any=p`, во временном
+каталоге и с заданным тайм-аутом. Исходный каталог занятия передаёт только ресурсы, расположенные
+рядом с пособием.
+
 ## CLI
 
 Показать аудиоустройства:
@@ -267,11 +387,16 @@ draft
 → review_required
 → ready_for_generation
 → published
+→ generated_tex
+→ compiling_pdf
+→ pdf_review_required
 → generating
 → completed
 ```
 
-При исключении используется `failed`, а причина сохраняется в `lesson.json`.
+Ошибка LaTeX переводит занятие в `compile_failed`. После исправления новой версии TEX начинается
+следующая попытка с `generated_tex`. Для остальных исключений используется `failed`, а причина
+сохраняется в `lesson.json`.
 
 ## Проверка проекта
 
@@ -287,12 +412,13 @@ ruff check .
 python scripts\check_job.py path\to\lesson.json
 ```
 
-## Ограничения версии 0.2.0
+## Ограничения версии 0.3.0
 
 - loopback должен быть доступен Windows как входное устройство;
 - запись использует одну частоту дискретизации для обоих источников;
 - спорные формулы проверяются преподавателем в сегментном редакторе;
 - открытие PR пока выполняется вручную после отправки ветки;
+- визуальная проверка сложной вёрстки остаётся за преподавателем; приложение создаёт PNG-предпросмотр;
 - немедленный внешний запуск конкретного чата ChatGPT Work через HTTP не используется; задача обнаруживается запланированной проверкой.
 
 ## Безопасность данных

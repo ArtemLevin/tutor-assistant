@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from .config import AppConfig
-from .domain import ArtifactPaths, JobStatus, Lesson
+from .domain import ArtifactPaths, JobStatus, Lesson, PublicationInfo
 from .publisher import LessonPublisher, PublicationResult
 from .store import LessonStore
 from .transcription import WhisperTranscriber
@@ -65,5 +65,9 @@ class LessonPipeline:
 
     def publish(self, lesson: Lesson) -> PublicationResult:
         target = LessonPublisher(self.config.repository).publish(lesson, self.lesson_dir(lesson))
+        lesson.publication = PublicationInfo(
+            branch=target.branch, repository_path=target.repository_path, commit=target.commit
+        )
+        lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)
         return target

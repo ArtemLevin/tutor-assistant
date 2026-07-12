@@ -23,3 +23,16 @@ repository:
   create_branch: true
   use_worktree: true
   keep_worktree: false
+
+latex:
+  enabled: true
+  auto_monitor: true
+  engine: pdflatex
+  latexmk_command: latexmk
+  timeout_seconds: 180
+  keep_build_files: false
+  publish_pdf: true
+  max_attempts: 2
+  render_preview: true
+  preview_dpi: 120
+  poll_seconds: 60

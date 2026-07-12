@@ -21,7 +21,7 @@
     "lesson_date": {"type": "string", "format": "date"},
     "topic": {"type": "string", "minLength": 2},
     "status": {
-      "enum": ["draft", "recording", "recorded", "transcribing", "review_required", "ready_for_generation", "published", "generating", "completed", "failed"]
+      "enum": ["draft", "recording", "recorded", "transcribing", "review_required", "ready_for_generation", "published", "generated_tex", "compiling_pdf", "pdf_review_required", "compile_failed", "generating", "completed", "failed"]
     },
     "pipeline": {
       "type": "object",
@@ -36,4 +36,3 @@
     }
   }
 }
-

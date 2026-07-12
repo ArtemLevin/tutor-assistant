@@ -17,6 +17,10 @@ class JobStatus(StrEnum):
     REVIEW_REQUIRED = "review_required"
     READY = "ready_for_generation"
     PUBLISHED = "published"
+    GENERATED_TEX = "generated_tex"
+    COMPILING_PDF = "compiling_pdf"
+    PDF_REVIEW_REQUIRED = "pdf_review_required"
+    COMPILE_FAILED = "compile_failed"
     GENERATING = "generating"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -29,7 +33,11 @@ ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.TRANSCRIBING: {JobStatus.REVIEW_REQUIRED, JobStatus.FAILED},
     JobStatus.REVIEW_REQUIRED: {JobStatus.READY, JobStatus.TRANSCRIBING, JobStatus.FAILED},
     JobStatus.READY: {JobStatus.PUBLISHED, JobStatus.TRANSCRIBING, JobStatus.FAILED},
-    JobStatus.PUBLISHED: {JobStatus.GENERATING, JobStatus.READY, JobStatus.FAILED},
+    JobStatus.PUBLISHED: {JobStatus.GENERATED_TEX, JobStatus.GENERATING, JobStatus.READY, JobStatus.FAILED},
+    JobStatus.GENERATED_TEX: {JobStatus.COMPILING_PDF, JobStatus.READY, JobStatus.FAILED},
+    JobStatus.COMPILING_PDF: {JobStatus.PDF_REVIEW_REQUIRED, JobStatus.COMPILE_FAILED, JobStatus.FAILED},
+    JobStatus.PDF_REVIEW_REQUIRED: {JobStatus.GENERATING, JobStatus.COMPLETED, JobStatus.READY},
+    JobStatus.COMPILE_FAILED: {JobStatus.GENERATED_TEX, JobStatus.COMPILING_PDF, JobStatus.FAILED},
     JobStatus.GENERATING: {JobStatus.COMPLETED, JobStatus.FAILED},
     JobStatus.COMPLETED: {JobStatus.READY},
     JobStatus.FAILED: {JobStatus.DRAFT, JobStatus.RECORDED, JobStatus.TRANSCRIBING, JobStatus.READY},
@@ -62,7 +70,7 @@ class Student(BaseModel):
 
 class PipelineOptions(BaseModel):
     latex: bool = True
-    compile_pdf: bool = False
+    compile_pdf: bool = True
     poster: bool = True
     web: bool = True
     update_student_index: bool = True
@@ -78,6 +86,21 @@ class ArtifactPaths(BaseModel):
     transcription_manifest: str | None = None
 
 
+class PublicationInfo(BaseModel):
+    branch: str
+    repository_path: str
+    commit: str
+
+
+class LatexState(BaseModel):
+    attempt: int = 0
+    tex_path: str | None = None
+    pdf_path: str | None = None
+    report_path: str | None = None
+    preview_paths: list[str] = Field(default_factory=list)
+    tex_blob_sha: str | None = None
+
+
 class Lesson(BaseModel):
     schema_version: str = "1.0"
     lesson_id: str = Field(default_factory=lambda: uuid4().hex)
@@ -91,6 +114,8 @@ class Lesson(BaseModel):
     source_audio_local: str | None = None
     artifacts: ArtifactPaths = Field(default_factory=ArtifactPaths)
     pipeline: PipelineOptions = Field(default_factory=PipelineOptions)
+    publication: PublicationInfo | None = None
+    latex: LatexState = Field(default_factory=LatexState)
     error: str | None = None
 
     def transition(self, status: JobStatus, error: str | None = None, *, force: bool = False) -> None:

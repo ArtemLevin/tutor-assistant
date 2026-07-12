@@ -37,12 +37,27 @@ class RepositoryConfig(BaseModel):
     keep_worktree: bool = False
 
 
+class LatexConfig(BaseModel):
+    enabled: bool = True
+    auto_monitor: bool = True
+    engine: str = "pdflatex"
+    latexmk_command: str = "latexmk"
+    timeout_seconds: int = 180
+    keep_build_files: bool = False
+    publish_pdf: bool = True
+    max_attempts: int = 2
+    render_preview: bool = True
+    preview_dpi: int = 120
+    poll_seconds: int = 60
+
+
 class AppConfig(BaseModel):
     workspace: Path = Path("data")
     students_file: Path = Path("config/students.yaml")
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
+    latex: LatexConfig = Field(default_factory=LatexConfig)
 
     @classmethod
     def load(cls, path: Path) -> "AppConfig":

@@ -26,6 +26,14 @@ def parser() -> argparse.ArgumentParser:
     transcribe.add_argument("audio", type=Path)
     publish = commands.add_parser("publish", help="Опубликовать подтверждённое занятие")
     publish.add_argument("lesson_json", type=Path)
+    commands.add_parser("latex-doctor", help="Проверить локальное LaTeX-окружение")
+    compile_tex = commands.add_parser("compile", help="Безопасно скомпилировать локальный TEX")
+    compile_tex.add_argument("tex_file", type=Path)
+    compile_tex.add_argument("--attempt", type=int, default=1)
+    compile_remote = commands.add_parser("compile-remote", help="Скомпилировать TEX в ветке занятия")
+    compile_remote.add_argument("lesson_json", type=Path)
+    compile_remote.add_argument("--force", action="store_true")
+    commands.add_parser("scan-latex", help="Найти занятия с новым TEX в удалённых ветках")
     return root
 
 
@@ -35,6 +43,17 @@ def main() -> None:
     if args.command == "devices":
         print(json.dumps([device.__dict__ for device in list_input_devices()], ensure_ascii=False, indent=2))
         return
+    if args.command == "latex-doctor":
+        from .latex import inspect_latex_environment
+
+        print(json.dumps(inspect_latex_environment(config.latex).to_dict(), ensure_ascii=False, indent=2))
+        return
+    if args.command == "compile":
+        from .latex import LatexCompiler
+
+        result = LatexCompiler(config.latex).compile(args.tex_file, attempt=args.attempt)
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result.success else 1)
     pipeline = LessonPipeline(config)
     if args.command == "create":
         students = {item.id: item for item in load_students(config.students_file)}
@@ -50,8 +69,40 @@ def main() -> None:
     elif args.command == "publish":
         lesson = Lesson.read_json(args.lesson_json)
         print(pipeline.publish(lesson))
+    elif args.command == "compile-remote":
+        from .latex import RemoteLatexService
+
+        lesson = Lesson.read_json(args.lesson_json)
+        result = RemoteLatexService(config.repository, config.latex).compile_lesson(
+            lesson, force=args.force,
+            cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
+        )
+        result.lesson.write_json(args.lesson_json)
+        pipeline.store.save(result.lesson)
+        print(json.dumps({
+            "success": result.compilation.success,
+            "branch": result.branch,
+            "commit": result.commit,
+            "pdf": result.lesson.latex.pdf_path,
+        }, ensure_ascii=False, indent=2))
+    elif args.command == "scan-latex":
+        from .latex import RemoteLatexService
+
+        service = RemoteLatexService(config.repository, config.latex)
+        ready = []
+        for lesson in pipeline.store.list():
+            try:
+                if service.is_ready(lesson):
+                    ready.append({
+                        "lesson_id": lesson.lesson_id,
+                        "student": lesson.student.full_name,
+                        "topic": lesson.topic,
+                        "branch": lesson.publication.branch,
+                    })
+            except Exception as exc:
+                ready.append({"lesson_id": lesson.lesson_id, "error": str(exc)})
+        print(json.dumps(ready, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
     main()
-

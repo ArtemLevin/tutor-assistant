@@ -8,11 +8,13 @@ from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDateEdit, QFileDialog, QFormLayout, QGroupBox,
+    QApplication, QCheckBox, QComboBox, QDateEdit, QFileDialog, QFormLayout, QGroupBox,
     QHeaderView, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressBar, QPushButton, QTabWidget, QTableWidget, QTableWidgetItem,
+    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QTabWidget, QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -57,18 +59,27 @@ class MainWindow(QMainWindow):
         self.play_stop_timer = QTimer(self)
         self.play_stop_timer.setSingleShot(True)
         self.play_stop_timer.timeout.connect(self.player.pause)
+        self.latex_poll_timer = QTimer(self)
+        self.latex_poll_timer.setInterval(self.config.latex.poll_seconds * 1000)
+        self.latex_poll_timer.timeout.connect(self.scan_remote_latex)
         self.setWindowTitle("Tutor Assistant")
         self.resize(1000, 720)
         self._build()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         QTimer.singleShot(0, self._offer_recovery)
+        QTimer.singleShot(
+            0, lambda: self.auto_latex.setChecked(
+                self.config.latex.enabled and self.config.latex.auto_monitor
+            )
+        )
 
     def _build(self) -> None:
         tabs = QTabWidget()
         tabs.addTab(self._lesson_tab(), "1. Занятие")
         tabs.addTab(self._transcript_tab(), "2. Транскрипт")
         tabs.addTab(self._publish_tab(), "3. Публикация")
+        tabs.addTab(self._latex_tab(), "4. PDF")
         self.setCentralWidget(tabs)
         self.statusBar().showMessage("Готово")
 
@@ -210,6 +221,53 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.publish_summary)
         layout.addWidget(self.publish_button)
         layout.addStretch()
+        return page
+
+    def _latex_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        environment = QGroupBox("Локальная LaTeX-среда")
+        environment_layout = QHBoxLayout(environment)
+        self.latex_doctor_button = QPushButton("Проверить TeX Live")
+        self.latex_doctor_button.clicked.connect(self.latex_doctor)
+        self.latex_environment_label = QLabel("Проверка ещё не выполнялась")
+        environment_layout.addWidget(self.latex_doctor_button)
+        environment_layout.addWidget(self.latex_environment_label, 1)
+        layout.addWidget(environment)
+
+        source_row = QHBoxLayout()
+        self.tex_path = QLineEdit()
+        self.tex_path.setPlaceholderText("Путь к полученному от ChatGPT .tex")
+        choose = QPushButton("Выбрать TEX")
+        choose.clicked.connect(self.choose_tex)
+        self.compile_tex_button = QPushButton("Скомпилировать PDF")
+        self.compile_tex_button.clicked.connect(self.compile_local_tex)
+        source_row.addWidget(self.tex_path, 1)
+        source_row.addWidget(choose)
+        source_row.addWidget(self.compile_tex_button)
+        layout.addLayout(source_row)
+
+        monitor_row = QHBoxLayout()
+        self.auto_latex = QCheckBox("Автоматически проверять ветки занятий")
+        self.auto_latex.toggled.connect(self.toggle_latex_monitor)
+        scan = QPushButton("Проверить сейчас")
+        scan.clicked.connect(self.scan_remote_latex)
+        self.latex_monitor_status = QLabel("Мониторинг выключен")
+        monitor_row.addWidget(self.auto_latex)
+        monitor_row.addWidget(scan)
+        monitor_row.addWidget(self.latex_monitor_status, 1)
+        layout.addLayout(monitor_row)
+
+        self.compilation_log = QPlainTextEdit()
+        self.compilation_log.setReadOnly(True)
+        self.compilation_log.setPlaceholderText("Здесь появится журнал компиляции и понятное описание ошибок")
+        layout.addWidget(self.compilation_log, 3)
+        layout.addWidget(QLabel("Предпросмотр страниц — двойной клик открывает изображение:"))
+        self.pdf_previews = QListWidget()
+        self.pdf_previews.itemDoubleClicked.connect(
+            lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(256)))
+        )
+        layout.addWidget(self.pdf_previews, 2)
         return page
 
     def _make_lesson(self) -> Lesson:
@@ -391,20 +449,137 @@ class MainWindow(QMainWindow):
         assert self.lesson
         self.publish_button.setEnabled(False)
         worker = Worker(self.pipeline.publish, self.lesson)
-        worker.succeeded.connect(lambda result: QMessageBox.information(
-            self, "Готово",
-            f"Ветка: {result.branch}\nCommit: {result.commit[:12]}\nПуть: {result.repository_path}",
-        ))
+        worker.succeeded.connect(self._publication_ready)
         worker.failed.connect(self._worker_failed)
         worker.finished.connect(lambda: self.workers.remove(worker))
         self.workers.append(worker)
         worker.start()
+
+    def _publication_ready(self, result) -> None:
+        QMessageBox.information(
+            self, "Готово",
+            f"Ветка: {result.branch}\nCommit: {result.commit[:12]}\nПуть: {result.repository_path}",
+        )
+        self.latex_monitor_status.setText("Ветка занятия опубликована; ожидаю handbook/*.tex")
+
+    def latex_doctor(self) -> None:
+        from ..latex import inspect_latex_environment
+
+        report = inspect_latex_environment(self.config.latex)
+        if report.ready:
+            message = f"Готово: latexmk={report.latexmk}, engine={report.engine}"
+        else:
+            message = "; ".join(report.messages) or "LaTeX-среда не готова"
+        self.latex_environment_label.setText(message)
+        QMessageBox.information(self, "Проверка TeX Live", message)
+
+    def choose_tex(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "LaTeX-пособие", "", "LaTeX (*.tex)")
+        if path:
+            self.tex_path.setText(path)
+
+    def compile_local_tex(self) -> None:
+        from ..latex import LatexCompiler
+
+        path = Path(self.tex_path.text())
+        if not path.is_file():
+            QMessageBox.warning(self, "Компиляция", "Выберите существующий TEX-файл")
+            return
+        self.compile_tex_button.setEnabled(False)
+        self.compilation_log.setPlainText("Компиляция запущена…")
+        worker = Worker(LatexCompiler(self.config.latex).compile, path)
+        worker.succeeded.connect(self._local_compilation_ready)
+        worker.failed.connect(self._worker_failed)
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _local_compilation_ready(self, result) -> None:
+        self.compile_tex_button.setEnabled(True)
+        try:
+            log = result.log_file.read_text(encoding="utf-8")
+        except OSError:
+            log = "\n".join(result.errors + result.warnings)
+        title = "PDF создан" if result.success else "Компиляция завершилась с ошибкой"
+        summary = [title]
+        if result.pdf_file:
+            summary.append(f"PDF: {result.pdf_file}")
+            summary.append(f"Страниц: {result.pages}; размер: {result.size_bytes} байт")
+        summary.extend(f"Ошибка: {item}" for item in result.errors)
+        summary.extend(f"Предупреждение: {item}" for item in result.warnings)
+        self.compilation_log.setPlainText("\n".join(summary) + "\n\n" + log[-12000:])
+        self.pdf_previews.clear()
+        for path in result.preview_files:
+            item = QListWidgetItem(path.name)
+            item.setData(256, str(path.resolve()))
+            self.pdf_previews.addItem(item)
+        QMessageBox.information(self, "Компиляция", title)
+
+    def toggle_latex_monitor(self, enabled: bool) -> None:
+        if enabled:
+            self.latex_poll_timer.start()
+            self.latex_monitor_status.setText(
+                f"Проверка каждые {self.config.latex.poll_seconds} секунд"
+            )
+            self.scan_remote_latex()
+        else:
+            self.latex_poll_timer.stop()
+            self.latex_monitor_status.setText("Мониторинг выключен")
+
+    def scan_remote_latex(self) -> None:
+        from ..latex import RemoteLatexService
+
+        if any(getattr(worker, "purpose", "") == "latex-monitor" for worker in self.workers):
+            return
+        self.latex_monitor_status.setText("Проверяю удалённые ветки…")
+
+        def scan():
+            service = RemoteLatexService(self.config.repository, self.config.latex)
+            for lesson in self.pipeline.store.list():
+                if service.is_ready(lesson):
+                    return service.compile_lesson(
+                        lesson, cache_dir=self.pipeline.lesson_dir(lesson) / "latex-cache"
+                    )
+            return None
+
+        worker = Worker(scan)
+        worker.purpose = "latex-monitor"
+        worker.succeeded.connect(self._remote_compilation_ready)
+        worker.failed.connect(self._worker_failed)
+        worker.finished.connect(lambda: self.workers.remove(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _remote_compilation_ready(self, remote_result) -> None:
+        if remote_result is None:
+            self.latex_monitor_status.setText("Новых TEX-файлов нет")
+            return
+        lesson = remote_result.lesson
+        self.pipeline.store.save(lesson)
+        lesson.write_json(self.pipeline.lesson_dir(lesson) / "lesson.json")
+        result = remote_result.compilation
+        if result.success:
+            message = f"PDF создан и отправлен в {remote_result.branch}"
+        else:
+            message = (
+                f"Компиляция не удалась, попытка {lesson.latex.attempt}/{self.config.latex.max_attempts}. "
+                "В ветку добавлен reports/latex/latex_fix_request.md"
+            )
+        self.latex_monitor_status.setText(message)
+        self.compilation_log.setPlainText("\n".join(result.errors + result.warnings) or message)
+        self.pdf_previews.clear()
+        for path in result.preview_files:
+            item = QListWidgetItem(path.name)
+            item.setData(256, str(path.resolve()))
+            self.pdf_previews.addItem(item)
+        QMessageBox.information(self, "Автоматическая компиляция", message)
 
     def _worker_failed(self, details: str) -> None:
         self.progress.setRange(0, 1)
         self.transcribe_button.setEnabled(True)
         self.publish_button.setEnabled(True)
         self.test_devices_button.setEnabled(True)
+        self.compile_tex_button.setEnabled(True)
         logging.error(details)
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
 
