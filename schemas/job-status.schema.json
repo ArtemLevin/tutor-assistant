@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ArtemLevin/tutor-assistant/schemas/job-status.schema.json",
+  "title": "Tutor Assistant processing status",
+  "type": "object",
+  "required": ["status"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "lesson_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "recording",
+        "recorded",
+        "transcribing",
+        "review_required",
+        "ready_for_generation",
+        "published",
+        "generated_tex",
+        "compiling_pdf",
+        "pdf_review_required",
+        "compile_failed",
+        "generating",
+        "completed",
+        "failed"
+      ]
+    },
+    "stage": {
+      "enum": ["generation", "latex", "materials", "completed"]
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "artifacts": {
+      "type": "object",
+      "properties": {
+        "tex": {"$ref": "#/$defs/artifactStatus"},
+        "pdf": {"$ref": "#/$defs/artifactStatus"},
+        "poster": {"$ref": "#/$defs/artifactStatus"},
+        "web": {"$ref": "#/$defs/artifactStatus"},
+        "index": {"$ref": "#/$defs/artifactStatus"}
+      },
+      "additionalProperties": true
+    },
+    "latex": {
+      "type": "object"
+    },
+    "error": {
+      "type": ["object", "null"],
+      "properties": {
+        "message": {"type": "string"},
+        "stage": {"type": "string"},
+        "required_action": {"type": "string"}
+      },
+      "required": ["message", "stage", "required_action"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["schema_version"]
+      },
+      "then": {
+        "required": ["lesson_id", "stage", "updated_at", "artifacts"]
+      }
+    }
+  ],
+  "$defs": {
+    "artifactStatus": {
+      "enum": ["pending", "waiting_for_local_compiler", "completed", "failed", "skipped"]
+    }
+  },
+  "additionalProperties": true
+}

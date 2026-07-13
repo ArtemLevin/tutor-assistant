@@ -4,6 +4,7 @@ import json
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..config import LatexConfig, RepositoryConfig
@@ -199,8 +200,11 @@ class RemoteLatexService:
             payload = {}
         payload.update(
             {
+                "schema_version": payload.get("schema_version", "1.0"),
+                "lesson_id": payload.get("lesson_id", lesson.lesson_id),
                 "status": lesson.status.value,
-                "stage": "latex",
+                "stage": "materials" if result.success else "latex",
+                "updated_at": datetime.now(UTC).isoformat(),
                 "artifacts": {
                     **payload.get("artifacts", {}),
                     "tex": "completed",
