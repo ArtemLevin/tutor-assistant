@@ -285,4 +285,3 @@ class LatexCompiler:
             }
         )
         result.report_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-

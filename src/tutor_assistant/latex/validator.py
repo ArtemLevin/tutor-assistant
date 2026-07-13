@@ -57,4 +57,3 @@ def validate_tex(tex_file: Path) -> list[ValidationIssue]:
     if "\\begin{document}" not in text or "\\end{document}" not in text:
         issues.append(ValidationIssue("document-boundary", "Не найдены обе границы document"))
     return issues
-

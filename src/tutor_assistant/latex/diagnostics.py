@@ -47,4 +47,3 @@ def inspect_latex_environment(config: LatexConfig) -> EnvironmentReport:
         packages=packages,
         messages=messages,
     )
-
