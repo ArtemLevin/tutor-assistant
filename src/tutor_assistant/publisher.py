@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import RepositoryConfig
@@ -135,8 +137,23 @@ class LessonPublisher:
                 shutil.copy2(value, source_dir / filename)
         lesson.transition(JobStatus.READY) if lesson.status == JobStatus.PUBLISHED else None
         lesson.write_json(target / "lesson.json")
+        job_status = {
+            "schema_version": "1.0",
+            "lesson_id": lesson.lesson_id,
+            "status": JobStatus.READY.value,
+            "stage": "generation",
+            "updated_at": datetime.now(UTC).isoformat(),
+            "artifacts": {
+                "tex": "pending",
+                "pdf": "pending",
+                "poster": "pending",
+                "web": "pending",
+                "index": "pending",
+            },
+        }
         (target / "job.status.json").write_text(
-            '{\n  "status": "ready_for_generation"\n}\n', encoding="utf-8"
+            json.dumps(job_status, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
         return target
 
