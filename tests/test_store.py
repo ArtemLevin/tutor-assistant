@@ -17,3 +17,21 @@ def test_store_upserts_lesson(tmp_path) -> None:
     store.save(lesson)
     assert store.get(lesson.lesson_id).topic == "Механический резонанс"
     assert len(store.list()) == 1
+
+
+def test_store_uses_wal_and_persists_transcription_job(tmp_path) -> None:
+    store = LessonStore(tmp_path / "lessons.sqlite3")
+    lesson = Lesson(
+        student=Student(id="student", full_name="Ученик"),
+        subject="physics",
+        lesson_date=date(2026, 7, 12),
+        topic="Волны",
+    )
+    store.save(lesson)
+    store.save_transcription_job(lesson.lesson_id, "lesson.wav", "waiting")
+
+    with store.connect() as db:
+        journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+
+    assert journal_mode == "wal"
+    assert store.list_transcription_jobs()[0].lesson_id == lesson.lesson_id

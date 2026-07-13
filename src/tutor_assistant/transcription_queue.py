@@ -4,8 +4,21 @@ from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from .domain import Lesson
+
+
+class QueueStorage(Protocol):
+    def save_transcription_job(
+        self,
+        lesson_id: str,
+        audio_path: str,
+        status: str,
+        error: str | None = None,
+        *,
+        increment_attempts: bool = False,
+    ) -> None: ...
 
 
 class QueueStatus(StrEnum):
@@ -30,10 +43,21 @@ class TranscriptionJob:
 class TranscriptionQueue:
     """A deterministic single-worker queue; thread execution is owned by the UI layer."""
 
-    def __init__(self) -> None:
+    def __init__(self, storage: QueueStorage | None = None) -> None:
         self._waiting: deque[str] = deque()
         self._jobs: dict[str, TranscriptionJob] = {}
         self._active_id: str | None = None
+        self._storage = storage
+
+    def _persist(self, job: TranscriptionJob, *, increment_attempts: bool = False) -> None:
+        if self._storage:
+            self._storage.save_transcription_job(
+                job.id,
+                str(job.audio.resolve()),
+                job.status.value,
+                job.error,
+                increment_attempts=increment_attempts,
+            )
 
     @property
     def jobs(self) -> tuple[TranscriptionJob, ...]:
@@ -54,6 +78,23 @@ class TranscriptionQueue:
         job = TranscriptionJob(lesson=lesson, audio=audio)
         self._jobs[job.id] = job
         self._waiting.append(job.id)
+        self._persist(job)
+        return job
+
+    def restore(
+        self,
+        lesson: Lesson,
+        audio: Path,
+        status: QueueStatus,
+        error: str | None = None,
+    ) -> TranscriptionJob:
+        restored_status = QueueStatus.WAITING if status == QueueStatus.RUNNING else status
+        job = TranscriptionJob(lesson=lesson, audio=audio, status=restored_status, error=error)
+        self._jobs[job.id] = job
+        if restored_status == QueueStatus.WAITING:
+            self._waiting.append(job.id)
+        if restored_status != status:
+            self._persist(job)
         return job
 
     def start_next(self) -> TranscriptionJob | None:
@@ -66,6 +107,7 @@ class TranscriptionQueue:
                 continue
             job.status = QueueStatus.RUNNING
             self._active_id = job_id
+            self._persist(job, increment_attempts=True)
             return job
         return None
 
@@ -76,6 +118,7 @@ class TranscriptionQueue:
         job.error = None
         if self._active_id == job_id:
             self._active_id = None
+        self._persist(job)
         return job
 
     def fail(self, job_id: str, error: str) -> TranscriptionJob:
@@ -84,6 +127,17 @@ class TranscriptionQueue:
         job.error = error
         if self._active_id == job_id:
             self._active_id = None
+        self._persist(job)
+        return job
+
+    def retry(self, job_id: str) -> TranscriptionJob:
+        job = self._jobs[job_id]
+        if job.status != QueueStatus.FAILED:
+            raise ValueError("Повторный запуск доступен только для ошибочного задания")
+        job.status = QueueStatus.WAITING
+        job.error = None
+        self._waiting.append(job_id)
+        self._persist(job)
         return job
 
     def get(self, job_id: str) -> TranscriptionJob | None:

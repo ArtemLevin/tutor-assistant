@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import sys
 import traceback
 from datetime import date, datetime
@@ -9,7 +10,7 @@ from pathlib import Path
 from time import sleep
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -55,6 +56,7 @@ from ..recording import (
     list_system_audio_sources,
     recover_recording,
 )
+from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
@@ -75,6 +77,46 @@ class Worker(QThread):
             self.failed.emit(traceback.format_exc())
 
 
+class TranscriptionWorker(QThread):
+    succeeded = Signal(str, object)
+    failed = Signal(str, str)
+    became_idle = Signal()
+
+    def __init__(self, pipeline: LessonPipeline) -> None:
+        super().__init__()
+        self.pipeline = pipeline
+        self.pending: queue.Queue[tuple[str, Lesson, Path] | None] = queue.Queue()
+        self.busy = False
+        self._shutdown_sent = False
+
+    def submit(self, job_id: str, lesson: Lesson, audio: Path) -> None:
+        if self._shutdown_sent:
+            raise RuntimeError("Поток транскрибации завершает работу")
+        self.pending.put((job_id, lesson, audio))
+
+    def shutdown(self) -> None:
+        if not self._shutdown_sent:
+            self._shutdown_sent = True
+            self.pending.put(None)
+
+    def run(self) -> None:
+        while True:
+            item = self.pending.get()
+            if item is None:
+                self.pending.task_done()
+                return
+            job_id, lesson, audio = item
+            self.busy = True
+            try:
+                self.succeeded.emit(job_id, self.pipeline.transcribe(lesson, audio))
+            except Exception:
+                self.failed.emit(job_id, traceback.format_exc())
+            finally:
+                self.busy = False
+                self.pending.task_done()
+                self.became_idle.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, config_path: Path) -> None:
         super().__init__()
@@ -87,6 +129,7 @@ class MainWindow(QMainWindow):
             self.devices, self.config.recording.target_sample_rate
         )
         self.lesson: Lesson | None = None
+        self.recording_lesson: Lesson | None = None
         self.recorder: DualRecorder | None = None
         self.preflight_passed = False
         self.preflight_result = None
@@ -97,8 +140,16 @@ class MainWindow(QMainWindow):
         self._quick_countdown_remaining = 0
         self.recording_seconds = 0
         self.workers: list[Worker] = []
-        self.transcription_queue = TranscriptionQueue()
+        self.transcription_queue = TranscriptionQueue(self.pipeline.store)
         self._loading_segments = False
+        self._summary_dirty = False
+        self._shutdown_requested = False
+        self._shutdown_ready = False
+        self.transcription_worker = TranscriptionWorker(self.pipeline)
+        self.transcription_worker.succeeded.connect(self._background_transcription_ready)
+        self.transcription_worker.failed.connect(self._background_transcription_failed)
+        self.transcription_worker.became_idle.connect(self._maybe_finish_shutdown)
+        self.transcription_worker.finished.connect(self._maybe_finish_shutdown)
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
         self.player.setAudioOutput(self.audio_output)
@@ -115,6 +166,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1040, 720)
         self.resize(1180, 820)
         self._build()
+        self.transcription_worker.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.draft_timer = QTimer(self)
@@ -241,8 +293,8 @@ class MainWindow(QMainWindow):
         self._set_status("Собираю диагностический пакет…", "working")
         worker = Worker(create_support_bundle, self.config, self.config_path)
         worker.succeeded.connect(self._support_bundle_ready)
-        worker.failed.connect(self._worker_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.failed.connect(lambda details: self._operation_failed("support", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
@@ -255,6 +307,11 @@ class MainWindow(QMainWindow):
             f"ZIP создан без аудио и транскриптов:\n{path}",
         )
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+    def _worker_finished(self, worker: Worker) -> None:
+        if worker in self.workers:
+            self.workers.remove(worker)
+        self._maybe_finish_shutdown()
 
     def _offer_recovery(self) -> None:
         sessions = find_recoverable_recordings(self.config.workspace)
@@ -305,8 +362,25 @@ class MainWindow(QMainWindow):
 
     def _restore_background_jobs(self) -> None:
         restored = 0
-        for lesson in reversed(self.pipeline.store.list()):
+        lessons = {lesson.lesson_id: lesson for lesson in self.pipeline.store.list(limit=1000)}
+        for stored in self.pipeline.store.list_transcription_jobs():
+            lesson = lessons.get(stored.lesson_id)
+            if lesson is None:
+                continue
+            try:
+                status = QueueStatus(stored.status)
+            except ValueError:
+                continue
+            audio = Path(stored.audio_path)
+            if status in {QueueStatus.WAITING, QueueStatus.RUNNING} and not audio.is_file():
+                continue
+            self.transcription_queue.restore(lesson, audio, status, stored.error)
+            restored += 1
+        known = {job.id for job in self.transcription_queue.jobs}
+        for lesson in reversed(tuple(lessons.values())):
             if lesson.status not in {JobStatus.RECORDED, JobStatus.TRANSCRIBING}:
+                continue
+            if lesson.lesson_id in known:
                 continue
             if not lesson.source_audio_local:
                 continue
@@ -318,10 +392,15 @@ class MainWindow(QMainWindow):
         if restored:
             self._update_transcription_queue_ui()
             self._pump_transcription_queue()
-            self._set_status(f"Восстановлена фоновая очередь · {restored}", "working")
+            self._set_status(f"Восстановлена история обработки · {restored}", "working")
 
     def _load_lesson(self, lesson: Lesson) -> None:
         self.lesson = lesson
+        self._loading_segments = True
+        self._summary_dirty = False
+        self.audio_path.clear()
+        self.transcript.clear()
+        self.segment_table.setRowCount(0)
         index = self.student.findData(lesson.student.id)
         if index >= 0:
             self.student.setCurrentIndex(index)
@@ -341,6 +420,7 @@ class MainWindow(QMainWindow):
         if lesson.artifacts.segments_json and Path(lesson.artifacts.segments_json).exists():
             self._load_segments(Path(lesson.artifacts.segments_json))
             self._restore_transcript_draft()
+        self._loading_segments = False
         self.approve.setEnabled(lesson.status == JobStatus.REVIEW_REQUIRED)
         self.publish_button.setEnabled(lesson.status == JobStatus.READY)
         if lesson.status in {
@@ -852,6 +932,7 @@ class MainWindow(QMainWindow):
         self.transcript = QPlainTextEdit()
         self.transcript.setPlaceholderText("Здесь появится распознанный текст занятия")
         self.transcript.setMinimumHeight(210)
+        self.transcript.textChanged.connect(self._summary_changed)
         summary_layout.addWidget(self.transcript, 1)
         approve_row = QHBoxLayout()
         hint = QLabel("Подтверждённая версия будет опубликована в папке ученика")
@@ -1042,6 +1123,10 @@ class MainWindow(QMainWindow):
 
     def start_recording(self) -> None:
         try:
+            if self._shutdown_requested:
+                raise RuntimeError("Приложение завершает фоновые операции")
+            if self._recording_stop_started or (self.recorder and self.recorder.active):
+                raise RuntimeError("Запись уже запущена или сохраняется")
             if self.config.recording.require_preflight and not self.preflight_passed:
                 answer = QMessageBox.question(
                     self,
@@ -1052,8 +1137,9 @@ class MainWindow(QMainWindow):
                 )
                 if answer != QMessageBox.Yes:
                     return
-            self.lesson = self._make_lesson()
-            directory = self.pipeline.lesson_dir(self.lesson) / "recording"
+            recording_lesson = self._make_lesson()
+            self.recording_lesson = recording_lesson
+            directory = self.pipeline.lesson_dir(recording_lesson) / "recording"
             self.recorder = DualRecorder(
                 self.config.recording.sample_rate,
                 self.config.recording.channels,
@@ -1065,14 +1151,15 @@ class MainWindow(QMainWindow):
             if not isinstance(system_source, SystemAudioSource):
                 raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
             self.recorder.start(directory, int(self.mic.currentData()), system_source)
-            self.lesson.transition(JobStatus.RECORDING)
-            self.pipeline.store.save(self.lesson)
+            recording_lesson.transition(JobStatus.RECORDING)
+            self.pipeline.store.save(recording_lesson)
             self.recording_seconds = 0
             self._recording_stop_started = False
             self._active_audio_warning = ""
             self.timer.start(1000)
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
+            self.test_devices_button.setEnabled(False)
             if self._quick_auto_transcribe_active:
                 self.quick_start_button.setText("Завершить занятие")
                 self.quick_start_button.setEnabled(True)
@@ -1082,12 +1169,30 @@ class MainWindow(QMainWindow):
             self._set_status("Идёт запись", "working")
             logging.info(
                 "Запись начата: lesson=%s mic=%s system=%s",
-                self.lesson.lesson_id,
+                recording_lesson.lesson_id,
                 self.mic.currentText(),
                 system_source.display_name,
             )
         except Exception as exc:
             logging.exception("Не удалось начать запись")
+            failed_lesson = self.recording_lesson
+            if self.recorder and self.recorder.active:
+                try:
+                    self.recorder.stop()
+                except Exception:
+                    logging.exception("Не удалось остановить recorder после ошибки запуска")
+            self.recorder = None
+            self.recording_lesson = None
+            if failed_lesson:
+                try:
+                    failed_lesson.transition(JobStatus.FAILED, str(exc))
+                    failed_lesson.write_json(self.pipeline.lesson_dir(failed_lesson) / "lesson.json")
+                    self.pipeline.store.save(failed_lesson)
+                except Exception:
+                    logging.exception("Не удалось сохранить ошибку запуска записи")
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.test_devices_button.setEnabled(True)
             self._quick_auto_transcribe_active = False
             self._refresh_quick_readiness()
             QMessageBox.critical(self, "Ошибка записи", str(exc))
@@ -1096,8 +1201,10 @@ class MainWindow(QMainWindow):
         self._stop_recording_async()
 
     def _stop_recording_async(self, reason: str | None = None) -> None:
-        if self._recording_stop_started or not self.recorder or not self.lesson:
+        if self._recording_stop_started or not self.recorder or not self.recording_lesson:
             return
+        recorder = self.recorder
+        recording_lesson = self.recording_lesson
         self._recording_stop_started = True
         self.timer.stop()
         self.stop_button.setEnabled(False)
@@ -1107,24 +1214,69 @@ class MainWindow(QMainWindow):
             logging.warning("Аварийное завершение записи: %s", reason)
         else:
             logging.info("Завершение записи запрошено")
-        worker = Worker(self.recorder.stop)
+        worker = Worker(recorder.stop)
         worker.purpose = "recording-stop"
-        worker.succeeded.connect(lambda result: self._recording_ready(result, reason))
+        worker.succeeded.connect(
+            lambda result, lesson=recording_lesson, source=recorder: self._recording_ready(
+                result, lesson, source, reason
+            )
+        )
         worker.failed.connect(self._recording_stop_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
-    def _recording_ready(self, result, reason: str | None = None) -> None:
-        assert self.lesson
-        recorded_lesson = self.lesson
-        self.audio_path.setText(str(result.mixed_file))
+    def _recording_ready(
+        self,
+        result,
+        recorded_lesson: Lesson,
+        source_recorder: DualRecorder,
+        reason: str | None = None,
+    ) -> None:
+        try:
+            self._recording_ready_impl(result, recorded_lesson, source_recorder, reason)
+        except Exception:
+            details = traceback.format_exc()
+            logging.error("Ошибка финализации записанного занятия\n%s", details)
+            try:
+                recorded_lesson.transition(JobStatus.FAILED, details[-2000:])
+                recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
+                self.pipeline.store.save(recorded_lesson)
+            except Exception:
+                logging.exception("Не удалось сохранить состояние ошибки записи")
+            self._recording_stop_started = False
+            self.recorder = None
+            self.recording_lesson = None
+            self.start_button.setEnabled(True)
+            self.quick_start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.test_devices_button.setEnabled(True)
+            self._quick_auto_transcribe_active = False
+            self._set_status("Аудио сохранено, оформление занятия завершилось с ошибкой", "error")
+            QMessageBox.critical(
+                self,
+                "Ошибка оформления записи",
+                f"Аудиофайл сохранён: {result.mixed_file}\n\n{details[-2000:]}",
+            )
+            self._maybe_finish_shutdown()
+
+    def _recording_ready_impl(
+        self,
+        result,
+        recorded_lesson: Lesson,
+        source_recorder: DualRecorder,
+        reason: str | None = None,
+    ) -> None:
+        if self.recording_lesson is not recorded_lesson or self.recorder is not source_recorder:
+            logging.error("Игнорируется результат записи с устаревшим контекстом")
+            return
         recorded_lesson.source_audio_local = str(result.mixed_file.resolve())
         recorded_lesson.transition(JobStatus.RECORDED)
         recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
         self.pipeline.store.save(recorded_lesson)
         self.start_button.setEnabled(True)
         self.quick_start_button.setEnabled(True)
+        self.test_devices_button.setEnabled(True)
         self.quick_start_button.setText("Начать занятие")
         self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
         self.recording_state_label.setProperty("active", False)
@@ -1141,6 +1293,7 @@ class MainWindow(QMainWindow):
         logging.info("Запись сохранена: %s; quality_ready=%s", result.mixed_file, quality.get("ready"))
         self._recording_stop_started = False
         self.recorder = None
+        self.recording_lesson = None
         if self._quick_auto_transcribe_active:
             self._quick_auto_transcribe_active = False
             self._enqueue_transcription(recorded_lesson, result.mixed_file)
@@ -1150,11 +1303,15 @@ class MainWindow(QMainWindow):
                 "working",
             )
         else:
+            self.lesson = recorded_lesson
+            self.audio_path.setText(str(result.mixed_file))
             self._refresh_quick_readiness()
+        self._maybe_finish_shutdown()
 
     def _prepare_next_lesson(self) -> None:
-        self.lesson = None
-        self.audio_path.clear()
+        self.recording_lesson = None
+        if self.lesson is None:
+            self.audio_path.clear()
         self.topic.clear()
         self.quick_topic.clear()
         self.config.quick_start.last_topic = ""
@@ -1171,7 +1328,9 @@ class MainWindow(QMainWindow):
         logging.error(details)
         self._recording_stop_started = False
         self.recorder = None
+        self.recording_lesson = None
         self.start_button.setEnabled(True)
+        self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
         self._refresh_quick_readiness()
         self.stop_button.setEnabled(False)
@@ -1185,6 +1344,7 @@ class MainWindow(QMainWindow):
             "Доступные аудиочанки сохранены. После перезапуска приложение предложит восстановление.\n\n"
             + details[-2000:],
         )
+        self._maybe_finish_shutdown()
 
     def choose_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Аудиозапись", "", "Audio (*.wav *.mp3 *.m4a *.flac)")
@@ -1231,8 +1391,8 @@ class MainWindow(QMainWindow):
 
         worker = Worker(run_tests)
         worker.succeeded.connect(self._device_test_ready)
-        worker.failed.connect(self._worker_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.failed.connect(lambda details: self._operation_failed("device-test", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
@@ -1282,7 +1442,11 @@ class MainWindow(QMainWindow):
 
     def transcribe(self) -> None:
         try:
-            if self.lesson is None:
+            if self.lesson is None or self.lesson.status not in {
+                JobStatus.DRAFT,
+                JobStatus.RECORDED,
+                JobStatus.FAILED,
+            }:
                 self.lesson = self._make_lesson()
             audio = Path(self.audio_path.text())
             if not audio.is_file():
@@ -1291,9 +1455,12 @@ class MainWindow(QMainWindow):
             lesson.source_audio_local = str(audio.resolve())
             if lesson.status == JobStatus.DRAFT:
                 lesson.transition(JobStatus.RECORDED)
+            elif lesson.status == JobStatus.FAILED:
+                lesson.transition(JobStatus.RECORDED)
             lesson.write_json(self.pipeline.lesson_dir(lesson) / "lesson.json")
             self.pipeline.store.save(lesson)
             self._enqueue_transcription(lesson, audio)
+            self.lesson = None
             self._prepare_next_lesson()
             self._set_status(
                 f"{lesson.student.full_name}: добавлено в фоновую очередь",
@@ -1309,21 +1476,13 @@ class MainWindow(QMainWindow):
         self._pump_transcription_queue()
 
     def _pump_transcription_queue(self) -> None:
+        if self._shutdown_requested:
+            return
         job = self.transcription_queue.start_next()
         if job is None:
             return
         self._update_transcription_queue_ui()
-        worker = Worker(self.pipeline.transcribe, job.lesson, job.audio)
-        worker.purpose = "background-transcription"
-        worker.succeeded.connect(
-            lambda lesson, job_id=job.id: self._background_transcription_ready(job_id, lesson)
-        )
-        worker.failed.connect(
-            lambda details, job_id=job.id: self._background_transcription_failed(job_id, details)
-        )
-        worker.finished.connect(lambda: self.workers.remove(worker))
-        self.workers.append(worker)
-        worker.start()
+        self.transcription_worker.submit(job.id, job.lesson, job.audio)
 
     def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
         self.transcription_queue.complete(job_id, lesson)
@@ -1373,7 +1532,7 @@ class MainWindow(QMainWindow):
         job = self.transcription_queue.get(str(item.data(256)))
         if job is None:
             return
-        if self.recorder and self.recorder.active:
+        if (self.recorder and self.recorder.active) or self._recording_stop_started:
             QMessageBox.warning(
                 self,
                 "Идёт запись",
@@ -1381,7 +1540,23 @@ class MainWindow(QMainWindow):
             )
             return
         if job.status == QueueStatus.FAILED:
-            QMessageBox.critical(self, "Ошибка транскрибации", job.error or "Неизвестная ошибка")
+            answer = QMessageBox.question(
+                self,
+                "Ошибка транскрибации",
+                f"{job.error or 'Неизвестная ошибка'}\n\nПовторить транскрибацию?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                if not job.audio.is_file():
+                    QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {job.audio}")
+                    return
+                job.lesson.transition(JobStatus.RECORDED, force=True)
+                self.pipeline.store.save(job.lesson)
+                job.lesson.write_json(self.pipeline.lesson_dir(job.lesson) / "lesson.json")
+                self.transcription_queue.retry(job.id)
+                self._update_transcription_queue_ui()
+                self._pump_transcription_queue()
             return
         if job.status != QueueStatus.READY:
             self._set_status("Транскрипт ещё обрабатывается", "working")
@@ -1390,6 +1565,7 @@ class MainWindow(QMainWindow):
 
     def _load_segments(self, path: Path) -> None:
         segments = json.loads(path.read_text(encoding="utf-8"))
+        was_loading = self._loading_segments
         self._loading_segments = True
         self.segment_table.setRowCount(len(segments))
         for row, segment in enumerate(segments):
@@ -1411,7 +1587,13 @@ class MainWindow(QMainWindow):
             self.segment_table.setItem(row, 2, speaker_item)
             self.segment_table.setItem(row, 3, text_item)
             self.segment_table.setItem(row, 4, confidence_item)
-        self._loading_segments = False
+        self._loading_segments = was_loading
+
+    def _summary_changed(self) -> None:
+        if self._loading_segments or not self.lesson:
+            return
+        self._summary_dirty = True
+        self._schedule_draft_save()
 
     def _draft_path(self) -> Path | None:
         if not self.lesson:
@@ -1438,7 +1620,12 @@ class MainWindow(QMainWindow):
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = {
+            "segments": rows,
+            "summary": self.transcript.toPlainText(),
+            "summary_dirty": self._summary_dirty,
+        }
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
 
     def _restore_transcript_draft(self) -> None:
@@ -1446,13 +1633,24 @@ class MainWindow(QMainWindow):
         if not path or not path.exists():
             return
         try:
-            rows = json.loads(path.read_text(encoding="utf-8"))
+            payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return
+        if isinstance(payload, list):
+            rows = payload
+            summary = None
+            summary_dirty = False
+        else:
+            rows = payload.get("segments", [])
+            summary = payload.get("summary")
+            summary_dirty = bool(payload.get("summary_dirty"))
         self._loading_segments = True
         for row, item in enumerate(rows[: self.segment_table.rowCount()]):
             self.segment_table.item(row, 2).setText(str(item.get("speaker", "—")))
             self.segment_table.item(row, 3).setText(str(item.get("text", "")))
+        if summary is not None:
+            self.transcript.setPlainText(str(summary))
+        self._summary_dirty = summary_dirty
         self._loading_segments = False
 
     @staticmethod
@@ -1463,7 +1661,11 @@ class MainWindow(QMainWindow):
 
     def play_selected_segment(self, _index=None) -> None:
         row = self.segment_table.currentRow()
-        audio = Path(self.audio_path.text())
+        audio = Path(
+            self.lesson.source_audio_local
+            if self.lesson and self.lesson.source_audio_local
+            else self.audio_path.text()
+        )
         if row < 0 or not audio.is_file():
             QMessageBox.warning(self, "Воспроизведение", "Выберите сегмент и существующий аудиофайл")
             return
@@ -1477,7 +1679,9 @@ class MainWindow(QMainWindow):
         self.play_stop_timer.start(max(100, round((end - start) * 1000 / speed)))
 
     def approve_transcript(self) -> None:
-        assert self.lesson
+        if not self.lesson or self.lesson.status != JobStatus.REVIEW_REQUIRED:
+            QMessageBox.warning(self, "Транскрипт", "Выберите занятие, готовое к проверке")
+            return
         segment_texts = [
             (
                 f"[{self.segment_table.item(row, 2).text()}] "
@@ -1488,8 +1692,15 @@ class MainWindow(QMainWindow):
             for row in range(self.segment_table.rowCount())
             if self.segment_table.item(row, 3) and self.segment_table.item(row, 3).text().strip()
         ]
-        verified_text = " ".join(segment_texts) if segment_texts else self.transcript.toPlainText()
+        verified_text = select_verified_text(
+            segment_texts,
+            self.transcript.toPlainText(),
+            self._summary_dirty,
+        )
+        self._loading_segments = True
         self.transcript.setPlainText(verified_text)
+        self._loading_segments = False
+        self._summary_dirty = False
         self.pipeline.approve_transcript(self.lesson, verified_text)
         draft = self._draft_path()
         if draft and draft.exists():
@@ -1504,14 +1715,16 @@ class MainWindow(QMainWindow):
         logging.info("Транскрипт подтверждён: lesson=%s", self.lesson.lesson_id)
 
     def publish(self) -> None:
-        assert self.lesson
+        if not self.lesson or self.lesson.status != JobStatus.READY:
+            QMessageBox.warning(self, "Публикация", "Сначала подтвердите транскрипт")
+            return
         self.publish_button.setEnabled(False)
         self._set_status("Создаю ветку и публикую занятие…", "working")
         logging.info("Публикация начата: lesson=%s", self.lesson.lesson_id)
         worker = Worker(self.pipeline.publish, self.lesson)
         worker.succeeded.connect(self._publication_ready)
-        worker.failed.connect(self._worker_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.failed.connect(lambda details: self._operation_failed("publish", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
@@ -1562,8 +1775,8 @@ class MainWindow(QMainWindow):
         logging.info("Локальная компиляция LaTeX начата: %s", path)
         worker = Worker(LatexCompiler(self.config.latex).compile, path)
         worker.succeeded.connect(self._local_compilation_ready)
-        worker.failed.connect(self._worker_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.failed.connect(lambda details: self._operation_failed("compile", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
@@ -1621,8 +1834,8 @@ class MainWindow(QMainWindow):
         worker = Worker(scan)
         worker.purpose = "latex-monitor"
         worker.succeeded.connect(self._remote_compilation_ready)
-        worker.failed.connect(self._worker_failed)
-        worker.finished.connect(lambda: self.workers.remove(worker))
+        worker.failed.connect(lambda details: self._operation_failed("latex-monitor", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
@@ -1652,22 +1865,72 @@ class MainWindow(QMainWindow):
         self._set_status(message, "success" if result.success else "warning")
         QMessageBox.information(self, "Автоматическая компиляция", message)
 
-    def _worker_failed(self, details: str) -> None:
-        self.progress.setRange(0, 1)
-        self.transcribe_button.setEnabled(True)
-        self.publish_button.setEnabled(True)
-        self.test_devices_button.setEnabled(True)
-        self.compile_tex_button.setEnabled(True)
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self._recording_stop_started = False
-        self._quick_start_pending = False
-        self._quick_auto_transcribe_active = False
-        self.quick_countdown_timer.stop()
-        self._refresh_quick_readiness()
+    def _operation_failed(self, purpose: str, details: str) -> None:
+        if purpose == "support":
+            self.support_button.setEnabled(True)
+        elif purpose == "device-test":
+            self.test_devices_button.setEnabled(True)
+            self._quick_start_pending = False
+            self._quick_auto_transcribe_active = False
+            self.quick_countdown_timer.stop()
+            self._refresh_quick_readiness()
+        elif purpose == "publish":
+            self.publish_button.setEnabled(bool(self.lesson and self.lesson.status == JobStatus.READY))
+        elif purpose == "compile":
+            self.compile_tex_button.setEnabled(True)
+        elif purpose == "latex-monitor":
+            self.latex_monitor_status.setText("Ошибка проверки удалённых TEX-файлов")
         logging.error(details)
-        self._set_status("Фоновая операция завершилась с ошибкой", "error")
+        self._set_status(f"Ошибка фоновой операции · {purpose}", "error")
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._shutdown_ready:
+            event.accept()
+            return
+        has_recording = bool(self.recorder and self.recorder.active) or self._recording_stop_started
+        has_workers = any(worker.isRunning() for worker in self.workers) or self.transcription_worker.busy
+        if not has_recording and not has_workers:
+            self.transcription_worker.shutdown()
+            if self.transcription_worker.wait(1000):
+                event.accept()
+            else:
+                self._shutdown_requested = True
+                event.ignore()
+            return
+        answer = QMessageBox.question(
+            self,
+            "Безопасное завершение",
+            "Сначала завершить запись и дождаться текущих фоновых операций? "
+            "Ожидающие транскрибации сохранятся и продолжатся при следующем запуске.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            event.ignore()
+            return
+        event.ignore()
+        self._shutdown_requested = True
+        self.transcription_worker.shutdown()
+        self.timer.stop()
+        self.latex_poll_timer.stop()
+        self.quick_countdown_timer.stop()
+        self.start_button.setEnabled(False)
+        self.quick_start_button.setEnabled(False)
+        self._set_status("Завершаю текущие операции…", "working")
+        if self.recorder and self.recorder.active and not self._recording_stop_started:
+            self._stop_recording_async("Приложение закрывается; запись корректно завершается")
+        self._maybe_finish_shutdown()
+
+    def _maybe_finish_shutdown(self) -> None:
+        if not self._shutdown_requested:
+            return
+        recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
+        workers_busy = any(worker.isRunning() for worker in self.workers)
+        if recording_busy or workers_busy or self.transcription_worker.isRunning():
+            return
+        self._shutdown_ready = True
+        QTimer.singleShot(0, self.close)
 
     def _tick(self) -> None:
         self.recording_seconds += 1

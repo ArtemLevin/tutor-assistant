@@ -27,6 +27,12 @@ def test_student_repository_folder_override() -> None:
     assert student.folder == "custom/abc"
 
 
+@pytest.mark.parametrize("folder", ["../outside", "students/../../outside", "/absolute"])
+def test_student_repository_folder_cannot_escape_repository(folder: str) -> None:
+    with pytest.raises(ValueError):
+        Student(id="abc", full_name="ABC", repository_folder=folder)
+
+
 def test_invalid_status_transition_is_rejected() -> None:
     lesson = Lesson(
         student=Student(id="test", full_name="Ученик"),

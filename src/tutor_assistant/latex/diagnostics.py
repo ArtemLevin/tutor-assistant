@@ -7,12 +7,7 @@ from ..config import LatexConfig
 from .models import EnvironmentReport
 
 REQUIRED_TEX_FILES = [
-    "babel.sty",
-    "russianb.ldf",
-    "amsmath.sty",
-    "tikz.sty",
-    "pgfplots.sty",
-    "tkz-euclide.sty",
+    "babel.sty", "russianb.ldf", "amsmath.sty", "tikz.sty", "pgfplots.sty", "tkz-euclide.sty"
 ]
 
 
@@ -25,7 +20,9 @@ def inspect_latex_environment(config: LatexConfig) -> EnvironmentReport:
     kpsewhich = shutil.which("kpsewhich")
     if kpsewhich:
         for filename in REQUIRED_TEX_FILES:
-            result = subprocess.run([kpsewhich, filename], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(
+                [kpsewhich, filename], capture_output=True, text=True, timeout=15
+            )
             packages[filename] = result.returncode == 0 and bool(result.stdout.strip())
     else:
         packages = {filename: False for filename in REQUIRED_TEX_FILES}
@@ -41,9 +38,5 @@ def inspect_latex_environment(config: LatexConfig) -> EnvironmentReport:
         messages.append("pdftoppm не найден: PNG-предпросмотр будет пропущен")
     return EnvironmentReport(
         ready=bool(latexmk and engine and (not kpsewhich or not missing)),
-        latexmk=latexmk,
-        engine=engine,
-        pdftoppm=pdftoppm,
-        packages=packages,
-        messages=messages,
+        latexmk=latexmk, engine=engine, pdftoppm=pdftoppm, packages=packages, messages=messages,
     )

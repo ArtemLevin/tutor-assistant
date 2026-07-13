@@ -63,6 +63,16 @@ class Student(BaseModel):
             raise ValueError("student id must be a filesystem-safe slug")
         return value
 
+    @field_validator("repository_folder")
+    @classmethod
+    def validate_repository_folder(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts or not value.strip():
+            raise ValueError("repository_folder must be a safe relative path")
+        return path.as_posix().strip("/")
+
     @property
     def folder(self) -> str:
         return self.repository_folder or f"students/{self.id}"
@@ -140,7 +150,9 @@ class Lesson(BaseModel):
 
     def write_json(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(self.model_dump_json(indent=2), encoding="utf-8")
+        temporary.replace(path)
 
     @classmethod
     def read_json(cls, path: Path) -> Lesson:

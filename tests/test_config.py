@@ -11,6 +11,7 @@ def test_config_round_trip(tmp_path: Path) -> None:
     config.recording.system_backend = "soundcard"
     config.recording.silence_warning_seconds = 30
     config.repository.auto_create_pr = True
+    config.whisper.cpu_threads = 3
     config.save(path)
     restored = AppConfig.load(path)
     assert restored.setup_completed
@@ -19,6 +20,8 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert restored.recording.system_backend == "soundcard"
     assert restored.recording.silence_warning_seconds == 30
     assert restored.repository.auto_create_pr
+    assert restored.whisper.cpu_threads == 3
+    assert not path.with_suffix(".yaml.tmp").exists()
 
 
 def test_legacy_loopback_config_remains_valid(tmp_path: Path) -> None:
