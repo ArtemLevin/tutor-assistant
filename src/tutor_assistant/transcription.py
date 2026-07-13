@@ -41,8 +41,16 @@ class TranscriptionResult:
 
 
 SIGNALS = [
-    "не понимаю", "не понял", "не поняла", "можно ещё раз", "можно еще раз",
-    "не получается", "другой ответ", "не сходится", "я запутался", "я запуталась",
+    "не понимаю",
+    "не понял",
+    "не поняла",
+    "можно ещё раз",
+    "можно еще раз",
+    "не получается",
+    "другой ответ",
+    "не сходится",
+    "я запутался",
+    "я запуталась",
 ]
 
 
@@ -69,7 +77,7 @@ def extract_signals(text: str, speaker: str | None = None) -> list[dict[str, str
             item: dict[str, str | int] = {
                 "signal": signal,
                 "position": position,
-                "snippet": text[max(0, position - 100): position + len(signal) + 100],
+                "snippet": text[max(0, position - 100) : position + len(signal) + 100],
             }
             if speaker:
                 item["speaker"] = speaker
@@ -102,21 +110,27 @@ class WhisperTranscriber:
         self, audio: Path, *, speaker: str | None = None, offset_seconds: float = 0.0
     ) -> tuple[list[Segment], dict]:
         generator, info = self._load().transcribe(
-            str(audio), language=self.config.language, beam_size=self.config.beam_size,
-            vad_filter=self.config.vad_filter, temperature=0.0, condition_on_previous_text=False,
+            str(audio),
+            language=self.config.language,
+            beam_size=self.config.beam_size,
+            vad_filter=self.config.vad_filter,
+            temperature=0.0,
+            condition_on_previous_text=False,
         )
         segments: list[Segment] = []
         for item in generator:
             text = str(item.text).strip()
             if text:
-                segments.append(Segment(
-                    float(item.start) + offset_seconds,
-                    float(item.end) + offset_seconds,
-                    text,
-                    float(item.avg_logprob) if item.avg_logprob is not None else None,
-                    float(item.no_speech_prob) if item.no_speech_prob is not None else None,
-                    speaker,
-                ))
+                segments.append(
+                    Segment(
+                        float(item.start) + offset_seconds,
+                        float(item.end) + offset_seconds,
+                        text,
+                        float(item.avg_logprob) if item.avg_logprob is not None else None,
+                        float(item.no_speech_prob) if item.no_speech_prob is not None else None,
+                        speaker,
+                    )
+                )
         return segments, {
             "source_audio": str(audio),
             "language": getattr(info, "language", self.config.language),
@@ -163,8 +177,12 @@ class WhisperTranscriber:
             json.dumps([asdict(item) for item in student], ensure_ascii=False, indent=2),
         )
         return self._write_result(
-            output_dir, merged, [teacher_source, student_source], started,
-            teacher_transcript=teacher_text, student_transcript=student_text,
+            output_dir,
+            merged,
+            [teacher_source, student_source],
+            started,
+            teacher_transcript=teacher_text,
+            student_transcript=student_text,
             student_segments=student,
         )
 
@@ -206,15 +224,14 @@ class WhisperTranscriber:
             json.dumps([asdict(item) for item in segments], ensure_ascii=False, indent=2),
         )
         signal_source = (
-            " ".join(item.text for item in student_segments)
-            if student_segments is not None
-            else raw_text
+            " ".join(item.text for item in student_segments) if student_segments is not None else raw_text
         )
         _atomic_write_text(
             signals,
             json.dumps(
                 extract_signals(signal_source, "Ученик" if student_segments is not None else None),
-                ensure_ascii=False, indent=2,
+                ensure_ascii=False,
+                indent=2,
             ),
         )
         _atomic_write_text(
@@ -233,6 +250,13 @@ class WhisperTranscriber:
             ),
         )
         return TranscriptionResult(
-            output_dir, raw, timestamped, cleaned, segments_file, signals, manifest,
-            teacher_transcript, student_transcript,
+            output_dir,
+            raw,
+            timestamped,
+            cleaned,
+            segments_file,
+            signals,
+            manifest,
+            teacher_transcript,
+            student_transcript,
         )
