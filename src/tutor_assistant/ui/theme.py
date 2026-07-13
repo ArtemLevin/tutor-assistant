@@ -68,6 +68,25 @@ QFrame#readinessItem {
     border-radius: 11px;
 }
 
+QFrame#crmEditor {
+    background: #FFFFFF;
+    border: 1px solid #E4E9F0;
+    border-radius: 16px;
+}
+
+QTableWidget#scheduleGrid {
+    background: #F8FAFC;
+    border: 1px solid #E4E9F0;
+    border-radius: 14px;
+}
+
+QTableWidget#scheduleGrid::item {
+    margin: 3px;
+    padding: 7px;
+    border: 0;
+    border-radius: 9px;
+}
+
 QLabel#eyebrow {
     color: #65758B;
     font-size: 11px;
