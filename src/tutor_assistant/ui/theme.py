@@ -56,6 +56,12 @@ QFrame#bentoAction {
     background: #FFFFFF;
 }
 
+QFrame#quickSurface {
+    background: #FFFFFF;
+    border: 1px solid #E2E8F0;
+    border-radius: 20px;
+}
+
 QFrame#readinessItem {
     background: #FFFFFF;
     border: 1px solid #E4E9F0;
@@ -96,6 +102,12 @@ QLabel#pageTitle {
 QLabel#tileTitle {
     color: #111827;
     font-size: 18px;
+    font-weight: 700;
+}
+
+QLabel#quickTitle {
+    color: #111827;
+    font-size: 20px;
     font-weight: 700;
 }
 
@@ -261,6 +273,50 @@ QPushButton#quickStartButton {
     border-radius: 12px;
     font-size: 16px;
     font-weight: 700;
+}
+
+QPushButton#quickIconButton, QPushButton#quickStatusButton {
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 38px;
+    max-height: 38px;
+    padding: 0;
+    color: #65758B;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 750;
+}
+
+QPushButton#quickIconButton:hover, QPushButton#quickStatusButton:hover {
+    color: #344054;
+    background: #F1F4F8;
+    border-color: #E1E6ED;
+}
+
+QPushButton#quickStatusButton[tone="ready"] {
+    color: #216E50;
+}
+
+QPushButton#quickStatusButton[tone="blocked"] {
+    color: #A15C00;
+}
+
+QPushButton#quickQueueButton {
+    min-height: 28px;
+    padding: 0 10px;
+    color: #65758B;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+QPushButton#quickQueueButton:hover {
+    color: #344054;
+    background: #F1F4F8;
 }
 
 QPushButton[kind="primary"]:hover {
