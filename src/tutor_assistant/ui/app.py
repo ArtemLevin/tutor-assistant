@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_students
+from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
 from ..pipeline import LessonPipeline
@@ -58,6 +59,7 @@ from ..recording import (
 )
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
+from .crm import SchedulePage, StudentsPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
 
@@ -124,6 +126,9 @@ class MainWindow(QMainWindow):
         self.config = AppConfig.load(config_path)
         self.pipeline = LessonPipeline(self.config)
         self.students = load_students(self.config.students_file)
+        self.crm_store = CrmStore(self.pipeline.store.path)
+        self.crm_store.sync_students(self.students)
+        self.students = self.crm_store.domain_students()
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
             self.devices, self.config.recording.target_sample_rate
@@ -138,6 +143,7 @@ class MainWindow(QMainWindow):
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
         self._quick_countdown_remaining = 0
+        self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
         self.workers: list[Worker] = []
         self.transcription_queue = TranscriptionQueue(self.pipeline.store)
@@ -240,6 +246,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._publish_tab(), "03  Публикация")
         self.tabs.addTab(self._latex_tab(), "04  PDF")
         self.tabs.addTab(self._processing_tab(), "05  Обработка")
+        self.crm_students_page = StudentsPage(self.crm_store)
+        self.crm_schedule_page = SchedulePage(self.crm_store)
+        self.crm_students_page.changed.connect(self._crm_students_changed)
+        self.crm_students_page.changed.connect(self.crm_schedule_page.refresh)
+        self.crm_schedule_page.start_requested.connect(self._start_scheduled_lesson)
+        self.tabs.addTab(self.crm_students_page, "06  Ученики")
+        self.tabs.addTab(self.crm_schedule_page, "07  Расписание")
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -310,6 +323,66 @@ class MainWindow(QMainWindow):
         directory = log_directory(self.config.workspace)
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def _crm_students_changed(self) -> None:
+        self.students = self.crm_store.domain_students()
+        for combo in (self.student, self.quick_student):
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            for item in self.students:
+                combo.addItem(item.full_name, item.id)
+            index = combo.findData(selected)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        self._refresh_quick_readiness()
+
+    def _start_scheduled_lesson(
+        self,
+        occurrence_id: int,
+        student_id: str,
+        subject: str,
+        topic: str,
+    ) -> None:
+        if self._recording_stop_started or (self.recorder and self.recorder.active):
+            QMessageBox.warning(self, "Расписание", "Сначала завершите текущую запись")
+            return
+        student_index = self.quick_student.findData(student_id)
+        if student_index < 0:
+            QMessageBox.warning(self, "Расписание", "Ученик отсутствует в активных карточках")
+            return
+        self.quick_student.setCurrentIndex(student_index)
+        subject_index = self.quick_subject.findText(subject)
+        if subject_index >= 0:
+            self.quick_subject.setCurrentIndex(subject_index)
+        self.quick_topic.setText(topic.strip() or subject)
+        self._scheduled_occurrence_id = occurrence_id
+        self._set_mode("quick")
+        QTimer.singleShot(0, self._quick_start_clicked)
+
+    def _update_scheduled_occurrence(
+        self,
+        status: str,
+        *,
+        lesson_id: str | None = None,
+        clear: bool = False,
+    ) -> None:
+        occurrence_id = self._scheduled_occurrence_id
+        if occurrence_id is None:
+            return
+        try:
+            self.crm_store.update_occurrence(
+                occurrence_id,
+                status=status,
+                lesson_id=lesson_id,
+            )
+            self.crm_schedule_page.refresh()
+        except Exception:
+            logging.exception("Не удалось обновить занятие в расписании")
+        finally:
+            if clear:
+                self._scheduled_occurrence_id = None
 
     def _create_support_bundle(self) -> None:
         from ..support import create_support_bundle
@@ -755,6 +828,7 @@ class MainWindow(QMainWindow):
         self.quick_countdown_timer.stop()
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
+        self._update_scheduled_occurrence("planned", clear=True)
         self._set_status("Быстрый запуск отменён", "warning")
         self._refresh_quick_readiness()
 
@@ -1188,6 +1262,7 @@ class MainWindow(QMainWindow):
             self.recorder.start(directory, int(self.mic.currentData()), system_source)
             recording_lesson.transition(JobStatus.RECORDING)
             self.pipeline.store.save(recording_lesson)
+            self._update_scheduled_occurrence("in_progress", lesson_id=recording_lesson.lesson_id)
             self.recording_seconds = 0
             self._recording_stop_started = False
             self._active_audio_warning = ""
@@ -1218,6 +1293,7 @@ class MainWindow(QMainWindow):
                     logging.exception("Не удалось остановить recorder после ошибки запуска")
             self.recorder = None
             self.recording_lesson = None
+            self._update_scheduled_occurrence("planned", clear=True)
             if failed_lesson:
                 try:
                     failed_lesson.transition(JobStatus.FAILED, str(exc))
@@ -1282,6 +1358,7 @@ class MainWindow(QMainWindow):
             self._recording_stop_started = False
             self.recorder = None
             self.recording_lesson = None
+            self._update_scheduled_occurrence("recording_failed", clear=True)
             self.start_button.setEnabled(True)
             self.quick_start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
@@ -1309,6 +1386,11 @@ class MainWindow(QMainWindow):
         recorded_lesson.transition(JobStatus.RECORDED)
         recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
         self.pipeline.store.save(recorded_lesson)
+        self._update_scheduled_occurrence(
+            "completed",
+            lesson_id=recorded_lesson.lesson_id,
+            clear=True,
+        )
         self.start_button.setEnabled(True)
         self.quick_start_button.setEnabled(True)
         self.test_devices_button.setEnabled(True)
@@ -1364,6 +1446,7 @@ class MainWindow(QMainWindow):
         self._recording_stop_started = False
         self.recorder = None
         self.recording_lesson = None
+        self._update_scheduled_occurrence("recording_failed", clear=True)
         self.start_button.setEnabled(True)
         self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
