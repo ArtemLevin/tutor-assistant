@@ -10,6 +10,13 @@ from time import perf_counter
 from .config import WhisperConfig
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
 @dataclass
 class Segment:
     start: float
@@ -91,7 +98,11 @@ class WhisperTranscriber:
             except ImportError as exc:
                 raise RuntimeError("Установите tutor-assistant[transcription]") from exc
             self._model = WhisperModel(
-                self.config.model, device=self.config.device, compute_type=self.config.compute_type
+                self.config.model,
+                device=self.config.device,
+                compute_type=self.config.compute_type,
+                cpu_threads=self.config.cpu_threads,
+                num_workers=self.config.num_workers,
             )
         return self._model
 
@@ -155,13 +166,15 @@ class WhisperTranscriber:
         student_text = output_dir / "student_transcript.txt"
         teacher_json = output_dir / "teacher_segments.json"
         student_json = output_dir / "student_segments.json"
-        teacher_text.write_text(" ".join(item.text for item in teacher), encoding="utf-8")
-        student_text.write_text(" ".join(item.text for item in student), encoding="utf-8")
-        teacher_json.write_text(
-            json.dumps([asdict(item) for item in teacher], ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_text(teacher_text, " ".join(item.text for item in teacher))
+        _atomic_write_text(student_text, " ".join(item.text for item in student))
+        _atomic_write_text(
+            teacher_json,
+            json.dumps([asdict(item) for item in teacher], ensure_ascii=False, indent=2),
         )
-        student_json.write_text(
-            json.dumps([asdict(item) for item in student], ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_text(
+            student_json,
+            json.dumps([asdict(item) for item in student], ensure_ascii=False, indent=2),
         )
         return self._write_result(
             output_dir,
@@ -196,32 +209,33 @@ class WhisperTranscriber:
         segments_file = output_dir / "00_raw_segments.json"
         signals = output_dir / "important_student_signals.json"
         manifest = output_dir / "manifest.json"
-        raw.write_text(raw_text, encoding="utf-8")
-        timestamped.write_text(
+        _atomic_write_text(raw, raw_text)
+        _atomic_write_text(
+            timestamped,
             "\n".join(
                 f"[{item.start:08.2f} — {item.end:08.2f}] "
                 f"{f'[{item.speaker}] ' if item.speaker else ''}{item.text}"
                 for item in segments
             ),
-            encoding="utf-8",
         )
-        cleaned.write_text(cleaned_text, encoding="utf-8")
-        segments_file.write_text(
+        _atomic_write_text(cleaned, cleaned_text)
+        _atomic_write_text(
+            segments_file,
             json.dumps([asdict(item) for item in segments], ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         signal_source = (
             " ".join(item.text for item in student_segments) if student_segments is not None else raw_text
         )
-        signals.write_text(
+        _atomic_write_text(
+            signals,
             json.dumps(
                 extract_signals(signal_source, "Ученик" if student_segments is not None else None),
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
-        manifest.write_text(
+        _atomic_write_text(
+            manifest,
             json.dumps(
                 {
                     "created_at": datetime.now(UTC).isoformat(),
@@ -234,7 +248,6 @@ class WhisperTranscriber:
                 ensure_ascii=False,
                 indent=2,
             ),
-            encoding="utf-8",
         )
         return TranscriptionResult(
             output_dir,

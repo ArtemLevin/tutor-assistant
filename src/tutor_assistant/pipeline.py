@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -33,10 +34,10 @@ class LessonPipeline:
         return directory
 
     def transcribe(self, lesson: Lesson, audio: Path) -> Lesson:
-        lesson.transition(JobStatus.TRANSCRIBING)
-        self.store.save(lesson)
         directory = self.lesson_dir(lesson)
         try:
+            lesson.transition(JobStatus.TRANSCRIBING)
+            self.store.save(lesson)
             transcriber = self.transcriber()
             recording_dir = audio.parent
             microphone = recording_dir / "microphone.wav"
@@ -54,7 +55,9 @@ class LessonPipeline:
             else:
                 result = transcriber.transcribe(audio, directory / "transcript")
             verified = directory / "transcript" / "transcript_verified.txt"
-            shutil.copy2(result.cleaned, verified)
+            temporary_verified = verified.with_suffix(verified.suffix + ".tmp")
+            shutil.copy2(result.cleaned, temporary_verified)
+            temporary_verified.replace(verified)
             lesson.source_audio_local = str(audio.resolve())
             lesson.artifacts = ArtifactPaths(
                 raw_transcript=str(result.raw.resolve()),
@@ -74,8 +77,13 @@ class LessonPipeline:
             lesson.transition(JobStatus.REVIEW_REQUIRED)
         except Exception as exc:
             lesson.transition(JobStatus.FAILED, str(exc))
+            try:
+                lesson.write_json(directory / "lesson.json")
+                self.store.save(lesson)
+            except Exception:
+                logging.exception("Не удалось сохранить состояние ошибки транскрибации")
             raise
-        finally:
+        else:
             lesson.write_json(directory / "lesson.json")
             self.store.save(lesson)
         return lesson
@@ -86,7 +94,9 @@ class LessonPipeline:
         path = Path(lesson.artifacts.verified_transcript)
         if not path.is_file():
             raise RuntimeError(f"Файл транскрипта не найден: {path}")
-        path.write_text(text.strip() + "\n", encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(text.strip() + "\n", encoding="utf-8")
+        temporary.replace(path)
         lesson.transition(JobStatus.READY)
         lesson.write_json(self.lesson_dir(lesson) / "lesson.json")
         self.store.save(lesson)

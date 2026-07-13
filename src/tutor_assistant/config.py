@@ -33,6 +33,8 @@ class WhisperConfig(BaseModel):
     language: str = "ru"
     beam_size: int = 1
     vad_filter: bool = True
+    cpu_threads: int = Field(default=2, ge=1, le=32)
+    num_workers: int = Field(default=1, ge=1, le=4)
 
 
 class RepositoryConfig(BaseModel):
@@ -98,10 +100,12 @@ class AppConfig(BaseModel):
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
             yaml.safe_dump(self.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
+        temporary.replace(path)
 
 
 def load_students(path: Path) -> list[Student]:

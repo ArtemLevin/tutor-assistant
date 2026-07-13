@@ -24,6 +24,8 @@ whisper:
   language: ru
   beam_size: 1
   vad_filter: true
+  cpu_threads: 2
+  num_workers: 1
 
 repository:
   students_repo: ../students-26-27

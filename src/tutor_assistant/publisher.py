@@ -113,7 +113,10 @@ class LessonPublisher:
         self.config = config
 
     def _copy_job(self, lesson: Lesson, checkout: Path) -> Path:
-        target = checkout / lesson.student.folder / "lessons" / lesson.lesson_slug
+        checkout = checkout.resolve()
+        target = (checkout / lesson.student.folder / "lessons" / lesson.lesson_slug).resolve()
+        if not target.is_relative_to(checkout):
+            raise GitError("Папка ученика выходит за пределы Git-репозитория")
         source_dir = target / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
         mapping = {
