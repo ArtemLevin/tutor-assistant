@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 
 import numpy as np
 
@@ -55,10 +57,58 @@ class AudioBlock:
     queued_at: float
 
 
+_ATOMIC_WRITE_ATTEMPTS = 6
+_ATOMIC_WRITE_RETRY_SECONDS = 0.05
+
+
+def _write_text_durable(path: Path, content: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as file:
+        file.write(content)
+        file.flush()
+        os.fsync(file.fileno())
+
+
 def _atomic_json(path: Path, payload: dict) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    """Persist JSON safely, including when Windows temporarily locks the target."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    )
+    temporary = Path(handle.name)
+    try:
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        last_error: PermissionError | None = None
+        for attempt in range(_ATOMIC_WRITE_ATTEMPTS):
+            try:
+                temporary.replace(path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                if attempt + 1 < _ATOMIC_WRITE_ATTEMPTS:
+                    sleep(_ATOMIC_WRITE_RETRY_SECONDS * (2**attempt))
+
+        logging.warning(
+            "Не удалось атомарно заменить %s после %s попыток (%s); "
+            "использую прямую запись",
+            path,
+            _ATOMIC_WRITE_ATTEMPTS,
+            last_error,
+        )
+        _write_text_durable(path, content)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class QueuedChunkWriter:
