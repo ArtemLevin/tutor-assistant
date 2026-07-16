@@ -13,3 +13,5 @@ recordings/
 *.wav
 *.mp3
 *.flac
+.gigaide
+.idea
