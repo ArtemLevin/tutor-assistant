@@ -155,10 +155,10 @@ class WhisperTranscriber:
     ) -> TranscriptionResult:
         started = perf_counter()
         teacher, teacher_source = self._recognize(
-            microphone, speaker="Преподаватель", offset_seconds=microphone_offset_seconds
+            microphone, speaker="П", offset_seconds=microphone_offset_seconds
         )
         student, student_source = self._recognize(
-            system, speaker="Ученик", offset_seconds=system_offset_seconds
+            system, speaker="У", offset_seconds=system_offset_seconds
         )
         merged = sorted([*teacher, *student], key=lambda item: (item.start, item.end))
         output_dir.mkdir(parents=True, exist_ok=True)
