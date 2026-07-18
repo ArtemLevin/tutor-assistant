@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from .config import AppConfig, load_students
@@ -33,6 +33,9 @@ def parser() -> argparse.ArgumentParser:
     content_doctor.add_argument("--json", action="store_true")
     content_doctor.add_argument("--cleanup-temp", action="store_true")
     content_doctor.add_argument("--rebuild-search", action="store_true")
+    content_doctor.add_argument("--repair", action="store_true")
+    content_doctor.add_argument("--import-legacy", action="store_true")
+    content_doctor.add_argument("--purge-expired", action="store_true")
     content_doctor.add_argument("--strict", action="store_true")
     create = commands.add_parser("create", help="Создать занятие")
     create.add_argument("--student", required=True)
@@ -105,7 +108,16 @@ def main() -> None:
             config.workspace,
             trash_retention_days=config.content.trash_retention_days,
         )
-        cleanup = service.cleanup_temporary_files() if args.cleanup_temp else None
+        legacy_import = service.repair_archive() if args.import_legacy else None
+        maintenance = None
+        if args.repair or args.cleanup_temp or args.purge_expired:
+            maintenance = service.run_maintenance(
+                auto_repair=args.repair,
+                purge_expired=args.purge_expired,
+                cleanup_temporary=args.cleanup_temp,
+                temporary_retention=timedelta(hours=config.content.temporary_retention_hours),
+            )
+        cleanup = maintenance.temporary_cleanup if maintenance and args.cleanup_temp else None
         rebuilt = service.rebuild_search_index() if args.rebuild_search else None
         report = service.inspect_content_integrity()
         if args.json:
@@ -117,6 +129,8 @@ def main() -> None:
                     "warnings": report.warnings,
                     "cleanup": cleanup.model_dump(mode="json") if cleanup else None,
                     "rebuilt_search_documents": rebuilt,
+                    "maintenance": maintenance.model_dump(mode="json") if maintenance else None,
+                    "legacy_import": legacy_import.model_dump(mode="json") if legacy_import else None,
                 }
             )
             print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -137,7 +151,18 @@ def main() -> None:
                 )
             if rebuilt is not None:
                 print(f"FTS-документов перестроено: {rebuilt}")
-        if args.strict and not report.healthy:
+            if maintenance:
+                print(
+                    f"Обслуживание: восстановлено {len(maintenance.repaired_lessons)}, "
+                    f"очищено из корзины {len(maintenance.purged_lessons)}, "
+                    f"ошибок {len(maintenance.errors)}"
+                )
+            if legacy_import:
+                print(
+                    f"Legacy-каталоги: занятий {legacy_import.indexed_lessons}, "
+                    f"файлов {legacy_import.indexed_assets}, ошибок {len(legacy_import.errors)}"
+                )
+        if args.strict and (not report.healthy or bool(maintenance and maintenance.errors)):
             raise SystemExit(1)
         return
     if args.command == "compile":

@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
+from threading import Lock
 from uuid import uuid4
 
 from ..atomic_io import atomic_write_text
@@ -25,6 +26,7 @@ from .models import (
     AssetKind,
     ContentIntegrityIssue,
     ContentIntegrityReport,
+    ContentMaintenanceResult,
     ContentOperationKind,
     IndexReport,
     IntegritySeverity,
@@ -53,6 +55,18 @@ AUDIO_IMPORT_SUFFIXES = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 TRANSCRIPT_IMPORT_SUFFIXES = {".txt", ".md", ".markdown"}
 MAX_TRANSCRIPT_IMPORT_BYTES = 25 * 1024 * 1024
 _EXPECTED_REVISION_UNSET = object()
+VOLATILE_CONTENT_STATUSES = {JobStatus.RECORDING, JobStatus.TRANSCRIBING}
+REPAIRABLE_CONTENT_ISSUES = {
+    "pending_file_sync",
+    "failed_file_sync",
+    "missing_lesson_directory",
+    "invalid_lesson_json",
+    "lesson_payload_mismatch",
+    "unregistered_asset",
+    "asset_changed",
+    "missing_transcript",
+    "transcript_changed",
+}
 
 
 class ContentPathError(ValueError):
@@ -89,6 +103,7 @@ class StudentContentService:
         self.repository = StudentContentRepository(
             database_path or self.workspace / "tutor-assistant.sqlite3"
         )
+        self._maintenance_lock = Lock()
         self.recover_trash_operations()
         self.recover_file_sync()
         fts_enabled, fts_documents = self.repository.search_index_status()
@@ -129,8 +144,9 @@ class StudentContentService:
     def _atomic_write(path: Path, text: str) -> None:
         atomic_write_text(path, text)
 
-    def _synchronize_lesson_files(self, lesson_id: str) -> None:
+    def _synchronize_lesson_files(self, lesson_id: str, *, project_assets: bool = True) -> int:
         content = self.repository.get_content(lesson_id, include_deleted=True)
+        indexed_assets = 0
         try:
             if content.transcript:
                 transcript_path = self._managed_path_for_lesson(
@@ -143,10 +159,20 @@ class StudentContentService:
                 (Path("lessons") / lesson_id / "lesson.json").as_posix(),
             )
             self._atomic_write(lesson_json, content.lesson.model_dump_json(indent=2))
+            if content.deleted_at is None:
+                if project_assets:
+                    indexed_assets = self._index_lesson_assets(
+                        content.lesson,
+                        self.workspace / "lessons" / lesson_id,
+                    )
+                else:
+                    self.register_asset(lesson_id, lesson_json, kind=AssetKind.METADATA)
+                    indexed_assets = 1
         except Exception as exc:
             self.repository.fail_file_sync(lesson_id, str(exc))
             raise
         self.repository.complete_file_sync(lesson_id)
+        return indexed_assets
 
     def recover_file_sync(self) -> None:
         for lesson_id, _last_error in self.repository.pending_file_sync():
@@ -192,7 +218,10 @@ class StudentContentService:
             expected_row_version=expected_row_version,
             force_status=force_status,
         )
-        self._synchronize_lesson_files(updated.lesson_id)
+        self._synchronize_lesson_files(
+            updated.lesson_id,
+            project_assets=bool(frozenset(fields) & {"source_audio_local", "artifacts", "latex"}),
+        )
         return updated
 
     def update_lesson_metadata(
@@ -221,7 +250,7 @@ class StudentContentService:
             expected_updated_at=expected_updated_at,
             expected_row_version=expected_row_version,
         )
-        self._synchronize_lesson_files(lesson_id)
+        self._synchronize_lesson_files(lesson_id, project_assets=False)
         return lesson
 
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
@@ -380,17 +409,41 @@ class StudentContentService:
 
         if not database_ok:
             issue(IntegritySeverity.ERROR, "database", database_message)
-        if fts_enabled and fts_documents != len(states):
-            issue(
-                IntegritySeverity.WARNING,
-                "search_index",
-                f"FTS содержит {fts_documents} документов вместо {len(states)}",
-            )
-        if not fts_enabled:
+        if fts_enabled:
+            search_messages = {
+                "missing": "Документ занятия отсутствует в FTS",
+                "stale": "FTS содержит устаревшую карточку или транскрипт",
+                "orphan": "FTS содержит документ без занятия в SQLite",
+            }
+            for lesson_id, state in self.repository.search_index_mismatches():
+                issue(
+                    IntegritySeverity.WARNING,
+                    f"search_index_{state}",
+                    search_messages[state],
+                    lesson_id=lesson_id,
+                )
+            if fts_documents != len(states) and not any(
+                item.code.startswith("search_index_") for item in issues
+            ):
+                issue(
+                    IntegritySeverity.WARNING,
+                    "search_index_count",
+                    f"FTS содержит {fts_documents} документов вместо {len(states)}",
+                )
+        else:
             issue(
                 IntegritySeverity.INFO,
                 "search_fallback",
                 "SQLite FTS5 недоступен; используется совместимый линейный поиск",
+            )
+
+        for lesson_id, last_error in self.repository.pending_file_sync():
+            issue(
+                IntegritySeverity.ERROR if last_error else IntegritySeverity.WARNING,
+                "failed_file_sync" if last_error else "pending_file_sync",
+                last_error or "Файловая проекция ожидает восстановления из SQLite",
+                lesson_id=lesson_id,
+                path=f"lessons/{lesson_id}",
             )
 
         orphan_directories = [
@@ -423,6 +476,7 @@ class StudentContentService:
                 )
                 continue
             lesson_json = directory / "lesson.json"
+            disk_lesson: Lesson | None = None
             try:
                 disk_lesson = Lesson.read_json(lesson_json)
                 if disk_lesson.lesson_id != lesson_id:
@@ -440,6 +494,39 @@ class StudentContentService:
             except Exception as exc:
                 issue(IntegritySeverity.ERROR, "content_read", str(exc), lesson_id=lesson_id)
                 continue
+            if disk_lesson is not None and disk_lesson != content.lesson:
+                issue(
+                    IntegritySeverity.WARNING,
+                    "lesson_payload_mismatch",
+                    "lesson.json отличается от актуальной карточки SQLite",
+                    lesson_id=lesson_id,
+                    path=lesson_json.relative_to(self.workspace).as_posix(),
+                )
+            if content.lesson.status in VOLATILE_CONTENT_STATUSES:
+                issue(
+                    IntegritySeverity.INFO,
+                    "active_lesson_skipped",
+                    "Проверка изменяемых файлов отложена до завершения pipeline-этапа",
+                    lesson_id=lesson_id,
+                    path=directory.relative_to(self.workspace).as_posix(),
+                )
+                continue
+            registered_paths = {
+                asset.relative_path for asset in self.repository.list_assets(lesson_id, include_deleted=True)
+            }
+            for candidate in self._lesson_asset_candidates(content.lesson, directory):
+                try:
+                    _absolute, relative = self._resolve_path(candidate)
+                except ContentPathError:
+                    continue
+                if relative not in registered_paths:
+                    issue(
+                        IntegritySeverity.WARNING,
+                        "unregistered_asset",
+                        "Файл занятия ещё не зарегистрирован в архиве",
+                        lesson_id=lesson_id,
+                        path=relative,
+                    )
             for asset in content.assets:
                 try:
                     absolute, relative = self._resolve_path(asset.relative_path)
@@ -484,11 +571,17 @@ class StudentContentService:
             if content.transcript:
                 try:
                     transcript_path, relative = self._resolve_path(content.transcript.relative_path)
-                    try:
-                        changed = (
-                            transcript_path.is_file()
-                            and _sha256_file(transcript_path) != content.transcript.content_sha256
+                    if not transcript_path.is_file():
+                        issue(
+                            IntegritySeverity.WARNING,
+                            "missing_transcript",
+                            "Подтверждённый транскрипт отсутствует на диске",
+                            lesson_id=lesson_id,
+                            path=relative,
                         )
+                        continue
+                    try:
+                        changed = _sha256_file(transcript_path) != content.transcript.content_sha256
                     except OSError as exc:
                         issue(
                             IntegritySeverity.ERROR,
@@ -553,6 +646,107 @@ class StudentContentService:
 
     def rebuild_search_index(self) -> int:
         return self.repository.rebuild_search_index()
+
+    def run_maintenance(
+        self,
+        *,
+        now: datetime | None = None,
+        auto_repair: bool = True,
+        purge_expired: bool = True,
+        cleanup_temporary: bool = True,
+        temporary_retention: timedelta = timedelta(hours=24),
+    ) -> ContentMaintenanceResult:
+        """Run one non-overlapping, failure-isolated archive maintenance cycle."""
+
+        started_at = now or datetime.now(UTC)
+        result = ContentMaintenanceResult(started_at=started_at)
+        if not self._maintenance_lock.acquire(blocking=False):
+            result.skipped = True
+            result.completed_at = datetime.now(UTC)
+            return result
+        try:
+            try:
+                before = self.inspect_content_integrity()
+            except Exception as exc:
+                result.errors.append(f"diagnostics: {exc}")
+                logging.exception("Не удалось проверить архив перед обслуживанием")
+                return result
+
+            if auto_repair:
+                targets = sorted(
+                    {
+                        item.lesson_id
+                        for item in before.issues
+                        if item.lesson_id and item.code in REPAIRABLE_CONTENT_ISSUES
+                    }
+                )
+                for lesson_id in targets:
+                    try:
+                        content = self.repository.get_content(lesson_id, include_deleted=True)
+                        if content.deleted_at is None and content.lesson.status in VOLATILE_CONTENT_STATUSES:
+                            continue
+                        result.indexed_assets += self._synchronize_lesson_files(lesson_id)
+                        result.repaired_lessons.append(lesson_id)
+                    except Exception as exc:
+                        result.errors.append(f"repair {lesson_id}: {exc}")
+                        logging.exception("Не удалось восстановить занятие: %s", lesson_id)
+
+                if before.fts_enabled and any(
+                    item.code.startswith("search_index_") for item in before.issues
+                ):
+                    try:
+                        result.rebuilt_search_documents = self.rebuild_search_index()
+                    except Exception as exc:
+                        result.errors.append(f"search index: {exc}")
+                        logging.exception("Не удалось перестроить FTS во время обслуживания")
+
+            if purge_expired:
+                expired = [
+                    item.lesson.lesson_id
+                    for item in self.repository.list_trash_items()
+                    if item.entry.state == TrashState.TRASHED and item.entry.purge_after <= started_at
+                ]
+                for lesson_id in expired:
+                    try:
+                        self.permanently_delete_lesson(lesson_id)
+                        result.purged_lessons.append(lesson_id)
+                    except Exception as exc:
+                        result.errors.append(f"purge {lesson_id}: {exc}")
+                        logging.exception("Не удалось автоматически очистить корзину: %s", lesson_id)
+
+            if cleanup_temporary:
+                result.temporary_cleanup = self.cleanup_temporary_files(
+                    now=started_at,
+                    minimum_age=temporary_retention,
+                )
+                result.errors.extend(
+                    f"temporary cleanup: {details}" for details in result.temporary_cleanup.errors
+                )
+
+            try:
+                result.report = self.inspect_content_integrity()
+            except Exception as exc:
+                result.errors.append(f"final diagnostics: {exc}")
+                logging.exception("Не удалось проверить архив после обслуживания")
+            return result
+        finally:
+            result.completed_at = datetime.now(UTC)
+            self._maintenance_lock.release()
+            logging.info(
+                "Обслуживание архива завершено: repaired=%s assets=%s purged=%s temporary=%s errors=%s",
+                len(result.repaired_lessons),
+                result.indexed_assets,
+                len(result.purged_lessons),
+                len(result.temporary_cleanup.removed_paths),
+                len(result.errors),
+            )
+
+    def repair_content_integrity(self) -> ContentMaintenanceResult:
+        return self.run_maintenance(
+            auto_repair=True,
+            purge_expired=False,
+            cleanup_temporary=False,
+        )
 
     def set_trash_retention_days(self, days: int) -> None:
         if not 0 <= days <= 3650:
@@ -1123,7 +1317,9 @@ class StudentContentService:
             expected_revision_number=expected_revision_number,
         )
 
-    def index_existing_lessons(self) -> IndexReport:
+    def repair_archive(self) -> IndexReport:
+        """Repair managed files and indexes without overwriting SQLite lesson state."""
+
         report = IndexReport()
         lessons_root = self.workspace / "lessons"
         if not lessons_root.is_dir():
@@ -1137,29 +1333,40 @@ class StudentContentService:
                 report.skipped_directories += 1
                 continue
             try:
-                lesson = Lesson.read_json(lesson_json)
-                if lesson.lesson_id != directory.name:
+                disk_lesson = Lesson.read_json(lesson_json)
+                if disk_lesson.lesson_id != directory.name:
                     raise ValueError(
-                        f"lesson_id {lesson.lesson_id!r} не совпадает с каталогом {directory.name!r}"
+                        f"lesson_id {disk_lesson.lesson_id!r} не совпадает с каталогом {directory.name!r}"
                     )
-                self.repository.upsert_lesson(lesson)
-                self.repository.complete_file_sync(lesson.lesson_id)
+                stored = self.repository.get_lesson(directory.name, include_deleted=True)
+                if stored is None:
+                    self.repository.insert_lesson(disk_lesson)
+                    stored = disk_lesson
+                content = self.repository.get_content(directory.name, include_deleted=True)
+                if content.deleted_at is not None:
+                    report.skipped_directories += 1
+                    continue
                 report.indexed_lessons += 1
-                report.indexed_assets += self._index_lesson_assets(lesson, directory)
-                report.indexed_transcripts += self._index_lesson_transcript(lesson, directory)
+                report.indexed_assets += self._synchronize_lesson_files(directory.name)
+                report.indexed_transcripts += self._index_lesson_transcript(stored, directory)
             except Exception as exc:
                 report.errors.append(f"{directory.name}: {exc}")
         return report
 
-    def _index_lesson_assets(self, lesson: Lesson, directory: Path) -> int:
-        candidates: set[Path] = {directory / "lesson.json"}
-        recording = directory / "recording"
-        transcript_directory = directory / "transcript"
-        for content_directory in (recording, transcript_directory):
-            if content_directory.is_dir():
-                candidates.update(
-                    candidate for candidate in content_directory.iterdir() if candidate.is_file()
-                )
+    def index_existing_lessons(self) -> IndexReport:
+        """Compatibility alias for the explicit archive repair operation."""
+
+        return self.repair_archive()
+
+    def _lesson_asset_candidates(self, lesson: Lesson, directory: Path) -> set[Path]:
+        candidates: set[Path] = {
+            candidate
+            for candidate in directory.rglob("*")
+            if candidate.is_file()
+            and not candidate.name.endswith((".tmp", ".part"))
+            and candidate.name != "transcript_draft.json"
+        }
+        candidates.add(directory / "lesson.json")
         if lesson.source_audio_local:
             source = Path(lesson.source_audio_local)
             if source.is_file():
@@ -1179,6 +1386,11 @@ class StudentContentService:
                 candidate = self.workspace / candidate
             if candidate.is_file():
                 candidates.add(candidate)
+        return candidates
+
+    def _index_lesson_assets(self, lesson: Lesson, directory: Path) -> int:
+        candidates = self._lesson_asset_candidates(lesson, directory)
+        transcript_directory = directory / "transcript"
         indexed = 0
         for candidate in sorted(candidates):
             if not candidate.is_file():
@@ -1187,7 +1399,7 @@ class StudentContentService:
                 self._resolve_path(candidate)
             except ContentPathError:
                 continue
-            if candidate.suffix.casefold() == ".wav":
+            if candidate.suffix.casefold() in AUDIO_IMPORT_SUFFIXES:
                 kind = AssetKind.AUDIO
             elif candidate.parent == transcript_directory and candidate.suffix.casefold() == ".txt":
                 kind = AssetKind.TRANSCRIPT

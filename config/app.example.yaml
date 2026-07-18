@@ -2,6 +2,12 @@ setup_completed: false
 workspace: data
 content:
   trash_retention_days: 30
+  maintenance_enabled: true
+  maintenance_interval_minutes: 30
+  auto_repair: true
+  auto_purge_trash: true
+  auto_cleanup_temporary: true
+  temporary_retention_hours: 24
 students_file: config/students.yaml
 
 recording:

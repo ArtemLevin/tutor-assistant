@@ -137,7 +137,7 @@ def test_storage_diagnostics_dialog_is_keyboard_and_screen_reader_ready(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
-    page, _service = make_page(tmp_path)
+    page, service = make_page(tmp_path)
 
     page.open_content_health()
     dialog = page.health_dialog
@@ -149,5 +149,13 @@ def test_storage_diagnostics_dialog_is_keyboard_and_screen_reader_ready(
     assert "свободно:" in dialog.storage.text()
     dialog.rescan_shortcut.activated.emit()
     assert dialog.rescan_button.isEnabled()
+    unregistered = service.workspace / "lessons" / "gui-lesson" / "result.pdf"
+    unregistered.write_bytes(b"%PDF-gui-repair")
+    dialog.rescan_shortcut.activated.emit()
+    assert dialog.repair_button.isEnabled()
+    dialog.repair_button.click()
+    assert any(
+        asset.relative_path.endswith("result.pdf") for asset in service.get_lesson("gui-lesson").assets
+    )
     dialog.close()
     page.close()

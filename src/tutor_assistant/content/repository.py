@@ -1164,7 +1164,14 @@ class StudentContentRepository:
                         media_type=excluded.media_type,
                         size_bytes=excluded.size_bytes,
                         sha256=excluded.sha256,
-                        updated_at=excluded.updated_at
+                        updated_at=excluded.updated_at,
+                        deleted_at=CASE
+                            WHEN lesson_assets.deleted_at IS NOT NULL
+                             AND lesson_assets.sha256=excluded.sha256
+                             AND lesson_assets.size_bytes=excluded.size_bytes
+                            THEN lesson_assets.deleted_at
+                            ELSE excluded.deleted_at
+                        END
                     """,
                     (
                         asset.lesson_id,
@@ -1511,6 +1518,50 @@ class StudentContentRepository:
                 enabled = self._fts_available(db)
                 count = int(db.execute("SELECT COUNT(*) FROM lesson_search").fetchone()[0]) if enabled else 0
                 return enabled, count
+
+        return self._retry(operation)
+
+    def search_index_mismatches(self) -> list[tuple[str, str]]:
+        """Return lesson ids whose FTS projection is missing, stale or orphaned."""
+
+        def operation() -> list[tuple[str, str]]:
+            with self.connect() as db:
+                if not self._fts_available(db):
+                    return []
+                mismatches: list[tuple[str, str]] = []
+                rows = db.execute(
+                    """
+                    SELECT l.lesson_id, l.payload AS expected_metadata,
+                           COALESCE((
+                               SELECT r.content FROM transcript_revisions r
+                               WHERE r.lesson_id=l.lesson_id AND r.deleted_at IS NULL
+                               ORDER BY r.revision_number DESC LIMIT 1
+                           ), '') AS expected_transcript,
+                           s.metadata AS indexed_metadata,
+                           s.transcript AS indexed_transcript
+                    FROM lessons l
+                    LEFT JOIN lesson_search s ON s.lesson_id=l.lesson_id
+                    ORDER BY l.lesson_id
+                    """
+                ).fetchall()
+                for row in rows:
+                    lesson_id = str(row["lesson_id"])
+                    if row["indexed_metadata"] is None:
+                        mismatches.append((lesson_id, "missing"))
+                    elif str(row["expected_metadata"]) != str(row["indexed_metadata"]) or str(
+                        row["expected_transcript"]
+                    ) != str(row["indexed_transcript"]):
+                        mismatches.append((lesson_id, "stale"))
+                extra = db.execute(
+                    """
+                    SELECT s.lesson_id FROM lesson_search s
+                    LEFT JOIN lessons l ON l.lesson_id=s.lesson_id
+                    WHERE l.lesson_id IS NULL
+                    ORDER BY s.lesson_id
+                    """
+                ).fetchall()
+                mismatches.extend((str(row["lesson_id"]), "orphan") for row in extra)
+                return mismatches
 
         return self._retry(operation)
 

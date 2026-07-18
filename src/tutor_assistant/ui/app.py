@@ -5,7 +5,7 @@ import logging
 import queue
 import sys
 import traceback
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 
@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_students
+from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
@@ -189,6 +190,14 @@ class MainWindow(QMainWindow):
         self.draft_timer.setSingleShot(True)
         self.draft_timer.setInterval(1000)
         self.draft_timer.timeout.connect(self._save_transcript_draft)
+        self.content_maintenance_timer = QTimer(self)
+        self.content_maintenance_timer.setInterval(
+            self.config.content.maintenance_interval_minutes * 60 * 1000
+        )
+        self.content_maintenance_timer.timeout.connect(self._run_content_maintenance)
+        if self.config.content.maintenance_enabled:
+            self.content_maintenance_timer.start()
+            QTimer.singleShot(1000, self._run_content_maintenance)
         QTimer.singleShot(0, self._offer_recovery)
         QTimer.singleShot(100, self._restore_background_jobs)
         QTimer.singleShot(150, self._offer_unfinished_job)
@@ -374,6 +383,55 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
+
+    def _run_content_maintenance(self) -> None:
+        if (
+            not self.config.content.maintenance_enabled
+            or self._shutdown_requested
+            or (self.recorder and self.recorder.active)
+            or any(
+                getattr(worker, "purpose", "") == "content-maintenance"
+                for worker in self.workers
+            )
+        ):
+            return
+
+        def maintain() -> ContentMaintenanceResult:
+            return self.content_service.run_maintenance(
+                auto_repair=self.config.content.auto_repair,
+                purge_expired=self.config.content.auto_purge_trash,
+                cleanup_temporary=self.config.content.auto_cleanup_temporary,
+                temporary_retention=timedelta(
+                    hours=self.config.content.temporary_retention_hours
+                ),
+            )
+
+        worker = Worker(maintain)
+        worker.purpose = "content-maintenance"
+        worker.succeeded.connect(self._content_maintenance_ready)
+        worker.failed.connect(self._content_maintenance_failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _content_maintenance_ready(self, result: object) -> None:
+        if not isinstance(result, ContentMaintenanceResult):
+            self._content_maintenance_failed("Некорректный результат обслуживания архива")
+            return
+        logging.info(
+            "Результат фонового обслуживания архива: %s",
+            result.model_dump(mode="json"),
+        )
+        self.student_content_page.refresh_if_loaded()
+        if result.errors:
+            self._set_status(
+                f"Архив обслужен с предупреждениями · ошибок {len(result.errors)}",
+                "warning",
+            )
+
+    def _content_maintenance_failed(self, details: str) -> None:
+        logging.error("Фоновое обслуживание архива завершилось ошибкой: %s", details)
+        self._set_status("Ошибка фонового обслуживания архива", "warning")
 
     def _open_student_materials(self, student_id: str) -> None:
         self.student_content_page.show_student(student_id)
@@ -2130,6 +2188,7 @@ class MainWindow(QMainWindow):
         self.transcription_worker.shutdown()
         self.timer.stop()
         self.latex_poll_timer.stop()
+        self.content_maintenance_timer.stop()
         self.quick_countdown_timer.stop()
         self.start_button.setEnabled(False)
         self.quick_start_button.setEnabled(False)

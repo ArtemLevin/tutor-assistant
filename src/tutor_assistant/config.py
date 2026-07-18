@@ -84,6 +84,12 @@ class QuickStartConfig(BaseModel):
 
 class ContentConfig(BaseModel):
     trash_retention_days: int = Field(default=30, ge=0, le=3650)
+    maintenance_enabled: bool = True
+    maintenance_interval_minutes: int = Field(default=30, ge=5, le=1440)
+    auto_repair: bool = True
+    auto_purge_trash: bool = True
+    auto_cleanup_temporary: bool = True
+    temporary_retention_hours: int = Field(default=24, ge=1, le=8760)
 
 
 class AppConfig(BaseModel):
