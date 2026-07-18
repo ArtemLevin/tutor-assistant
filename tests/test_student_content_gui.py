@@ -116,6 +116,8 @@ def test_archive_accessibility_filters_delete_and_restore(
     assert page.details_dialog.isVisible()
     assert page.details_dialog.accessibleName() == "Содержимое занятия"
     assert page.metadata["topic"].text() == "GUI hardening"
+    page.close_details()
+    application.processEvents()
 
     page.search_shortcut.activated.emit()
     application.processEvents()
