@@ -438,6 +438,12 @@ class StudentContentPage(QWidget):
         self.save_shortcut.activated.connect(self._save_transcript_shortcut)
 
     def _focus_search(self) -> None:
+        window = self.window()
+        window.raise_()
+        window.activateWindow()
+        QTimer.singleShot(0, self._apply_search_focus)
+
+    def _apply_search_focus(self) -> None:
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.selectAll()
 
