@@ -101,6 +101,8 @@ def test_archive_accessibility_filters_delete_and_restore(
     monkeypatch,
 ) -> None:
     page, service = make_page(tmp_path)
+    page.show()
+    application.processEvents()
 
     assert page.accessibleName() == "Архив материалов учеников"
     assert page.search.accessibleName() == "Полнотекстовый поиск по материалам"
@@ -109,6 +111,7 @@ def test_archive_accessibility_filters_delete_and_restore(
     assert page.table.rowCount() == 1
 
     page.search_shortcut.activated.emit()
+    application.processEvents()
     assert page.search.hasFocus()
     page.search.setText("GUI hardening")
     page.search_timer.stop()
