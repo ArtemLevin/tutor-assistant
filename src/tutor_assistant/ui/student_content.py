@@ -27,7 +27,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..content import LessonContent, LessonFilters, LessonPage, StudentContentService
+from ..content import (
+    ImportCancellationToken,
+    LessonContent,
+    LessonFilters,
+    LessonImportRequest,
+    LessonImportResult,
+    LessonPage,
+    StudentContentService,
+)
 from ..content_browser import (
     content_file_rows,
     format_size,
@@ -38,6 +46,7 @@ from ..content_browser import (
 )
 from ..domain import JobStatus, Student
 from ..playback import PlaybackController, SegmentLoadResult, load_playback_segments
+from .content_import import ImportLessonDialog
 from .playback import PlaybackPanel, QtPlaybackBackend
 from .theme import set_button_kind
 
@@ -57,6 +66,7 @@ KIND_LABELS = {
 class StudentContentPage(QWidget):
     status_changed = Signal(str, str)
     file_open_requested = Signal(object)
+    audio_queue_requested = Signal(object, object)
 
     def __init__(
         self,
@@ -81,6 +91,9 @@ class StudentContentPage(QWidget):
         self._initial_sync_started = False
         self._sync_running = False
         self._selected_lesson_id: str | None = None
+        self.students: list[Student] = []
+        self.import_dialog: ImportLessonDialog | None = None
+        self.import_cancellation: ImportCancellationToken | None = None
         self._build()
         self.set_students(students)
         self.search_timer = QTimer(self)
@@ -102,6 +115,12 @@ class StudentContentPage(QWidget):
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         heading.addLayout(title_box, 1)
+        self.import_button = set_button_kind(QPushButton("Создать / импортировать"), "ghost")
+        self.import_button.setToolTip(
+            "Создать карточку занятия и безопасно скопировать аудио или транскрипт"
+        )
+        self.import_button.clicked.connect(self.open_import_dialog)
+        heading.addWidget(self.import_button)
         self.sync_button = set_button_kind(QPushButton("Синхронизировать каталог"), "ghost")
         self.sync_button.setToolTip("Однократно проверить data/lessons и обновить индекс SQLite")
         self.sync_button.clicked.connect(self.synchronize)
@@ -285,6 +304,7 @@ class StudentContentPage(QWidget):
         super().hideEvent(event)
 
     def set_students(self, students: list[Student]) -> None:
+        self.students = list(students)
         selected = self.student_filter.currentData() if hasattr(self, "student_filter") else None
         selected_subject = self.subject_filter.currentData() if hasattr(self, "subject_filter") else None
         self.student_filter.blockSignals(True)
@@ -306,6 +326,83 @@ class StudentContentPage(QWidget):
         subject_index = self.subject_filter.findData(selected_subject)
         self.subject_filter.setCurrentIndex(max(0, subject_index))
         self.subject_filter.blockSignals(False)
+
+    def open_import_dialog(self) -> None:
+        if self.import_dialog is not None:
+            self.import_dialog.raise_()
+            self.import_dialog.activateWindow()
+            return
+        dialog = ImportLessonDialog(self.students, self)
+        self.import_dialog = dialog
+        dialog.import_requested.connect(
+            lambda request, current=dialog: self._start_import(current, request)
+        )
+        dialog.cancellation_requested.connect(self._cancel_import)
+        dialog.finished.connect(lambda _result, current=dialog: self._import_dialog_finished(current))
+        dialog.open()
+
+    def _start_import(
+        self,
+        dialog: ImportLessonDialog,
+        request: LessonImportRequest,
+    ) -> None:
+        if self.import_cancellation is not None:
+            return
+        token = ImportCancellationToken()
+        self.import_cancellation = token
+        self.import_button.setEnabled(False)
+        dialog.set_running()
+        self.status_changed.emit("Импортирую занятие…", "working")
+        self.run_background(
+            lambda: self.service.import_lesson(
+                request,
+                cancellation=token,
+                progress=dialog.progress_changed.emit,
+            ),
+            lambda result, current=dialog: self._import_ready(current, result),
+            lambda details, current=dialog: self._import_failed(current, details),
+        )
+
+    def _cancel_import(self) -> None:
+        if self.import_cancellation:
+            self.import_cancellation.cancel()
+
+    def _import_ready(self, dialog: ImportLessonDialog, result: object) -> None:
+        self.import_cancellation = None
+        self.import_button.setEnabled(True)
+        if not isinstance(result, LessonImportResult):
+            self._import_failed(dialog, "Некорректный результат импорта")
+            return
+        if result.cancelled:
+            dialog.finish_cancelled()
+            self.status_changed.emit("Импорт отменён, временные данные удалены", "warning")
+            return
+        if result.lesson is None:
+            self._import_failed(dialog, "Импорт не вернул созданное занятие")
+            return
+        self._selected_lesson_id = result.lesson.lesson_id
+        dialog.finish_success()
+        self.status_changed.emit(
+            f"Занятие импортировано · {result.lesson.student.full_name}",
+            "success",
+        )
+        self.refresh()
+        if result.enqueue_audio and result.audio_path:
+            self.audio_queue_requested.emit(result.lesson, result.audio_path)
+
+    def _import_failed(self, dialog: ImportLessonDialog, details: str) -> None:
+        self.import_cancellation = None
+        self.import_button.setEnabled(True)
+        lines = [line.strip() for line in details.splitlines() if line.strip()]
+        message = lines[-1] if lines else "Не удалось импортировать занятие"
+        if ": " in message:
+            message = message.split(": ", 1)[1]
+        dialog.show_error(message)
+        self.status_changed.emit("Ошибка импорта занятия", "error")
+
+    def _import_dialog_finished(self, dialog: ImportLessonDialog) -> None:
+        if self.import_dialog is dialog:
+            self.import_dialog = None
 
     def ensure_loaded(self) -> None:
         if self._initial_sync_started:

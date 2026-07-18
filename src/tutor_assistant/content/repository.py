@@ -10,6 +10,7 @@ from typing import TypeVar
 from ..domain import Lesson
 from .migrations import apply_migrations
 from .models import (
+    AssetKind,
     LessonAsset,
     LessonContent,
     LessonFilters,
@@ -26,6 +27,14 @@ class ContentNotFoundError(LookupError):
 
 class ContentConflictError(ValueError):
     pass
+
+
+class DuplicateAssetError(ContentConflictError):
+    def __init__(self, sha256: str, lesson_id: str, relative_path: str) -> None:
+        self.sha256 = sha256
+        self.lesson_id = lesson_id
+        self.relative_path = relative_path
+        super().__init__(f"Файл уже зарегистрирован: {lesson_id}/{relative_path}")
 
 
 class StudentContentRepository:
@@ -221,6 +230,129 @@ class StudentContentRepository:
                 )
                 if cursor.rowcount == 0:
                     raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+
+        self._retry(operation)
+
+    def find_asset_by_sha256(
+        self,
+        sha256: str,
+        *,
+        kind: AssetKind | None = None,
+    ) -> LessonAsset | None:
+        def operation() -> sqlite3.Row | None:
+            with self.connect() as db:
+                sql = (
+                    "SELECT a.id, a.lesson_id, a.kind, a.relative_path, a.media_type, "
+                    "a.size_bytes, a.sha256, a.created_at, a.updated_at, a.deleted_at "
+                    "FROM lesson_assets a "
+                    "JOIN lessons l ON l.lesson_id=a.lesson_id "
+                    "WHERE a.sha256=? AND a.deleted_at IS NULL AND l.deleted_at IS NULL"
+                )
+                parameters: list[str] = [sha256]
+                if kind:
+                    sql += " AND a.kind=?"
+                    parameters.append(kind.value)
+                sql += " ORDER BY a.id LIMIT 1"
+                return db.execute(sql, parameters).fetchone()
+
+        row = self._retry(operation)
+        return self._asset_from_row(row) if row else None
+
+    def import_lesson_bundle(
+        self,
+        lesson: Lesson,
+        assets: list[LessonAsset],
+        transcript: TranscriptRevision | None = None,
+    ) -> None:
+        """Insert a staged lesson and every imported record in one transaction."""
+
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute(
+                    "SELECT 1 FROM lessons WHERE lesson_id=?",
+                    (lesson.lesson_id,),
+                ).fetchone():
+                    raise ContentConflictError(f"Занятие уже существует: {lesson.lesson_id}")
+                for asset in assets:
+                    if asset.kind != AssetKind.AUDIO:
+                        continue
+                    duplicate = db.execute(
+                        """
+                        SELECT a.lesson_id, a.relative_path
+                        FROM lesson_assets a
+                        JOIN lessons l ON l.lesson_id=a.lesson_id
+                        WHERE a.sha256=? AND a.kind=?
+                          AND a.deleted_at IS NULL AND l.deleted_at IS NULL
+                        ORDER BY a.id LIMIT 1
+                        """,
+                        (asset.sha256, AssetKind.AUDIO.value),
+                    ).fetchone()
+                    if duplicate:
+                        raise DuplicateAssetError(
+                            asset.sha256,
+                            str(duplicate["lesson_id"]),
+                            str(duplicate["relative_path"]),
+                        )
+
+                db.execute(
+                    """
+                    INSERT INTO lessons (
+                        lesson_id, student_id, lesson_date, topic, status, payload,
+                        updated_at, subject, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lesson.lesson_id,
+                        lesson.student.id,
+                        lesson.lesson_date.isoformat(),
+                        lesson.topic,
+                        lesson.status.value,
+                        lesson.model_dump_json(),
+                        lesson.updated_at.isoformat(),
+                        lesson.subject,
+                        lesson.created_at.isoformat(),
+                    ),
+                )
+                for asset in assets:
+                    db.execute(
+                        """
+                        INSERT INTO lesson_assets (
+                            lesson_id, kind, relative_path, media_type, size_bytes,
+                            sha256, created_at, updated_at, deleted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            asset.lesson_id,
+                            asset.kind.value,
+                            asset.relative_path,
+                            asset.media_type,
+                            asset.size_bytes,
+                            asset.sha256,
+                            asset.created_at.isoformat(),
+                            asset.updated_at.isoformat(),
+                            asset.deleted_at.isoformat() if asset.deleted_at else None,
+                        ),
+                    )
+                if transcript:
+                    db.execute(
+                        """
+                        INSERT INTO transcript_revisions (
+                            lesson_id, revision_number, relative_path, content,
+                            content_sha256, created_by, created_at, deleted_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transcript.lesson_id,
+                            1,
+                            transcript.relative_path,
+                            transcript.content,
+                            transcript.content_sha256,
+                            transcript.created_by,
+                            transcript.created_at.isoformat(),
+                            transcript.deleted_at.isoformat() if transcript.deleted_at else None,
+                        ),
+                    )
 
         self._retry(operation)
 

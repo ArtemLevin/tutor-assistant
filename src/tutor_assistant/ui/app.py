@@ -276,6 +276,7 @@ class MainWindow(QMainWindow):
         )
         self.student_content_page.status_changed.connect(self._set_status)
         self.student_content_page.file_open_requested.connect(self._open_material_file)
+        self.student_content_page.audio_queue_requested.connect(self._queue_imported_audio)
         self.materials_tab_index = self.tabs.addTab(
             self.student_content_page, "08  Материалы"
         )
@@ -383,6 +384,16 @@ class MainWindow(QMainWindow):
             self.student_content_page.playback_panel.play_path(path)
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
+        if not audio.is_file():
+            self._set_status("Импортированное аудио не найдено", "error")
+            return
+        self._enqueue_transcription(lesson, audio)
+        self._set_status(
+            f"{lesson.student.full_name}: импорт добавлен в очередь",
+            "working",
+        )
 
     def _parallel_policy(self) -> ParallelReviewPolicy:
         return ParallelReviewPolicy(
