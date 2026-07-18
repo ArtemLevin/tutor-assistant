@@ -41,6 +41,7 @@ jobs:
           tests/test_content_import.py
           tests/test_content_trash.py
           tests/test_content_write_consistency.py
+          tests/test_content_pipeline_projection.py
           tests/test_playback.py
           tests/test_student_content.py
           tests/test_student_content_gui.py
