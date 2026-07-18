@@ -207,9 +207,7 @@ class MainWindow(base_app.MainWindow):
         super()._play_preflight_track(source)
 
     def start_recording(self) -> None:
-        # Prevent already playing media from leaking into the new loopback track.
-        self.play_stop_timer.stop()
-        self.player.stop()
+        # The base window stops application-owned media before opening loopback capture.
         super().start_recording()
         self._sync_parallel_review_ui()
 

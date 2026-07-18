@@ -74,6 +74,16 @@ QFrame#crmEditor {
     border-radius: 16px;
 }
 
+QFrame#contentFilters, QFrame#contentDetails {
+    background: #FFFFFF;
+    border: 1px solid #E4E9F0;
+    border-radius: 14px;
+}
+
+QFrame#contentFilters {
+    background: #F8FAFD;
+}
+
 QTableWidget#scheduleGrid {
     background: #F8FAFC;
     border: 1px solid #E4E9F0;

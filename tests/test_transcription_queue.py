@@ -1,6 +1,8 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from tutor_assistant.domain import Lesson, Student
 from tutor_assistant.store import LessonStore
 from tutor_assistant.transcription_queue import QueueStatus, TranscriptionQueue
@@ -73,3 +75,17 @@ def test_queue_state_is_persisted_and_failed_job_can_be_retried(tmp_path) -> Non
 
     assert restored.start_next().id == source.lesson_id
     assert store.list_transcription_jobs()[0].attempts == 2
+
+
+def test_queue_discards_finished_job_but_rejects_active_job() -> None:
+    queue = TranscriptionQueue()
+    active = queue.enqueue(lesson("active"), Path("active.wav"))
+
+    with pytest.raises(ValueError, match="активное"):
+        queue.discard(active.id)
+
+    queue.start_next()
+    queue.complete(active.id, active.lesson)
+    queue.discard(active.id)
+
+    assert queue.get(active.id) is None

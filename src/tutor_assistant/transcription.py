@@ -229,7 +229,7 @@ class WhisperTranscriber:
         _atomic_write_text(
             signals,
             json.dumps(
-                extract_signals(signal_source, "Ученик" if student_segments is not None else None),
+                extract_signals(signal_source, "У" if student_segments is not None else None),
                 ensure_ascii=False,
                 indent=2,
             ),

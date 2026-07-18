@@ -82,6 +82,10 @@ class QuickStartConfig(BaseModel):
     profiles: list[LaunchProfile] = Field(default_factory=lambda: [LaunchProfile()])
 
 
+class ContentConfig(BaseModel):
+    trash_retention_days: int = Field(default=30, ge=0, le=3650)
+
+
 class AppConfig(BaseModel):
     setup_completed: bool = False
     workspace: Path = Path("data")
@@ -91,6 +95,7 @@ class AppConfig(BaseModel):
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
     latex: LatexConfig = Field(default_factory=LatexConfig)
     quick_start: QuickStartConfig = Field(default_factory=QuickStartConfig)
+    content: ContentConfig = Field(default_factory=ContentConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

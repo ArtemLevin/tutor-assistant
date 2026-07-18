@@ -26,6 +26,14 @@ def parser() -> argparse.ArgumentParser:
         "content-index",
         help="Проиндексировать существующие локальные занятия, аудио и транскрипты",
     )
+    content_doctor = commands.add_parser(
+        "content-doctor",
+        help="Проверить SQLite, поиск и локальное хранилище материалов",
+    )
+    content_doctor.add_argument("--json", action="store_true")
+    content_doctor.add_argument("--cleanup-temp", action="store_true")
+    content_doctor.add_argument("--rebuild-search", action="store_true")
+    content_doctor.add_argument("--strict", action="store_true")
     create = commands.add_parser("create", help="Создать занятие")
     create.add_argument("--student", required=True)
     create.add_argument("--subject", required=True)
@@ -90,6 +98,48 @@ def main() -> None:
         report = StudentContentService(config.workspace).index_existing_lessons()
         print(report.model_dump_json(indent=2))
         raise SystemExit(1 if report.errors else 0)
+    if args.command == "content-doctor":
+        from .content import StudentContentService
+
+        service = StudentContentService(
+            config.workspace,
+            trash_retention_days=config.content.trash_retention_days,
+        )
+        cleanup = service.cleanup_temporary_files() if args.cleanup_temp else None
+        rebuilt = service.rebuild_search_index() if args.rebuild_search else None
+        report = service.inspect_content_integrity()
+        if args.json:
+            payload = report.model_dump(mode="json")
+            payload.update(
+                {
+                    "healthy": report.healthy,
+                    "errors": report.errors,
+                    "warnings": report.warnings,
+                    "cleanup": cleanup.model_dump(mode="json") if cleanup else None,
+                    "rebuilt_search_documents": rebuilt,
+                }
+            )
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(
+                f"SQLite: {report.database_message}; "
+                f"поиск: {'FTS5' if report.fts_enabled else 'fallback'} "
+                f"({report.fts_documents}); ошибок: {report.errors}; "
+                f"предупреждений: {report.warnings}"
+            )
+            for issue in report.issues:
+                location = issue.relative_path or issue.lesson_id or "—"
+                print(f"[{issue.severity.value.upper()}] {issue.code} · {location} · {issue.message}")
+            if cleanup:
+                print(
+                    f"Временные данные: удалено {len(cleanup.removed_paths)}, "
+                    f"освобождено {cleanup.released_bytes} байт, ошибок {len(cleanup.errors)}"
+                )
+            if rebuilt is not None:
+                print(f"FTS-документов перестроено: {rebuilt}")
+        if args.strict and not report.healthy:
+            raise SystemExit(1)
+        return
     if args.command == "compile":
         from .latex import LatexCompiler
 

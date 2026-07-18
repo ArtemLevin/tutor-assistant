@@ -73,6 +73,9 @@ def test_migrates_legacy_database_without_losing_lessons(tmp_path: Path) -> None
     assert repository.applied_migrations() == [
         (1, "student_content_domain"),
         (2, "student_content_indexes"),
+        (3, "student_content_editing"),
+        (4, "student_content_trash"),
+        (5, "student_content_hardening"),
     ]
     with repository.connect() as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(lessons)")}
@@ -84,9 +87,9 @@ def test_migrations_are_idempotent(tmp_path: Path) -> None:
     StudentContentRepository(database)
     repository = StudentContentRepository(database)
 
-    assert len(repository.applied_migrations()) == 2
+    assert len(repository.applied_migrations()) == 5
     with repository.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
 
 
 def test_filters_pagination_and_lesson_soft_delete(tmp_path: Path) -> None:
@@ -193,6 +196,7 @@ def test_legacy_indexer_is_idempotent(tmp_path: Path) -> None:
     transcript.parent.mkdir(parents=True)
     recording.write_bytes(b"RIFF-legacy")
     transcript.write_text("Существующий транскрипт", encoding="utf-8")
+    (lesson_dir / "transcript" / "manifest.json").write_text("{}", encoding="utf-8")
     lesson.write_json(lesson_dir / "lesson.json")
 
     service = StudentContentService(workspace)
@@ -201,7 +205,7 @@ def test_legacy_indexer_is_idempotent(tmp_path: Path) -> None:
 
     assert first.errors == second.errors == []
     assert first.indexed_lessons == second.indexed_lessons == 1
-    assert len(service.repository.list_assets(lesson.lesson_id)) == 2
+    assert len(service.repository.list_assets(lesson.lesson_id)) == 4
     revisions = service.repository.list_transcript_revisions(lesson.lesson_id)
     assert len(revisions) == 1
     assert revisions[0].content == "Существующий транскрипт"

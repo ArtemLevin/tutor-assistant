@@ -21,8 +21,8 @@ def test_dual_transcription_merges_speakers(monkeypatch, tmp_path) -> None:
     transcriber = WhisperTranscriber(WhisperConfig())
 
     def recognize(audio, *, speaker=None, offset_seconds=0.0):
-        text = "Объяснение" if speaker == "Преподаватель" else "Я не понимаю"
-        start = 1.0 if speaker == "Преподаватель" else 2.0
+        text = "Объяснение" if speaker == "П" else "Я не понимаю"
+        start = 1.0 if speaker == "П" else 2.0
         return [Segment(start + offset_seconds, start + offset_seconds + 0.5, text, -0.1, 0.0, speaker)], {
             "speaker": speaker,
             "source_audio": str(audio),
@@ -32,7 +32,7 @@ def test_dual_transcription_merges_speakers(monkeypatch, tmp_path) -> None:
     result = transcriber.transcribe_dual(tmp_path / "mic.wav", tmp_path / "system.wav", tmp_path / "out")
     segments = json.loads(result.segments.read_text(encoding="utf-8"))
     signals = json.loads(result.signals.read_text(encoding="utf-8"))
-    assert [item["speaker"] for item in segments] == ["Преподаватель", "Ученик"]
-    assert signals[0]["speaker"] == "Ученик"
+    assert [item["speaker"] for item in segments] == ["П", "У"]
+    assert signals[0]["speaker"] == "У"
     assert result.teacher_transcript.exists()
     assert result.student_transcript.exists()

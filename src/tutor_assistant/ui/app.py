@@ -11,7 +11,6 @@ from time import sleep
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -44,10 +43,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_students
+from ..content import StudentContentService
+from ..content_browser import is_audio_path
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
 from ..pipeline import LessonPipeline
+from ..playback import PlaybackController, PlaybackSegment
 from ..quick_start import evaluate_readiness, selected_profile
 from ..recording import (
     DualRecorder,
@@ -60,6 +62,9 @@ from ..recording import (
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
+from .parallel_review import ParallelReviewPolicy
+from .playback import QtPlaybackBackend, QtStopScheduler
+from .student_content import StudentContentPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
 
@@ -129,6 +134,11 @@ class MainWindow(QMainWindow):
         self.crm_store = CrmStore(self.pipeline.store.path)
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
+        self.content_service = StudentContentService(
+            self.config.workspace,
+            self.pipeline.store.path,
+            trash_retention_days=self.config.content.trash_retention_days,
+        )
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
             self.devices, self.config.recording.target_sample_rate
@@ -156,12 +166,17 @@ class MainWindow(QMainWindow):
         self.transcription_worker.failed.connect(self._background_transcription_failed)
         self.transcription_worker.became_idle.connect(self._maybe_finish_shutdown)
         self.transcription_worker.finished.connect(self._maybe_finish_shutdown)
-        self.player = QMediaPlayer(self)
-        self.audio_output = QAudioOutput(self)
-        self.player.setAudioOutput(self.audio_output)
-        self.play_stop_timer = QTimer(self)
-        self.play_stop_timer.setSingleShot(True)
-        self.play_stop_timer.timeout.connect(self.player.pause)
+        self.playback_backend = QtPlaybackBackend(self)
+        self.playback_scheduler = QtStopScheduler(self)
+        self.playback_controller = PlaybackController(
+            self.playback_backend,
+            self.playback_scheduler,
+            lambda: self._parallel_policy().audio_playback_allowed,
+            self._playback_error,
+        )
+        self.playback_backend.error_occurred.connect(
+            self.playback_controller.report_backend_error
+        )
         self.quick_countdown_timer = QTimer(self)
         self.quick_countdown_timer.setInterval(1000)
         self.quick_countdown_timer.timeout.connect(self._quick_countdown_tick)
@@ -250,9 +265,26 @@ class MainWindow(QMainWindow):
         self.crm_schedule_page = SchedulePage(self.crm_store)
         self.crm_students_page.changed.connect(self._crm_students_changed)
         self.crm_students_page.changed.connect(self.crm_schedule_page.refresh)
+        self.crm_students_page.materials_requested.connect(self._open_student_materials)
         self.crm_schedule_page.start_requested.connect(self._start_scheduled_lesson)
         self.tabs.addTab(self.crm_students_page, "06  Ученики")
         self.tabs.addTab(self.crm_schedule_page, "07  Расписание")
+        self.student_content_page = StudentContentPage(
+            self.content_service,
+            self.students,
+            self._run_content_task,
+            self.playback_controller,
+            self.playback_backend,
+        )
+        self.student_content_page.status_changed.connect(self._set_status)
+        self.student_content_page.file_open_requested.connect(self._open_material_file)
+        self.student_content_page.audio_queue_requested.connect(self._queue_imported_audio)
+        self.student_content_page.lesson_trashed.connect(self._forget_trashed_lesson)
+        self.student_content_page.lesson_purged.connect(self._forget_trashed_lesson)
+        self.student_content_page.trash_retention_changed.connect(self._save_trash_retention)
+        self.materials_tab_index = self.tabs.addTab(
+            self.student_content_page, "08  Материалы"
+        )
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -337,6 +369,60 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(index)
             combo.blockSignals(False)
         self._refresh_quick_readiness()
+        self.student_content_page.set_students(self.students)
+
+    def _run_content_task(self, callable_, succeeded, failed) -> None:
+        worker = Worker(callable_)
+        worker.purpose = "content-browser"
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _open_student_materials(self, student_id: str) -> None:
+        self.student_content_page.show_student(student_id)
+        self._go_to(self.materials_tab_index)
+
+    def _open_material_file(self, path: Path) -> None:
+        if is_audio_path(path):
+            self.student_content_page.playback_panel.play_path(path)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
+        if not audio.is_file():
+            self._set_status("Импортированное аудио не найдено", "error")
+            return
+        self._enqueue_transcription(lesson, audio)
+        self._set_status(
+            f"{lesson.student.full_name}: импорт добавлен в очередь",
+            "working",
+        )
+
+    def _forget_trashed_lesson(self, lesson_id: str) -> None:
+        try:
+            self.transcription_queue.discard(lesson_id)
+        except ValueError:
+            logging.warning("Активное задание не удалено из очереди: %s", lesson_id)
+        if self.lesson and self.lesson.lesson_id == lesson_id:
+            self.lesson = None
+            self._prepare_next_lesson()
+        self._update_transcription_queue_ui()
+
+    def _save_trash_retention(self, days: int) -> None:
+        self.config.content.trash_retention_days = days
+        self.config.save(self.config_path)
+
+    def _parallel_policy(self) -> ParallelReviewPolicy:
+        return ParallelReviewPolicy(
+            recording_active=bool(self.recorder and self.recorder.active),
+            recording_stopping=self._recording_stop_started,
+        )
+
+    def _playback_error(self, message: str) -> None:
+        logging.warning("Ошибка воспроизведения: %s", message)
+        self._set_status(message, "error")
 
     def _start_scheduled_lesson(
         self,
@@ -1236,6 +1322,7 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("Приложение завершает фоновые операции")
             if self._recording_stop_started or (self.recorder and self.recorder.active):
                 raise RuntimeError("Запись уже запущена или сохраняется")
+            self.playback_controller.prepare_recording()
             if self.config.recording.require_preflight and not self.preflight_passed:
                 answer = QMessageBox.question(
                     self,
@@ -1553,10 +1640,8 @@ class MainWindow(QMainWindow):
             if source == "microphone"
             else self.preflight_result.system_file
         )
-        self.player.setSource(QUrl.fromLocalFile(str(path.resolve())))
-        self.player.setPlaybackRate(1.0)
-        self.player.play()
-        self._set_status(f"Воспроизвожу {path.name}", "working")
+        if self.playback_controller.play_file(path, rate=1.0, start_ms=0):
+            self._set_status(f"Воспроизвожу {path.name}", "working")
 
     def transcribe(self) -> None:
         try:
@@ -1792,11 +1877,11 @@ class MainWindow(QMainWindow):
         start = float(self.segment_table.item(row, 0).data(256))
         end = float(self.segment_table.item(row, 1).data(256))
         speed = float(self.playback_speed.currentData())
-        self.player.setSource(QUrl.fromLocalFile(str(audio.resolve())))
-        self.player.setPlaybackRate(speed)
-        self.player.setPosition(round(start * 1000))
-        self.player.play()
-        self.play_stop_timer.start(max(100, round((end - start) * 1000 / speed)))
+        self.playback_controller.play_segment(
+            audio,
+            PlaybackSegment(start_seconds=start, end_seconds=end),
+            rate=speed,
+        )
 
     def approve_transcript(self) -> None:
         if not self.lesson or self.lesson.status != JobStatus.REVIEW_REQUIRED:
@@ -2005,6 +2090,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.playback_controller.stop(clear_source=True)
         if self._shutdown_ready:
             event.accept()
             return

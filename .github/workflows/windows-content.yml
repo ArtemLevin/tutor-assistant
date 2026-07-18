@@ -1,0 +1,45 @@
+name: Windows student content
+
+on:
+  pull_request:
+    paths:
+      - "src/tutor_assistant/content/**"
+      - "src/tutor_assistant/ui/content_*.py"
+      - "src/tutor_assistant/ui/student_content.py"
+      - "src/tutor_assistant/ui/playback.py"
+      - "tests/test_content*.py"
+      - "tests/test_student_content*.py"
+      - "tests/test_playback.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/windows-content.yml"
+  workflow_dispatch:
+
+jobs:
+  content:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install test and desktop dependencies
+        run: uv sync --extra desktop --group dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Student-content tests
+        run: >-
+          uv run pytest
+          tests/test_content_browser.py
+          tests/test_content_editing.py
+          tests/test_content_hardening.py
+          tests/test_content_import.py
+          tests/test_content_trash.py
+          tests/test_playback.py
+          tests/test_student_content.py
+          tests/test_student_content_gui.py
