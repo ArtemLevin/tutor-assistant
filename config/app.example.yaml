@@ -8,6 +8,9 @@ content:
   auto_purge_trash: true
   auto_cleanup_temporary: true
   temporary_retention_hours: 24
+  backup_enabled: true
+  backup_interval_hours: 24
+  backup_retention_count: 14
 students_file: config/students.yaml
 
 recording:

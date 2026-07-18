@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import TypeAlias
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QHideEvent, QKeySequence, QShortcut, QShowEvent
+from PySide6.QtGui import QBrush, QCloseEvent, QColor, QHideEvent, QKeySequence, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateEdit,
+    QDialog,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -21,7 +23,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,6 +33,9 @@ from ..content import (
     ContentIntegrityReport,
     ContentMaintenanceResult,
     ContentOperation,
+    DatabaseBackupInfo,
+    DatabaseBackupVerification,
+    DatabaseRestoreResult,
     ImportCancellationToken,
     LessonContent,
     LessonFilters,
@@ -39,7 +43,6 @@ from ..content import (
     LessonImportResult,
     LessonPage,
     StudentContentService,
-    TemporaryCleanupResult,
     TranscriptDraft,
     TranscriptRevision,
     TrashActionResult,
@@ -77,6 +80,35 @@ KIND_LABELS = {
     "document": "Документ",
     "other": "Файл",
 }
+
+
+class LessonContentDialog(QDialog):
+    close_blocked = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._close_allowed = True
+        self.setWindowTitle("Содержимое занятия")
+        self.setAccessibleName("Содержимое занятия")
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumSize(760, 600)
+        self.resize(920, 760)
+
+    def set_close_allowed(self, allowed: bool) -> None:
+        self._close_allowed = allowed
+
+    def reject(self) -> None:
+        if not self._close_allowed:
+            self.close_blocked.emit()
+            return
+        super().reject()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._close_allowed:
+            event.ignore()
+            self.close_blocked.emit()
+            return
+        super().closeEvent(event)
 
 
 class StudentContentPage(QWidget):
@@ -238,7 +270,6 @@ class StudentContentPage(QWidget):
         self.loading_label.setObjectName("muted")
         layout.addWidget(self.loading_label)
 
-        splitter = QSplitter(Qt.Horizontal)
         list_panel = QWidget()
         list_layout = QVBoxLayout(list_panel)
         list_layout.setContentsMargins(0, 0, 0, 0)
@@ -267,8 +298,18 @@ class StudentContentPage(QWidget):
         self.next_button.clicked.connect(self.next_page)
         paging.addWidget(self.next_button)
         list_layout.addLayout(paging)
-        splitter.addWidget(list_panel)
+        layout.addWidget(list_panel, 1)
 
+        self.details_dialog = LessonContentDialog(self)
+        self.details_dialog.close_blocked.connect(
+            lambda: self.status_changed.emit(
+                "Завершите редактирование транскрипта перед закрытием карточки",
+                "warning",
+            )
+        )
+        self.details_dialog.finished.connect(self._details_dialog_closed)
+        dialog_layout = QVBoxLayout(self.details_dialog)
+        dialog_layout.setContentsMargins(12, 12, 12, 12)
         details = QFrame()
         details.setObjectName("contentDetails")
         details_layout = QVBoxLayout(details)
@@ -287,7 +328,7 @@ class StudentContentPage(QWidget):
         self.delete_lesson_button.clicked.connect(self.delete_selected_lesson)
         details_header.addWidget(self.delete_lesson_button)
         self.close_details_button = set_button_kind(QPushButton("Закрыть карточку"), "ghost")
-        self.close_details_button.clicked.connect(self.close_details)
+        self.close_details_button.clicked.connect(self.details_dialog.close)
         details_header.addWidget(self.close_details_button)
         details_layout.addLayout(details_header)
         metadata_form = QFormLayout()
@@ -373,9 +414,7 @@ class StudentContentPage(QWidget):
         transcript_actions_layout.addWidget(self.save_transcript_button)
         self.transcript_actions.setVisible(False)
         details_layout.addWidget(self.transcript_actions)
-        splitter.addWidget(details)
-        splitter.setSizes([670, 500])
-        layout.addWidget(splitter, 1)
+        dialog_layout.addWidget(details)
         self._clear_details()
 
     def _install_shortcuts(self) -> None:
@@ -399,6 +438,12 @@ class StudentContentPage(QWidget):
         self.save_shortcut.activated.connect(self._save_transcript_shortcut)
 
     def _focus_search(self) -> None:
+        window = self.window()
+        window.raise_()
+        window.activateWindow()
+        QTimer.singleShot(0, self._apply_search_focus)
+
+    def _apply_search_focus(self) -> None:
         self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.search.selectAll()
 
@@ -685,6 +730,9 @@ class StudentContentPage(QWidget):
         dialog.repair_requested.connect(lambda current=dialog: self._repair_content_health(current))
         dialog.cleanup_requested.connect(lambda current=dialog: self._cleanup_content_temp(current))
         dialog.rebuild_search_requested.connect(lambda current=dialog: self._rebuild_content_search(current))
+        dialog.backup_requested.connect(lambda current=dialog: self._create_database_backup(current))
+        dialog.verify_backup_requested.connect(lambda current=dialog: self._verify_database_backup(current))
+        dialog.restore_backup_requested.connect(lambda current=dialog: self._restore_database_backup(current))
         dialog.finished.connect(lambda _result, current=dialog: self._health_dialog_closed(current))
         dialog.open()
         self._reload_content_health(dialog)
@@ -712,7 +760,11 @@ class StudentContentPage(QWidget):
 
     def _cleanup_content_temp(self, dialog: ContentHealthDialog) -> None:
         self.run_background(
-            self.service.cleanup_temporary_files,
+            lambda: self.service.run_maintenance(
+                auto_repair=False,
+                purge_expired=False,
+                cleanup_temporary=True,
+            ),
             lambda result, current=dialog: self._content_cleanup_ready(current, result),
             lambda details, current=dialog: current.show_error(
                 self._operation_message(details, "Не удалось очистить временные данные")
@@ -720,12 +772,13 @@ class StudentContentPage(QWidget):
         )
 
     def _content_cleanup_ready(self, dialog: ContentHealthDialog, result: object) -> None:
-        if not isinstance(result, TemporaryCleanupResult):
+        if not isinstance(result, ContentMaintenanceResult):
             dialog.show_error("Некорректный результат очистки")
             return
+        cleanup = result.temporary_cleanup
         tone = "warning" if result.errors else "success"
         self.status_changed.emit(
-            f"Временные данные очищены · освобождено {format_size(result.released_bytes)} · "
+            f"Временные данные очищены · освобождено {format_size(cleanup.released_bytes)} · "
             f"ошибок: {len(result.errors)}",
             tone,
         )
@@ -756,7 +809,7 @@ class StudentContentPage(QWidget):
     def _rebuild_content_search(self, dialog: ContentHealthDialog) -> None:
         dialog.set_busy("Перестраиваю полнотекстовый индекс…")
         self.run_background(
-            self.service.rebuild_search_index,
+            self.service.coordinated_rebuild_search_index,
             lambda result, current=dialog: self._content_search_rebuilt(current, result),
             lambda details, current=dialog: current.show_error(
                 self._operation_message(details, "Не удалось перестроить поиск")
@@ -774,6 +827,90 @@ class StudentContentPage(QWidget):
     def _health_dialog_closed(self, dialog: ContentHealthDialog) -> None:
         if self.health_dialog is dialog:
             self.health_dialog = None
+
+    def _backup_file(self, title: str) -> Path | None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            title,
+            str((self.workspace / "backups").resolve()),
+            "SQLite backup (*.sqlite3)",
+        )
+        return Path(path) if path else None
+
+    def _create_database_backup(self, dialog: ContentHealthDialog) -> None:
+        dialog.set_busy("Создаю согласованную резервную копию SQLite…")
+        self.run_background(
+            lambda: self.service.create_database_backup(reason="manual-gui"),
+            lambda result, current=dialog: self._database_backup_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось создать резервную копию")
+            ),
+        )
+
+    def _database_backup_ready(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, DatabaseBackupInfo):
+            dialog.show_error("Некорректный результат резервного копирования")
+            return
+        dialog.show_result(f"Backup создан: {result.path.name} · {format_size(result.manifest.size_bytes)}")
+        self.status_changed.emit("Резервная копия SQLite создана", "success")
+
+    def _verify_database_backup(self, dialog: ContentHealthDialog) -> None:
+        path = self._backup_file("Проверить резервную копию")
+        if path is None:
+            return
+        dialog.set_busy("Проверяю manifest, SHA-256 и целостность SQLite…")
+        self.run_background(
+            lambda: self.service.verify_database_backup(path),
+            lambda result, current=dialog: self._database_backup_verified(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось проверить резервную копию")
+            ),
+        )
+
+    def _database_backup_verified(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, DatabaseBackupVerification):
+            dialog.show_error("Некорректный результат проверки backup")
+        elif result.valid:
+            dialog.show_result(f"Backup проверен: {result.path.name}")
+        else:
+            dialog.show_error("Backup повреждён: " + "; ".join(result.errors))
+
+    def _restore_database_backup(self, dialog: ContentHealthDialog) -> None:
+        path = self._backup_file("Восстановить резервную копию")
+        if path is None:
+            return
+        answer = QMessageBox.warning(
+            self,
+            "Восстановить SQLite",
+            "Текущая база данных будет заменена содержимым backup. Перед заменой приложение "
+            "автоматически создаст safety-копию. Продолжить?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        dialog.set_busy("Проверяю backup и восстанавливаю SQLite…")
+        self.run_background(
+            lambda: self.service.restore_database_backup(path),
+            lambda result, current=dialog: self._database_restore_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось восстановить SQLite")
+            ),
+        )
+
+    def _database_restore_ready(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, DatabaseRestoreResult):
+            dialog.show_error("Некорректный результат восстановления")
+            return
+        self.refresh()
+        safety_name = (
+            result.safety_backup.path.name
+            if result.safety_backup is not None
+            else str(result.raw_safety_path or "—")
+        )
+        dialog.show_result(f"SQLite восстановлена. Safety backup: {safety_name}")
+        self.status_changed.emit("SQLite восстановлена из резервной копии", "success")
+        self._reload_content_health(dialog)
 
     @staticmethod
     def _operation_message(details: str, fallback: str) -> str:
@@ -850,6 +987,7 @@ class StudentContentPage(QWidget):
         self.history_button.setEnabled(False)
         self.delete_lesson_button.setEnabled(False)
         self.close_details_button.setEnabled(False)
+        self.details_dialog.set_close_allowed(False)
         self.transcript.setReadOnly(False)
         self.transcript.blockSignals(True)
         self.transcript.setPlainText(text)
@@ -987,6 +1125,7 @@ class StudentContentPage(QWidget):
         self._transcript_base_revision = None
         self.table.setEnabled(True)
         self.close_details_button.setEnabled(True)
+        self.details_dialog.set_close_allowed(True)
         self.delete_lesson_button.setEnabled(self._current_content is not None)
         self.transcript.setEnabled(True)
         self.transcript.setReadOnly(True)
@@ -1196,12 +1335,17 @@ class StudentContentPage(QWidget):
                 self.table.setItem(row, column, item)
             if lesson.lesson_id == selected:
                 selected_row = row
-        self.table.blockSignals(False)
-        if selected_row < 0 and page.items:
-            selected_row = 0
-        if selected_row >= 0:
+        details_visible = self.details_dialog.isVisible()
+        if selected_row >= 0 and details_visible:
             self.table.selectRow(selected_row)
         else:
+            self.table.clearSelection()
+        self.table.blockSignals(False)
+        if selected_row >= 0 and details_visible:
+            self._load_selected(activate=False)
+        elif not self._transcript_editing:
+            if details_visible:
+                self.details_dialog.close()
             self._selected_lesson_id = None
             self._clear_details()
 
@@ -1235,7 +1379,7 @@ class StudentContentPage(QWidget):
         else:
             self.ensure_loaded()
 
-    def _load_selected(self) -> None:
+    def _load_selected(self, *, activate: bool = True) -> None:
         items = self.table.selectedItems()
         if not items:
             return
@@ -1244,7 +1388,14 @@ class StudentContentPage(QWidget):
             return
         if lesson_id != self._selected_lesson_id:
             self.playback_panel.stop(clear_source=True)
+            self._clear_details()
         self._selected_lesson_id = lesson_id
+        self.details_dialog.setWindowTitle(f"Содержимое занятия · {lesson_id}")
+        if not self.details_dialog.isVisible():
+            self.details_dialog.open()
+        if activate:
+            self.details_dialog.raise_()
+            self.details_dialog.activateWindow()
         self._detail_request += 1
         request_id = self._detail_request
         self.transcript_state.setText("Загружаю содержимое занятия…")
@@ -1259,6 +1410,7 @@ class StudentContentPage(QWidget):
             return
         self._current_content = result
         lesson = result.lesson
+        self.details_dialog.setWindowTitle(f"Содержимое занятия · {lesson.topic}")
         self.metadata["student"].setText(lesson.student.full_name)
         self.metadata["date"].setText(lesson.lesson_date.strftime("%d.%m.%Y"))
         self.metadata["subject"].setText(lesson.subject)
@@ -1383,6 +1535,9 @@ class StudentContentPage(QWidget):
                 button.setEnabled(False)
 
     def close_details(self) -> None:
+        self.details_dialog.close()
+
+    def _details_dialog_closed(self, _result: int) -> None:
         self.playback_panel.stop(clear_source=True)
         self.table.clearSelection()
         self._selected_lesson_id = None

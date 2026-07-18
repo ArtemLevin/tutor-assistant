@@ -10,6 +10,7 @@ from typing import TypeVar
 from .content.migrations import apply_migrations
 from .content.repository import StudentContentRepository
 from .domain import Lesson
+from .sqlite_utils import ClosingConnection
 
 T = TypeVar("T")
 
@@ -30,11 +31,15 @@ class LessonStore:
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=10000")
-        connection.execute("PRAGMA synchronous=NORMAL")
+        connection = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=10000")
+            connection.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            connection.close()
+            raise
         return connection
 
     @staticmethod

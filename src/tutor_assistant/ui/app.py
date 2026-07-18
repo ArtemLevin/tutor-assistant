@@ -142,6 +142,7 @@ class MainWindow(QMainWindow):
         self.lesson: Lesson | None = None
         self.recording_lesson: Lesson | None = None
         self.recorder: DualRecorder | None = None
+        self._recording_lease = None
         self.preflight_passed = False
         self.preflight_result = None
         self._recording_stop_started = False
@@ -404,6 +405,11 @@ class MainWindow(QMainWindow):
                 temporary_retention=timedelta(
                     hours=self.config.content.temporary_retention_hours
                 ),
+                backup_enabled=self.config.content.backup_enabled,
+                backup_interval=timedelta(
+                    hours=self.config.content.backup_interval_hours
+                ),
+                backup_retention_count=self.config.content.backup_retention_count,
             )
 
         worker = Worker(maintain)
@@ -1388,6 +1394,11 @@ class MainWindow(QMainWindow):
                     return
             recording_lesson = self._make_lesson()
             self.recording_lesson = recording_lesson
+            self._recording_lease = self.content_service.acquire_activity(
+                "recording",
+                lesson_id=recording_lesson.lesson_id,
+                ttl=timedelta(minutes=5),
+            )
             directory = self.pipeline.lesson_dir(recording_lesson) / "recording"
             self.recorder = DualRecorder(
                 self.config.recording.sample_rate,
@@ -1433,6 +1444,7 @@ class MainWindow(QMainWindow):
                     logging.exception("Не удалось остановить recorder после ошибки запуска")
             self.recorder = None
             self.recording_lesson = None
+            self._release_recording_lease()
             self._update_scheduled_occurrence("planned", clear=True)
             if failed_lesson:
                 try:
@@ -1509,6 +1521,13 @@ class MainWindow(QMainWindow):
                 f"Аудиофайл сохранён: {result.mixed_file}\n\n{details[-2000:]}",
             )
             self._maybe_finish_shutdown()
+        finally:
+            self._release_recording_lease()
+
+    def _release_recording_lease(self) -> None:
+        if self._recording_lease is not None:
+            self._recording_lease.release()
+            self._recording_lease = None
 
     def _recording_ready_impl(
         self,
@@ -1588,6 +1607,7 @@ class MainWindow(QMainWindow):
         self._recording_stop_started = False
         self.recorder = None
         self.recording_lesson = None
+        self._release_recording_lease()
         self._update_scheduled_occurrence("recording_failed", clear=True)
         self.start_button.setEnabled(True)
         self.test_devices_button.setEnabled(True)
@@ -2041,7 +2061,11 @@ class MainWindow(QMainWindow):
         self.compilation_log.setPlainText("Компиляция запущена…")
         self._set_status("Компилирую PDF…", "working")
         logging.info("Локальная компиляция LaTeX начата: %s", path)
-        worker = Worker(LatexCompiler(self.config.latex).compile, path)
+        def compile_tex():
+            with self.content_service.activity("latex-compilation"):
+                return LatexCompiler(self.config.latex).compile(path)
+
+        worker = Worker(compile_tex)
         worker.succeeded.connect(self._local_compilation_ready)
         worker.failed.connect(lambda details: self._operation_failed("compile", details))
         worker.finished.connect(lambda: self._worker_finished(worker))
@@ -2091,12 +2115,13 @@ class MainWindow(QMainWindow):
         self._set_status("Проверяю ветки занятий…", "working")
 
         def scan():
-            service = RemoteLatexService(self.config.repository, self.config.latex)
-            for lesson in self.pipeline.store.list():
-                if service.is_ready(lesson):
-                    return service.compile_lesson(
-                        lesson, cache_dir=self.pipeline.lesson_dir(lesson) / "latex-cache"
-                    )
+            with self.content_service.activity("latex-monitor"):
+                service = RemoteLatexService(self.config.repository, self.config.latex)
+                for lesson in self.pipeline.store.list():
+                    if service.is_ready(lesson):
+                        return service.compile_lesson(
+                            lesson, cache_dir=self.pipeline.lesson_dir(lesson) / "latex-cache"
+                        )
             return None
 
         worker = Worker(scan)

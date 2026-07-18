@@ -1,3 +1,5 @@
+from .backup import DatabaseBackupError
+from .coordination import ActivityLease, ActivityLeaseInfo, ContentBusyError
 from .importing import (
     DuplicateImportError,
     ImportCancellationToken,
@@ -14,6 +16,11 @@ from .models import (
     ContentOperation,
     ContentOperationKind,
     ContentOperationStatus,
+    DatabaseBackupInfo,
+    DatabaseBackupManifest,
+    DatabaseBackupRetentionResult,
+    DatabaseBackupVerification,
+    DatabaseRestoreResult,
     IndexReport,
     IntegritySeverity,
     LessonAsset,
@@ -52,6 +59,15 @@ __all__ = [
     "ContentConflictError",
     "ContentNotFoundError",
     "ContentPathError",
+    "ContentBusyError",
+    "ActivityLease",
+    "ActivityLeaseInfo",
+    "DatabaseBackupError",
+    "DatabaseBackupInfo",
+    "DatabaseBackupManifest",
+    "DatabaseBackupRetentionResult",
+    "DatabaseBackupVerification",
+    "DatabaseRestoreResult",
     "DuplicateImportError",
     "ImportCancellationToken",
     "ImportCancelledError",

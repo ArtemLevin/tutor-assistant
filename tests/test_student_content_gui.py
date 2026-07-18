@@ -109,6 +109,15 @@ def test_archive_accessibility_filters_delete_and_restore(
     assert page.table.accessibleName() == "Список занятий"
     assert page.playback_panel.play_pause.accessibleName() == ("Воспроизвести или приостановить аудио")
     assert page.table.rowCount() == 1
+    assert not page.details_dialog.isVisible()
+
+    page.table.selectRow(0)
+    application.processEvents()
+    assert page.details_dialog.isVisible()
+    assert page.details_dialog.accessibleName() == "Содержимое занятия"
+    assert page.metadata["topic"].text() == "GUI hardening"
+    page.close_details()
+    application.processEvents()
 
     page.search_shortcut.activated.emit()
     application.processEvents()
@@ -119,6 +128,8 @@ def test_archive_accessibility_filters_delete_and_restore(
     assert page.table.rowCount() == 1
 
     monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
+    page.table.selectRow(0)
+    application.processEvents()
     page.delete_shortcut.activated.emit()
     assert service.list_lessons().total == 0
 

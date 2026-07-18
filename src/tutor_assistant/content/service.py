@@ -4,16 +4,25 @@ import hashlib
 import logging
 import mimetypes
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
-from threading import Lock
+from threading import Lock, get_ident
 from uuid import uuid4
 
 from ..atomic_io import atomic_write_text
 from ..domain import JobStatus, Lesson, Student
+from .backup import DatabaseBackupError, DatabaseBackupStore
+from .coordination import (
+    ActivityLease,
+    ActivityLeaseInfo,
+    ActivityLeaseStore,
+    ContentBusyError,
+    process_owner_id,
+)
 from .importing import (
     DuplicateImportError,
     ImportCancellationToken,
@@ -22,12 +31,17 @@ from .importing import (
     LessonImportRequest,
     LessonImportResult,
 )
+from .migrations import apply_migrations
 from .models import (
     AssetKind,
     ContentIntegrityIssue,
     ContentIntegrityReport,
     ContentMaintenanceResult,
     ContentOperationKind,
+    DatabaseBackupInfo,
+    DatabaseBackupRetentionResult,
+    DatabaseBackupVerification,
+    DatabaseRestoreResult,
     IndexReport,
     IntegritySeverity,
     LessonAsset,
@@ -103,12 +117,134 @@ class StudentContentService:
         self.repository = StudentContentRepository(
             database_path or self.workspace / "tutor-assistant.sqlite3"
         )
+        self.backups = DatabaseBackupStore(
+            self.repository.path,
+            self.workspace / "backups",
+        )
+        self.lease_store = ActivityLeaseStore(self.workspace / ".operations.sqlite3")
+        self.owner_id = process_owner_id()
         self._maintenance_lock = Lock()
-        self.recover_trash_operations()
-        self.recover_file_sync()
-        fts_enabled, fts_documents = self.repository.search_index_status()
-        if fts_enabled and fts_documents != len(self.repository.list_lesson_index_states()):
-            self.repository.rebuild_search_index()
+        self._maintenance_thread_id: int | None = None
+        try:
+            with self.activity("startup-recovery", exclusive=True):
+                self.recover_trash_operations()
+                self.recover_file_sync()
+                fts_enabled, fts_documents = self.repository.search_index_status()
+                if fts_enabled and fts_documents != len(self.repository.list_lesson_index_states()):
+                    self.repository.rebuild_search_index()
+        except ContentBusyError:
+            logging.info("Startup recovery skipped because another process owns the workspace")
+
+    def acquire_activity(
+        self,
+        activity: str,
+        *,
+        lesson_id: str | None = None,
+        exclusive: bool = False,
+        ttl: timedelta = timedelta(minutes=2),
+    ) -> ActivityLease:
+        info = self.lease_store.acquire(
+            owner_id=self.owner_id,
+            activity=activity,
+            lesson_id=lesson_id,
+            exclusive=exclusive,
+            ttl=ttl,
+        )
+        if info is None:
+            active = self.lease_store.active()
+            description = (
+                ", ".join(
+                    f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}" for item in active
+                )
+                or "неизвестная операция"
+            )
+            raise ContentBusyError(f"Хранилище занято: {description}")
+        return ActivityLease(self.lease_store, info, ttl)
+
+    @contextmanager
+    def activity(
+        self,
+        activity: str,
+        *,
+        lesson_id: str | None = None,
+        exclusive: bool = False,
+        ttl: timedelta = timedelta(minutes=2),
+    ) -> Iterator[ActivityLease]:
+        lease = self.acquire_activity(
+            activity,
+            lesson_id=lesson_id,
+            exclusive=exclusive,
+            ttl=ttl,
+        )
+        try:
+            yield lease
+        finally:
+            lease.release()
+
+    def active_activities(self) -> list[ActivityLeaseInfo]:
+        return self.lease_store.active()
+
+    def create_database_backup(self, *, reason: str = "manual") -> DatabaseBackupInfo:
+        with self.activity("database-backup", exclusive=True):
+            return self.backups.create(reason=reason)
+
+    def list_database_backups(self) -> list[DatabaseBackupInfo]:
+        return self.backups.list()
+
+    def verify_database_backup(self, path: Path) -> DatabaseBackupVerification:
+        return self.backups.verify(path)
+
+    def prune_database_backups(self, keep: int) -> DatabaseBackupRetentionResult:
+        with self.activity("backup-retention", exclusive=True):
+            return self.backups.prune(keep)
+
+    def restore_database_backup(self, path: Path) -> DatabaseRestoreResult:
+        with self.activity("database-restore", exclusive=True, ttl=timedelta(minutes=5)):
+            verification = self.backups.verify(path)
+            if not verification.valid:
+                raise DatabaseBackupError(
+                    "Резервная копия не прошла проверку: " + "; ".join(verification.errors)
+                )
+            safety = self.backups.create(reason="pre-restore-safety")
+            try:
+                self.backups.restore_from(path)
+                with self.repository.connect() as db:
+                    apply_migrations(db)
+                self.recover_trash_operations()
+                for lesson_id, deleted in self.repository.list_lesson_index_states():
+                    if not deleted:
+                        self._synchronize_lesson_files(lesson_id)
+            except Exception:
+                logging.exception("Restore failed; rolling back to the safety backup")
+                self.backups.restore_from(safety.path)
+                raise
+            return DatabaseRestoreResult(
+                restored_from=path.resolve(),
+                safety_backup=safety,
+            )
+
+    @staticmethod
+    def restore_database_backup_offline(workspace: Path, path: Path) -> DatabaseRestoreResult:
+        workspace = workspace.resolve()
+        lease_store = ActivityLeaseStore(workspace / ".operations.sqlite3")
+        owner_id = process_owner_id()
+        info = lease_store.acquire(
+            owner_id=owner_id,
+            activity="database-restore-offline",
+            exclusive=True,
+            ttl=timedelta(minutes=5),
+        )
+        if info is None:
+            raise ContentBusyError("Хранилище занято другим процессом")
+        lease = ActivityLease(lease_store, info, timedelta(minutes=5))
+        try:
+            backups = DatabaseBackupStore(
+                workspace / "tutor-assistant.sqlite3",
+                workspace / "backups",
+            )
+            return backups.restore_offline(path)
+        finally:
+            lease.release()
 
     def _resolve_path(self, path: Path | str) -> tuple[Path, str]:
         candidate = Path(path)
@@ -647,6 +783,10 @@ class StudentContentService:
     def rebuild_search_index(self) -> int:
         return self.repository.rebuild_search_index()
 
+    def coordinated_rebuild_search_index(self) -> int:
+        with self.activity("search-index-rebuild", exclusive=True):
+            return self.rebuild_search_index()
+
     def run_maintenance(
         self,
         *,
@@ -655,6 +795,9 @@ class StudentContentService:
         purge_expired: bool = True,
         cleanup_temporary: bool = True,
         temporary_retention: timedelta = timedelta(hours=24),
+        backup_enabled: bool = False,
+        backup_interval: timedelta = timedelta(hours=24),
+        backup_retention_count: int = 14,
     ) -> ContentMaintenanceResult:
         """Run one non-overlapping, failure-isolated archive maintenance cycle."""
 
@@ -662,9 +805,38 @@ class StudentContentService:
         result = ContentMaintenanceResult(started_at=started_at)
         if not self._maintenance_lock.acquire(blocking=False):
             result.skipped = True
+            result.skip_reason = "Обслуживание уже выполняется в этом процессе"
             result.completed_at = datetime.now(UTC)
             return result
+        maintenance_lease: ActivityLease | None = None
         try:
+            try:
+                maintenance_lease = self.acquire_activity(
+                    "content-maintenance",
+                    exclusive=True,
+                    ttl=timedelta(minutes=5),
+                )
+                self._maintenance_thread_id = get_ident()
+            except ContentBusyError as exc:
+                result.skipped = True
+                result.skip_reason = str(exc)
+                return result
+
+            if backup_enabled:
+                try:
+                    backups = self.backups.list()
+                    due = not backups or (started_at - backups[0].manifest.created_at >= backup_interval)
+                    if due:
+                        result.backup = self.backups.create(reason="scheduled-maintenance")
+                    result.backup_retention = self.backups.prune(backup_retention_count)
+                    result.errors.extend(
+                        f"backup retention: {details}" for details in result.backup_retention.errors
+                    )
+                except Exception as exc:
+                    result.errors.append(f"backup: {exc}")
+                    logging.exception("Не удалось создать резервную копию перед обслуживанием")
+                    return result
+
             try:
                 before = self.inspect_content_integrity()
             except Exception as exc:
@@ -731,6 +903,9 @@ class StudentContentService:
             return result
         finally:
             result.completed_at = datetime.now(UTC)
+            if maintenance_lease is not None:
+                maintenance_lease.release()
+            self._maintenance_thread_id = None
             self._maintenance_lock.release()
             logging.info(
                 "Обслуживание архива завершено: repaired=%s assets=%s purged=%s temporary=%s errors=%s",
@@ -755,6 +930,10 @@ class StudentContentService:
         self.trash_retention_days = days
 
     def delete_lesson(self, lesson_id: str) -> TrashActionResult:
+        with self.activity("content-delete", lesson_id=lesson_id):
+            return self._delete_lesson(lesson_id)
+
+    def _delete_lesson(self, lesson_id: str) -> TrashActionResult:
         _validate_lesson_id(lesson_id)
         source_relative = Path("lessons") / lesson_id
         trash_relative = Path("trash") / "lessons" / lesson_id
@@ -793,6 +972,10 @@ class StudentContentService:
         )
 
     def restore_lesson(self, lesson_id: str) -> TrashActionResult:
+        with self.activity("content-restore", lesson_id=lesson_id):
+            return self._restore_lesson(lesson_id)
+
+    def _restore_lesson(self, lesson_id: str) -> TrashActionResult:
         _validate_lesson_id(lesson_id)
         operation_id = uuid4().hex
         now = datetime.now(UTC)
@@ -822,6 +1005,12 @@ class StudentContentService:
         )
 
     def permanently_delete_lesson(self, lesson_id: str) -> TrashActionResult:
+        if self._maintenance_thread_id == get_ident():
+            return self._permanently_delete_lesson(lesson_id)
+        with self.activity("content-purge", lesson_id=lesson_id):
+            return self._permanently_delete_lesson(lesson_id)
+
+    def _permanently_delete_lesson(self, lesson_id: str) -> TrashActionResult:
         _validate_lesson_id(lesson_id)
         operation_id = uuid4().hex
         staging_relative = Path(".trash-purge") / operation_id
@@ -944,6 +1133,20 @@ class StudentContentService:
         self.repository.complete_cleanup(operation.id)
 
     def import_lesson(
+        self,
+        request: LessonImportRequest,
+        *,
+        cancellation: ImportCancellationToken | None = None,
+        progress: Callable[[str, int], None] | None = None,
+    ) -> LessonImportResult:
+        with self.activity("content-import", lesson_id=request.lesson_id):
+            return self._import_lesson(
+                request,
+                cancellation=cancellation,
+                progress=progress,
+            )
+
+    def _import_lesson(
         self,
         request: LessonImportRequest,
         *,

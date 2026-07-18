@@ -30,6 +30,9 @@ class ContentHealthDialog(QDialog):
     repair_requested = Signal()
     cleanup_requested = Signal()
     rebuild_search_requested = Signal()
+    backup_requested = Signal()
+    verify_backup_requested = Signal()
+    restore_backup_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -93,11 +96,29 @@ class ContentHealthDialog(QDialog):
         self.cleanup_button.setToolTip("Удалить только старые известные staging/tmp · Ctrl+Delete")
         self.cleanup_button.clicked.connect(self._confirm_cleanup)
         actions.addWidget(self.cleanup_button)
+        self.backup_button = set_button_kind(QPushButton("Создать backup"), "ghost")
+        self.backup_button.setToolTip("Создать согласованную резервную копию SQLite")
+        self.backup_button.clicked.connect(self.backup_requested.emit)
+        self.verify_backup_button = set_button_kind(QPushButton("Проверить backup…"), "ghost")
+        self.verify_backup_button.clicked.connect(self.verify_backup_requested.emit)
+        self.restore_backup_button = set_button_kind(QPushButton("Восстановить…"), "danger")
+        self.restore_backup_button.setToolTip("Проверить и восстановить SQLite из резервной копии")
+        self.restore_backup_button.clicked.connect(self.restore_backup_requested.emit)
         actions.addStretch(1)
         close = set_button_kind(QPushButton("Закрыть"), "ghost")
         close.clicked.connect(self.accept)
         actions.addWidget(close)
         layout.addLayout(actions)
+
+        backup_actions = QHBoxLayout()
+        backup_label = QLabel("Резервные копии SQLite")
+        backup_label.setObjectName("muted")
+        backup_actions.addWidget(backup_label)
+        backup_actions.addStretch(1)
+        backup_actions.addWidget(self.backup_button)
+        backup_actions.addWidget(self.verify_backup_button)
+        backup_actions.addWidget(self.restore_backup_button)
+        layout.addLayout(backup_actions)
 
         self.rescan_shortcut = QShortcut(QKeySequence.Refresh, self)
         self.rescan_shortcut.activated.connect(self.rescan_requested.emit)
@@ -173,6 +194,10 @@ class ContentHealthDialog(QDialog):
         self.state.setText(message)
 
     def show_result(self, message: str) -> None:
+        self._set_buttons_enabled(True)
+        self.cleanup_button.setEnabled(bool(self.report.temporary_paths))
+        self.rebuild_button.setEnabled(self.report.fts_enabled)
+        self.repair_button.setEnabled(bool(self.report.issues))
         self.state.setStyleSheet("color: #277A44;")
         self.state.setText(message)
 
@@ -181,6 +206,9 @@ class ContentHealthDialog(QDialog):
         self.repair_button.setEnabled(enabled)
         self.rebuild_button.setEnabled(enabled)
         self.cleanup_button.setEnabled(enabled)
+        self.backup_button.setEnabled(enabled)
+        self.verify_backup_button.setEnabled(enabled)
+        self.restore_backup_button.setEnabled(enabled)
 
     def _confirm_cleanup(self) -> None:
         if not self.report.temporary_paths:

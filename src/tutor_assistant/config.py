@@ -90,6 +90,9 @@ class ContentConfig(BaseModel):
     auto_purge_trash: bool = True
     auto_cleanup_temporary: bool = True
     temporary_retention_hours: int = Field(default=24, ge=1, le=8760)
+    backup_enabled: bool = True
+    backup_interval_hours: int = Field(default=24, ge=1, le=8760)
+    backup_retention_count: int = Field(default=14, ge=1, le=365)
 
 
 class AppConfig(BaseModel):

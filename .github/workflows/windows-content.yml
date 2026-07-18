@@ -6,8 +6,11 @@ on:
       - "src/tutor_assistant/content/**"
       - "src/tutor_assistant/ui/content_*.py"
       - "src/tutor_assistant/ui/student_content.py"
+      - "src/tutor_assistant/ui/app.py"
       - "src/tutor_assistant/ui/playback.py"
+      - "src/tutor_assistant/latex/**"
       - "tests/test_content*.py"
+      - "tests/test_latex*.py"
       - "tests/test_student_content*.py"
       - "tests/test_playback.py"
       - "pyproject.toml"
@@ -43,6 +46,8 @@ jobs:
           tests/test_content_write_consistency.py
           tests/test_content_pipeline_projection.py
           tests/test_content_maintenance.py
+          tests/test_content_backup.py
+          tests/test_latex_remote.py
           tests/test_playback.py
           tests/test_student_content.py
           tests/test_student_content_gui.py
