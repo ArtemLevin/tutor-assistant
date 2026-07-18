@@ -39,6 +39,26 @@ class AssetKind(StrEnum):
     OTHER = "other"
 
 
+class TrashState(StrEnum):
+    MOVING = "moving"
+    TRASHED = "trashed"
+    RESTORING = "restoring"
+    PURGING = "purging"
+
+
+class ContentOperationKind(StrEnum):
+    DELETE = "delete"
+    RESTORE = "restore"
+    PURGE = "purge"
+
+
+class ContentOperationStatus(StrEnum):
+    PENDING = "pending"
+    CLEANUP_PENDING = "cleanup_pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class LessonAsset(BaseModel):
     id: int | None = None
     lesson_id: str
@@ -154,6 +174,61 @@ class LessonContent(BaseModel):
     transcript: TranscriptRevision | None = None
     draft: TranscriptDraft | None = None
     deleted_at: datetime | None = None
+
+
+class TrashEntry(BaseModel):
+    lesson_id: str
+    original_relative_path: str
+    trash_relative_path: str
+    staging_relative_path: str | None = None
+    size_bytes: int = Field(default=0, ge=0)
+    state: TrashState
+    deleted_at: datetime
+    purge_after: datetime
+
+    @field_validator("lesson_id")
+    @classmethod
+    def validate_lesson_id(cls, value: str) -> str:
+        return _validate_lesson_id(value)
+
+    @field_validator(
+        "original_relative_path",
+        "trash_relative_path",
+        "staging_relative_path",
+    )
+    @classmethod
+    def validate_paths(cls, value: str | None) -> str | None:
+        return _validate_relative_path(value) if value is not None else None
+
+
+class TrashItem(BaseModel):
+    lesson: Lesson
+    entry: TrashEntry
+
+
+class TrashSummary(BaseModel):
+    items: list[TrashItem] = Field(default_factory=list)
+    total_size_bytes: int = Field(default=0, ge=0)
+    expired_count: int = Field(default=0, ge=0)
+
+
+class TrashActionResult(BaseModel):
+    lesson_id: str
+    size_bytes: int = Field(default=0, ge=0)
+    operation: ContentOperationKind
+
+
+class ContentOperation(BaseModel):
+    id: str
+    lesson_id: str
+    operation: ContentOperationKind
+    status: ContentOperationStatus
+    source_relative_path: str | None = None
+    destination_relative_path: str | None = None
+    size_bytes: int = Field(default=0, ge=0)
+    details: str | None = None
+    created_at: datetime
+    completed_at: datetime | None = None
 
 
 class IndexReport(BaseModel):

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..content import (
+    ContentOperation,
     ImportCancellationToken,
     LessonContent,
     LessonFilters,
@@ -37,6 +39,8 @@ from ..content import (
     StudentContentService,
     TranscriptDraft,
     TranscriptRevision,
+    TrashActionResult,
+    TrashSummary,
 )
 from ..content_browser import (
     content_file_rows,
@@ -54,6 +58,7 @@ from .content_edit import (
     RevisionHistoryDialog,
 )
 from .content_import import ImportLessonDialog
+from .content_trash import ContentTrashDialog
 from .playback import PlaybackPanel, QtPlaybackBackend
 from .theme import set_button_kind
 
@@ -74,6 +79,9 @@ class StudentContentPage(QWidget):
     status_changed = Signal(str, str)
     file_open_requested = Signal(object)
     audio_queue_requested = Signal(object, object)
+    lesson_purged = Signal(str)
+    lesson_trashed = Signal(str)
+    trash_retention_changed = Signal(int)
 
     def __init__(
         self,
@@ -103,6 +111,7 @@ class StudentContentPage(QWidget):
         self.import_cancellation: ImportCancellationToken | None = None
         self.metadata_dialog: MetadataEditDialog | None = None
         self.history_dialog: RevisionHistoryDialog | None = None
+        self.trash_dialog: ContentTrashDialog | None = None
         self._current_content: LessonContent | None = None
         self._transcript_editing = False
         self._transcript_base_revision: int | None = None
@@ -140,6 +149,9 @@ class StudentContentPage(QWidget):
         self.import_button.setToolTip("Создать карточку занятия и безопасно скопировать аудио или транскрипт")
         self.import_button.clicked.connect(self.open_import_dialog)
         heading.addWidget(self.import_button)
+        self.trash_button = set_button_kind(QPushButton("Корзина"), "ghost")
+        self.trash_button.clicked.connect(self.open_trash)
+        heading.addWidget(self.trash_button)
         self.sync_button = set_button_kind(QPushButton("Синхронизировать каталог"), "ghost")
         self.sync_button.setToolTip("Однократно проверить data/lessons и обновить индекс SQLite")
         self.sync_button.clicked.connect(self.synchronize)
@@ -251,6 +263,10 @@ class StudentContentPage(QWidget):
         self.edit_metadata_button.setEnabled(False)
         self.edit_metadata_button.clicked.connect(self.open_metadata_editor)
         details_header.addWidget(self.edit_metadata_button)
+        self.delete_lesson_button = set_button_kind(QPushButton("В корзину"), "danger")
+        self.delete_lesson_button.setEnabled(False)
+        self.delete_lesson_button.clicked.connect(self.delete_selected_lesson)
+        details_header.addWidget(self.delete_lesson_button)
         self.close_details_button = set_button_kind(QPushButton("Закрыть карточку"), "ghost")
         self.close_details_button.clicked.connect(self.close_details)
         details_header.addWidget(self.close_details_button)
@@ -452,6 +468,159 @@ class StudentContentPage(QWidget):
         if self.import_dialog is dialog:
             self.import_dialog = None
 
+    def delete_selected_lesson(self) -> None:
+        content = self._current_content
+        if content is None:
+            return
+        lesson = content.lesson
+        answer = QMessageBox.question(
+            self,
+            "Переместить занятие в корзину",
+            f"Переместить «{lesson.topic}» в локальную корзину? Занятие можно будет восстановить.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.delete_lesson_button.setEnabled(False)
+        self.status_changed.emit("Перемещаю занятие в корзину…", "working")
+        self.run_background(
+            lambda: self.service.delete_lesson(lesson.lesson_id),
+            self._lesson_deleted,
+            self._lesson_delete_failed,
+        )
+
+    def _lesson_deleted(self, result: object) -> None:
+        if not isinstance(result, TrashActionResult):
+            self._lesson_delete_failed("Некорректный результат удаления")
+            return
+        self.close_details()
+        self.lesson_trashed.emit(result.lesson_id)
+        self.status_changed.emit("Занятие перемещено в корзину", "success")
+        self.refresh()
+
+    def _lesson_delete_failed(self, details: str) -> None:
+        self.delete_lesson_button.setEnabled(self._current_content is not None)
+        message = self._operation_message(details, "Не удалось переместить занятие в корзину")
+        self.status_changed.emit(message, "error")
+        QMessageBox.warning(self, "Корзина", message)
+
+    def open_trash(self) -> None:
+        if self.trash_dialog is not None:
+            self.trash_dialog.raise_()
+            self.trash_dialog.activateWindow()
+            return
+        dialog = ContentTrashDialog(self.service.trash_retention_days, self)
+        self.trash_dialog = dialog
+        dialog.restore_requested.connect(
+            lambda lesson_id, current=dialog: self._restore_from_trash(current, lesson_id)
+        )
+        dialog.purge_requested.connect(
+            lambda lesson_id, current=dialog: self._purge_from_trash(current, lesson_id)
+        )
+        dialog.purge_expired_requested.connect(lambda current=dialog: self._purge_expired(current))
+        dialog.retention_changed.connect(self._change_trash_retention)
+        dialog.finished.connect(lambda _result, current=dialog: self._trash_dialog_closed(current))
+        dialog.open()
+        self._reload_trash(dialog)
+
+    def _reload_trash(self, dialog: ContentTrashDialog) -> None:
+        dialog.set_busy("Загружаю корзину и журнал…")
+        self.run_background(
+            lambda: (self.service.trash_summary(), self.service.repository.list_operations()),
+            lambda result, current=dialog: self._trash_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось загрузить корзину")
+            ),
+        )
+
+    def _trash_ready(self, dialog: ContentTrashDialog, result: object) -> None:
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[0], TrashSummary)
+            or not isinstance(result[1], list)
+            or not all(isinstance(item, ContentOperation) for item in result[1])
+        ):
+            dialog.show_error("Некорректный результат загрузки корзины")
+            return
+        dialog.table.setEnabled(True)
+        dialog.set_data(result[0], result[1])
+
+    def _restore_from_trash(self, dialog: ContentTrashDialog, lesson_id: str) -> None:
+        self.run_background(
+            lambda: self.service.restore_lesson(lesson_id),
+            lambda result, current=dialog: self._trash_action_ready(current, result, "Занятие восстановлено"),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось восстановить занятие")
+            ),
+        )
+
+    def _purge_from_trash(self, dialog: ContentTrashDialog, lesson_id: str) -> None:
+        self.run_background(
+            lambda: self.service.permanently_delete_lesson(lesson_id),
+            lambda result, current=dialog: self._trash_action_ready(
+                current, result, "Локальные данные удалены навсегда"
+            ),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось удалить занятие")
+            ),
+        )
+
+    def _purge_expired(self, dialog: ContentTrashDialog) -> None:
+        self.run_background(
+            self.service.purge_expired_trash,
+            lambda result, current=dialog: self._expired_purge_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось очистить просроченные занятия")
+            ),
+        )
+
+    def _trash_action_ready(
+        self,
+        dialog: ContentTrashDialog,
+        result: object,
+        message: str,
+    ) -> None:
+        if not isinstance(result, TrashActionResult):
+            dialog.show_error("Некорректный результат операции")
+            return
+        if result.operation.value == "purge":
+            self.lesson_purged.emit(result.lesson_id)
+            message += f" · освобождено {format_size(result.size_bytes)}"
+        self.status_changed.emit(message, "success")
+        self.refresh()
+        self._reload_trash(dialog)
+
+    def _expired_purge_ready(self, dialog: ContentTrashDialog, result: object) -> None:
+        if not isinstance(result, list) or not all(isinstance(item, TrashActionResult) for item in result):
+            dialog.show_error("Некорректный результат очистки")
+            return
+        for item in result:
+            self.lesson_purged.emit(item.lesson_id)
+        released = sum(item.size_bytes for item in result)
+        self.status_changed.emit(
+            f"Корзина очищена · освобождено {format_size(released)}",
+            "success",
+        )
+        self._reload_trash(dialog)
+
+    def _change_trash_retention(self, days: int) -> None:
+        try:
+            self.service.set_trash_retention_days(days)
+        except ValueError as exc:
+            if self.trash_dialog:
+                self.trash_dialog.show_error(str(exc))
+            return
+        self.trash_retention_changed.emit(days)
+        self.status_changed.emit(f"Срок хранения корзины: {days} дн.", "success")
+        if self.trash_dialog:
+            self._reload_trash(self.trash_dialog)
+
+    def _trash_dialog_closed(self, dialog: ContentTrashDialog) -> None:
+        if self.trash_dialog is dialog:
+            self.trash_dialog = None
+
     @staticmethod
     def _operation_message(details: str, fallback: str) -> str:
         lines = [line.strip() for line in details.splitlines() if line.strip()]
@@ -519,6 +688,7 @@ class StudentContentPage(QWidget):
         self.edit_metadata_button.setEnabled(False)
         self.edit_transcript_button.setEnabled(False)
         self.history_button.setEnabled(False)
+        self.delete_lesson_button.setEnabled(False)
         self.close_details_button.setEnabled(False)
         self.transcript.setReadOnly(False)
         self.transcript.blockSignals(True)
@@ -657,6 +827,7 @@ class StudentContentPage(QWidget):
         self._transcript_base_revision = None
         self.table.setEnabled(True)
         self.close_details_button.setEnabled(True)
+        self.delete_lesson_button.setEnabled(self._current_content is not None)
         self.transcript.setEnabled(True)
         self.transcript.setReadOnly(True)
         self.transcript_actions.setVisible(False)
@@ -940,6 +1111,7 @@ class StudentContentPage(QWidget):
         else:
             self.metadata["materials"].setStyleSheet("")
         self.edit_metadata_button.setEnabled(True)
+        self.delete_lesson_button.setEnabled(True)
         self.edit_transcript_button.setEnabled(True)
         self.history_button.setEnabled(result.transcript is not None)
 
@@ -1041,6 +1213,7 @@ class StudentContentPage(QWidget):
             "edit_metadata_button",
             "edit_transcript_button",
             "history_button",
+            "delete_lesson_button",
         ):
             button = getattr(self, button_name, None)
             if button is not None:

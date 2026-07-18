@@ -135,7 +135,9 @@ class MainWindow(QMainWindow):
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
         self.content_service = StudentContentService(
-            self.config.workspace, self.pipeline.store.path
+            self.config.workspace,
+            self.pipeline.store.path,
+            trash_retention_days=self.config.content.trash_retention_days,
         )
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
@@ -277,6 +279,9 @@ class MainWindow(QMainWindow):
         self.student_content_page.status_changed.connect(self._set_status)
         self.student_content_page.file_open_requested.connect(self._open_material_file)
         self.student_content_page.audio_queue_requested.connect(self._queue_imported_audio)
+        self.student_content_page.lesson_trashed.connect(self._forget_trashed_lesson)
+        self.student_content_page.lesson_purged.connect(self._forget_trashed_lesson)
+        self.student_content_page.trash_retention_changed.connect(self._save_trash_retention)
         self.materials_tab_index = self.tabs.addTab(
             self.student_content_page, "08  Материалы"
         )
@@ -394,6 +399,20 @@ class MainWindow(QMainWindow):
             f"{lesson.student.full_name}: импорт добавлен в очередь",
             "working",
         )
+
+    def _forget_trashed_lesson(self, lesson_id: str) -> None:
+        try:
+            self.transcription_queue.discard(lesson_id)
+        except ValueError:
+            logging.warning("Активное задание не удалено из очереди: %s", lesson_id)
+        if self.lesson and self.lesson.lesson_id == lesson_id:
+            self.lesson = None
+            self._prepare_next_lesson()
+        self._update_transcription_queue_ui()
+
+    def _save_trash_retention(self, days: int) -> None:
+        self.config.content.trash_retention_days = days
+        self.config.save(self.config_path)
 
     def _parallel_policy(self) -> ParallelReviewPolicy:
         return ParallelReviewPolicy(

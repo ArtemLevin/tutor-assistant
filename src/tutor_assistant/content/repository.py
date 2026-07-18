@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import TypeVar
@@ -11,12 +11,18 @@ from ..domain import Lesson, Student
 from .migrations import apply_migrations
 from .models import (
     AssetKind,
+    ContentOperation,
+    ContentOperationKind,
+    ContentOperationStatus,
     LessonAsset,
     LessonContent,
     LessonFilters,
     LessonPage,
     TranscriptDraft,
     TranscriptRevision,
+    TrashEntry,
+    TrashItem,
+    TrashState,
 )
 
 T = TypeVar("T")
@@ -42,6 +48,10 @@ class TranscriptEditConflictError(ContentConflictError):
             "Транскрипт уже изменён в другом окне: "
             f"ожидалась версия {expected or 'без версии'}, текущая — {current or 'без версии'}"
         )
+
+
+class ActiveLessonError(ContentConflictError):
+    pass
 
 
 class DuplicateAssetError(ContentConflictError):
@@ -101,6 +111,28 @@ class StudentContentRepository:
     @staticmethod
     def _draft_from_row(row: sqlite3.Row) -> TranscriptDraft:
         return TranscriptDraft.model_validate(dict(row))
+
+    @staticmethod
+    def _trash_from_row(row: sqlite3.Row) -> TrashEntry:
+        return TrashEntry.model_validate(
+            {
+                key: row[key]
+                for key in (
+                    "lesson_id",
+                    "original_relative_path",
+                    "trash_relative_path",
+                    "staging_relative_path",
+                    "size_bytes",
+                    "state",
+                    "deleted_at",
+                    "purge_after",
+                )
+            }
+        )
+
+    @staticmethod
+    def _operation_from_row(row: sqlite3.Row) -> ContentOperation:
+        return ContentOperation.model_validate(dict(row))
 
     def upsert_lesson(self, lesson: Lesson) -> None:
         payload = lesson.model_dump_json()
@@ -303,6 +335,386 @@ class StudentContentRepository:
                     raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
 
         self._retry(operation)
+
+    def begin_trash(self, entry: TrashEntry, operation_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT payload, deleted_at FROM lessons WHERE lesson_id=?",
+                    (entry.lesson_id,),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено: {entry.lesson_id}")
+                if row["deleted_at"] is not None:
+                    raise ContentConflictError(f"Занятие уже находится в корзине: {entry.lesson_id}")
+                lesson = self._lesson_from_row(row)
+                if lesson.status.value in {"recording", "transcribing"}:
+                    raise ActiveLessonError("Нельзя удалить занятие во время записи или транскрибации")
+                active_job = db.execute(
+                    """
+                    SELECT status FROM transcription_jobs
+                    WHERE lesson_id=? AND status IN ('waiting', 'running')
+                    """,
+                    (entry.lesson_id,),
+                ).fetchone()
+                if active_job:
+                    raise ActiveLessonError("Нельзя удалить занятие из активной очереди транскрибации")
+                db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (entry.lesson_id,))
+                db.execute(
+                    "UPDATE lessons SET deleted_at=? WHERE lesson_id=?",
+                    (entry.deleted_at.isoformat(), entry.lesson_id),
+                )
+                db.execute(
+                    """
+                    INSERT INTO content_trash (
+                        lesson_id, original_relative_path, trash_relative_path,
+                        staging_relative_path, size_bytes, state, deleted_at, purge_after
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry.lesson_id,
+                        entry.original_relative_path,
+                        entry.trash_relative_path,
+                        entry.staging_relative_path,
+                        entry.size_bytes,
+                        entry.state.value,
+                        entry.deleted_at.isoformat(),
+                        entry.purge_after.isoformat(),
+                    ),
+                )
+                self._insert_operation(
+                    db,
+                    operation_id,
+                    entry.lesson_id,
+                    ContentOperationKind.DELETE,
+                    ContentOperationStatus.PENDING,
+                    entry.original_relative_path,
+                    entry.trash_relative_path,
+                    entry.size_bytes,
+                    entry.deleted_at,
+                )
+
+        self._retry(operation)
+
+    @staticmethod
+    def _insert_operation(
+        db: sqlite3.Connection,
+        operation_id: str,
+        lesson_id: str,
+        operation: ContentOperationKind,
+        status: ContentOperationStatus,
+        source: str | None,
+        destination: str | None,
+        size_bytes: int,
+        created_at: datetime,
+    ) -> None:
+        db.execute(
+            """
+            INSERT INTO content_operations (
+                id, lesson_id, operation, status, source_relative_path,
+                destination_relative_path, size_bytes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                operation_id,
+                lesson_id,
+                operation.value,
+                status.value,
+                source,
+                destination,
+                size_bytes,
+                created_at.isoformat(),
+            ),
+        )
+
+    def complete_trash(self, lesson_id: str, operation_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                cursor = db.execute(
+                    "UPDATE content_trash SET state=? WHERE lesson_id=? AND state=?",
+                    (TrashState.TRASHED.value, lesson_id, TrashState.MOVING.value),
+                )
+                if cursor.rowcount == 0:
+                    raise ContentNotFoundError(f"Операция удаления не найдена: {lesson_id}")
+                self._complete_operation(db, operation_id)
+
+        self._retry(operation)
+
+    def rollback_trash(self, lesson_id: str, operation_id: str, details: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("UPDATE lessons SET deleted_at=NULL WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM content_trash WHERE lesson_id=?", (lesson_id,))
+                self._fail_operation(db, operation_id, details)
+
+        self._retry(operation)
+
+    def begin_restore(self, lesson_id: str, operation_id: str, created_at: datetime) -> TrashEntry:
+        def operation() -> sqlite3.Row:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM content_trash WHERE lesson_id=? AND state=?",
+                    (lesson_id, TrashState.TRASHED.value),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+                db.execute(
+                    "UPDATE content_trash SET state=? WHERE lesson_id=?",
+                    (TrashState.RESTORING.value, lesson_id),
+                )
+                self._insert_operation(
+                    db,
+                    operation_id,
+                    lesson_id,
+                    ContentOperationKind.RESTORE,
+                    ContentOperationStatus.PENDING,
+                    str(row["trash_relative_path"]),
+                    str(row["original_relative_path"]),
+                    int(row["size_bytes"]),
+                    created_at,
+                )
+                return row
+
+        return self._trash_from_row(self._retry(operation))
+
+    def complete_restore(self, lesson_id: str, operation_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("UPDATE lessons SET deleted_at=NULL WHERE lesson_id=?", (lesson_id,))
+                cursor = db.execute(
+                    "DELETE FROM content_trash WHERE lesson_id=? AND state=?",
+                    (lesson_id, TrashState.RESTORING.value),
+                )
+                if cursor.rowcount == 0:
+                    raise ContentNotFoundError(f"Операция восстановления не найдена: {lesson_id}")
+                self._complete_operation(db, operation_id)
+
+        self._retry(operation)
+
+    def rollback_restore(self, lesson_id: str, operation_id: str, details: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(
+                    "UPDATE content_trash SET state=? WHERE lesson_id=?",
+                    (TrashState.TRASHED.value, lesson_id),
+                )
+                self._fail_operation(db, operation_id, details)
+
+        self._retry(operation)
+
+    def begin_purge(
+        self,
+        lesson_id: str,
+        operation_id: str,
+        staging_relative_path: str,
+        created_at: datetime,
+    ) -> TrashEntry:
+        def operation() -> sqlite3.Row:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM content_trash WHERE lesson_id=? AND state=?",
+                    (lesson_id, TrashState.TRASHED.value),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+                db.execute(
+                    """
+                    UPDATE content_trash SET state=?, staging_relative_path=?
+                    WHERE lesson_id=?
+                    """,
+                    (TrashState.PURGING.value, staging_relative_path, lesson_id),
+                )
+                self._insert_operation(
+                    db,
+                    operation_id,
+                    lesson_id,
+                    ContentOperationKind.PURGE,
+                    ContentOperationStatus.PENDING,
+                    str(row["trash_relative_path"]),
+                    staging_relative_path,
+                    int(row["size_bytes"]),
+                    created_at,
+                )
+                mutable = dict(row)
+                mutable["state"] = TrashState.PURGING.value
+                mutable["staging_relative_path"] = staging_relative_path
+                return mutable
+
+        row = self._retry(operation)
+        return TrashEntry.model_validate(dict(row))
+
+    def rollback_purge(self, lesson_id: str, operation_id: str, details: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute(
+                    """
+                    UPDATE content_trash SET state=?, staging_relative_path=NULL
+                    WHERE lesson_id=?
+                    """,
+                    (TrashState.TRASHED.value, lesson_id),
+                )
+                self._fail_operation(db, operation_id, details)
+
+        self._retry(operation)
+
+    def complete_purge_database(self, lesson_id: str, operation_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if not db.execute(
+                    "SELECT 1 FROM content_trash WHERE lesson_id=? AND state=?",
+                    (lesson_id, TrashState.PURGING.value),
+                ).fetchone():
+                    raise ContentNotFoundError(f"Операция очистки не найдена: {lesson_id}")
+                db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM transcript_drafts WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM transcript_revisions WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM lesson_assets WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM content_trash WHERE lesson_id=?", (lesson_id,))
+                db.execute("DELETE FROM lessons WHERE lesson_id=?", (lesson_id,))
+                db.execute(
+                    "UPDATE content_operations SET status=? WHERE id=?",
+                    (ContentOperationStatus.CLEANUP_PENDING.value, operation_id),
+                )
+
+        self._retry(operation)
+
+    def complete_cleanup(self, operation_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                self._complete_operation(db, operation_id)
+
+        self._retry(operation)
+
+    @staticmethod
+    def _complete_operation(db: sqlite3.Connection, operation_id: str) -> None:
+        cursor = db.execute(
+            """
+            UPDATE content_operations SET status=?, completed_at=? WHERE id=?
+            """,
+            (ContentOperationStatus.COMPLETED.value, datetime.now(UTC).isoformat(), operation_id),
+        )
+        if cursor.rowcount == 0:
+            raise ContentNotFoundError(f"Операция не найдена: {operation_id}")
+
+    @staticmethod
+    def _fail_operation(db: sqlite3.Connection, operation_id: str, details: str) -> None:
+        db.execute(
+            """
+            UPDATE content_operations SET status=?, details=?, completed_at=? WHERE id=?
+            """,
+            (
+                ContentOperationStatus.FAILED.value,
+                details,
+                datetime.now(UTC).isoformat(),
+                operation_id,
+            ),
+        )
+
+    def list_trash_items(self) -> list[TrashItem]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT l.payload, t.* FROM content_trash t
+                    JOIN lessons l ON l.lesson_id=t.lesson_id
+                    ORDER BY t.deleted_at DESC, t.lesson_id
+                    """
+                ).fetchall()
+
+        return [
+            TrashItem(lesson=self._lesson_from_row(row), entry=self._trash_from_row(row))
+            for row in self._retry(operation)
+        ]
+
+    def reschedule_trash_purge(self, retention_days: int) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                rows = db.execute(
+                    "SELECT lesson_id, deleted_at FROM content_trash WHERE state=?",
+                    (TrashState.TRASHED.value,),
+                ).fetchall()
+                for row in rows:
+                    purge_after = datetime.fromisoformat(str(row["deleted_at"])) + timedelta(
+                        days=retention_days
+                    )
+                    db.execute(
+                        "UPDATE content_trash SET purge_after=? WHERE lesson_id=?",
+                        (purge_after.isoformat(), str(row["lesson_id"])),
+                    )
+
+        self._retry(operation)
+
+    def get_trash_entry(self, lesson_id: str) -> TrashEntry | None:
+        def operation() -> sqlite3.Row | None:
+            with self.connect() as db:
+                return db.execute(
+                    "SELECT * FROM content_trash WHERE lesson_id=?",
+                    (lesson_id,),
+                ).fetchone()
+
+        row = self._retry(operation)
+        return self._trash_from_row(row) if row else None
+
+    def list_incomplete_trash(self) -> list[TrashEntry]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    "SELECT * FROM content_trash WHERE state<>? ORDER BY deleted_at",
+                    (TrashState.TRASHED.value,),
+                ).fetchall()
+
+        return [self._trash_from_row(row) for row in self._retry(operation)]
+
+    def pending_operation(self, lesson_id: str, kind: ContentOperationKind) -> ContentOperation:
+        def operation() -> sqlite3.Row | None:
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT * FROM content_operations
+                    WHERE lesson_id=? AND operation=? AND status=?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (
+                        lesson_id,
+                        kind.value,
+                        ContentOperationStatus.PENDING.value,
+                    ),
+                ).fetchone()
+
+        row = self._retry(operation)
+        if row is None:
+            raise ContentNotFoundError(f"Незавершённая операция не найдена: {lesson_id}")
+        return self._operation_from_row(row)
+
+    def list_cleanup_operations(self) -> list[ContentOperation]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    "SELECT * FROM content_operations WHERE status=? ORDER BY created_at",
+                    (ContentOperationStatus.CLEANUP_PENDING.value,),
+                ).fetchall()
+
+        return [self._operation_from_row(row) for row in self._retry(operation)]
+
+    def list_operations(self, *, limit: int = 200) -> list[ContentOperation]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    "SELECT * FROM content_operations ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+
+        return [self._operation_from_row(row) for row in self._retry(operation)]
 
     def find_asset_by_sha256(
         self,

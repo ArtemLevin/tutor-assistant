@@ -8,6 +8,9 @@ from .importing import (
 )
 from .models import (
     AssetKind,
+    ContentOperation,
+    ContentOperationKind,
+    ContentOperationStatus,
     IndexReport,
     LessonAsset,
     LessonContent,
@@ -15,8 +18,14 @@ from .models import (
     LessonPage,
     TranscriptDraft,
     TranscriptRevision,
+    TrashActionResult,
+    TrashEntry,
+    TrashItem,
+    TrashState,
+    TrashSummary,
 )
 from .repository import (
+    ActiveLessonError,
     ContentConflictError,
     ContentNotFoundError,
     LessonEditConflictError,
@@ -26,7 +35,11 @@ from .repository import (
 from .service import ContentPathError, StudentContentService
 
 __all__ = [
+    "ActiveLessonError",
     "AssetKind",
+    "ContentOperation",
+    "ContentOperationKind",
+    "ContentOperationStatus",
     "ContentConflictError",
     "ContentNotFoundError",
     "ContentPathError",
@@ -47,4 +60,9 @@ __all__ = [
     "TranscriptDraft",
     "TranscriptEditConflictError",
     "TranscriptRevision",
+    "TrashActionResult",
+    "TrashEntry",
+    "TrashItem",
+    "TrashState",
+    "TrashSummary",
 ]

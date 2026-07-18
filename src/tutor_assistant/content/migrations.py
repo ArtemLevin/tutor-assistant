@@ -152,10 +152,50 @@ def _content_editing(db: sqlite3.Connection) -> None:
     )
 
 
+def _content_trash(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS content_trash (
+            lesson_id TEXT PRIMARY KEY,
+            original_relative_path TEXT NOT NULL,
+            trash_relative_path TEXT NOT NULL,
+            staging_relative_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            state TEXT NOT NULL,
+            deleted_at TEXT NOT NULL,
+            purge_after TEXT NOT NULL,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id)
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS content_operations (
+            id TEXT PRIMARY KEY,
+            lesson_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_relative_path TEXT,
+            destination_relative_path TEXT,
+            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
+            details TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        )
+        """
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS content_trash_purge_after ON content_trash(state, purge_after)")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS content_operations_lesson_created "
+        "ON content_operations(lesson_id, created_at DESC)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
     Migration(3, "student_content_editing", _content_editing),
+    Migration(4, "student_content_trash", _content_trash),
 )
 
 

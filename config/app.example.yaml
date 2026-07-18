@@ -1,5 +1,7 @@
 setup_completed: false
 workspace: data
+content:
+  trash_retention_days: 30
 students_file: config/students.yaml
 
 recording:

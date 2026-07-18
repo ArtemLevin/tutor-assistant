@@ -4,7 +4,7 @@ import hashlib
 import mimetypes
 import shutil
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
@@ -20,6 +20,7 @@ from .importing import (
 )
 from .models import (
     AssetKind,
+    ContentOperationKind,
     IndexReport,
     LessonAsset,
     LessonContent,
@@ -27,6 +28,10 @@ from .models import (
     LessonPage,
     TranscriptDraft,
     TranscriptRevision,
+    TrashActionResult,
+    TrashEntry,
+    TrashState,
+    TrashSummary,
     _validate_lesson_id,
 )
 from .repository import (
@@ -61,12 +66,22 @@ def _sha256_text(text: str) -> str:
 class StudentContentService:
     """The application boundary for student-content CRUD and legacy indexing."""
 
-    def __init__(self, workspace: Path, database_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        database_path: Path | None = None,
+        *,
+        trash_retention_days: int = 30,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        if not 0 <= trash_retention_days <= 3650:
+            raise ValueError("Срок хранения корзины должен быть от 0 до 3650 дней")
+        self.trash_retention_days = trash_retention_days
         self.repository = StudentContentRepository(
             database_path or self.workspace / "tutor-assistant.sqlite3"
         )
+        self.recover_trash_operations()
 
     def _resolve_path(self, path: Path | str) -> tuple[Path, str]:
         candidate = Path(path)
@@ -141,11 +156,206 @@ class StudentContentService:
     def list_lessons(self, filters: LessonFilters | None = None) -> LessonPage:
         return self.repository.list_lessons(filters)
 
-    def delete_lesson(self, lesson_id: str) -> None:
-        self.repository.set_lesson_deleted(lesson_id, deleted=True)
+    @staticmethod
+    def _directory_size(path: Path) -> int:
+        if not path.is_dir():
+            return path.stat().st_size if path.is_file() else 0
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
-    def restore_lesson(self, lesson_id: str) -> None:
-        self.repository.set_lesson_deleted(lesson_id, deleted=False)
+    def set_trash_retention_days(self, days: int) -> None:
+        if not 0 <= days <= 3650:
+            raise ValueError("Срок хранения корзины должен быть от 0 до 3650 дней")
+        self.repository.reschedule_trash_purge(days)
+        self.trash_retention_days = days
+
+    def delete_lesson(self, lesson_id: str) -> TrashActionResult:
+        _validate_lesson_id(lesson_id)
+        source_relative = Path("lessons") / lesson_id
+        trash_relative = Path("trash") / "lessons" / lesson_id
+        source = self.workspace / source_relative
+        destination = self.workspace / trash_relative
+        if destination.exists():
+            raise ContentConflictError(f"Каталог уже существует в корзине: {lesson_id}")
+        size_bytes = self._directory_size(source)
+        now = datetime.now(UTC)
+        operation_id = uuid4().hex
+        entry = TrashEntry(
+            lesson_id=lesson_id,
+            original_relative_path=source_relative.as_posix(),
+            trash_relative_path=trash_relative.as_posix(),
+            size_bytes=size_bytes,
+            state=TrashState.MOVING,
+            deleted_at=now,
+            purge_after=now + timedelta(days=self.trash_retention_days),
+        )
+        self.repository.begin_trash(entry, operation_id)
+        moved = False
+        try:
+            if source.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(destination)
+                moved = True
+            self.repository.complete_trash(lesson_id, operation_id)
+        except Exception as exc:
+            if not moved:
+                self.repository.rollback_trash(lesson_id, operation_id, str(exc))
+            raise
+        return TrashActionResult(
+            lesson_id=lesson_id,
+            size_bytes=size_bytes,
+            operation=ContentOperationKind.DELETE,
+        )
+
+    def restore_lesson(self, lesson_id: str) -> TrashActionResult:
+        _validate_lesson_id(lesson_id)
+        operation_id = uuid4().hex
+        now = datetime.now(UTC)
+        existing = self.repository.get_trash_entry(lesson_id)
+        if existing is None:
+            raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+        source = self.workspace / existing.trash_relative_path
+        destination = self.workspace / existing.original_relative_path
+        if destination.exists():
+            raise ContentConflictError(f"Каталог занятия уже существует: {lesson_id}")
+        entry = self.repository.begin_restore(lesson_id, operation_id, now)
+        moved = False
+        try:
+            if source.exists():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(destination)
+                moved = True
+            self.repository.complete_restore(lesson_id, operation_id)
+        except Exception as exc:
+            if not moved:
+                self.repository.rollback_restore(lesson_id, operation_id, str(exc))
+            raise
+        return TrashActionResult(
+            lesson_id=lesson_id,
+            size_bytes=entry.size_bytes,
+            operation=ContentOperationKind.RESTORE,
+        )
+
+    def permanently_delete_lesson(self, lesson_id: str) -> TrashActionResult:
+        _validate_lesson_id(lesson_id)
+        operation_id = uuid4().hex
+        staging_relative = Path(".trash-purge") / operation_id
+        existing = self.repository.get_trash_entry(lesson_id)
+        if existing is None:
+            raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+        source = self.workspace / existing.trash_relative_path
+        staging = self.workspace / staging_relative
+        if staging.exists():
+            raise ContentConflictError(f"Временный каталог очистки уже существует: {operation_id}")
+        entry = self.repository.begin_purge(
+            lesson_id,
+            operation_id,
+            staging_relative.as_posix(),
+            datetime.now(UTC),
+        )
+        moved = False
+        database_purged = False
+        try:
+            if source.exists():
+                staging.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(staging)
+                moved = True
+            self.repository.complete_purge_database(lesson_id, operation_id)
+            database_purged = True
+            if staging.exists():
+                shutil.rmtree(staging)
+            self._remove_empty_directory(staging.parent)
+            self.repository.complete_cleanup(operation_id)
+        except Exception as exc:
+            if not moved and not database_purged:
+                self.repository.rollback_purge(lesson_id, operation_id, str(exc))
+            raise
+        return TrashActionResult(
+            lesson_id=lesson_id,
+            size_bytes=entry.size_bytes,
+            operation=ContentOperationKind.PURGE,
+        )
+
+    def trash_summary(self, *, now: datetime | None = None) -> TrashSummary:
+        current = now or datetime.now(UTC)
+        items = self.repository.list_trash_items()
+        return TrashSummary(
+            items=items,
+            total_size_bytes=sum(item.entry.size_bytes for item in items),
+            expired_count=sum(
+                item.entry.state == TrashState.TRASHED and item.entry.purge_after <= current for item in items
+            ),
+        )
+
+    def purge_expired_trash(self, *, now: datetime | None = None) -> list[TrashActionResult]:
+        current = now or datetime.now(UTC)
+        expired = [
+            item
+            for item in self.repository.list_trash_items()
+            if item.entry.state == TrashState.TRASHED and item.entry.purge_after <= current
+        ]
+        return [self.permanently_delete_lesson(item.lesson.lesson_id) for item in expired]
+
+    def recover_trash_operations(self) -> None:
+        for entry in self.repository.list_incomplete_trash():
+            if entry.state == TrashState.MOVING:
+                self._recover_move_to_trash(entry)
+            elif entry.state == TrashState.RESTORING:
+                self._recover_restore(entry)
+            elif entry.state == TrashState.PURGING:
+                self._recover_purge(entry)
+        for operation in self.repository.list_cleanup_operations():
+            if operation.destination_relative_path:
+                staging = self.workspace / operation.destination_relative_path
+                if staging.exists():
+                    shutil.rmtree(staging)
+                self._remove_empty_directory(staging.parent)
+            self.repository.complete_cleanup(operation.id)
+
+    @staticmethod
+    def _remove_empty_directory(path: Path) -> None:
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+    def _recover_move_to_trash(self, entry: TrashEntry) -> None:
+        operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.DELETE)
+        source = self.workspace / entry.original_relative_path
+        destination = self.workspace / entry.trash_relative_path
+        if source.exists() and destination.exists():
+            raise ContentConflictError(f"Найдены оба каталога операции удаления: {entry.lesson_id}")
+        if source.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+        self.repository.complete_trash(entry.lesson_id, operation.id)
+
+    def _recover_restore(self, entry: TrashEntry) -> None:
+        operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.RESTORE)
+        source = self.workspace / entry.trash_relative_path
+        destination = self.workspace / entry.original_relative_path
+        if source.exists() and destination.exists():
+            raise ContentConflictError(f"Найдены оба каталога восстановления: {entry.lesson_id}")
+        if source.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+        self.repository.complete_restore(entry.lesson_id, operation.id)
+
+    def _recover_purge(self, entry: TrashEntry) -> None:
+        operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.PURGE)
+        source = self.workspace / entry.trash_relative_path
+        if not entry.staging_relative_path:
+            raise ContentConflictError(f"Не указан staging операции очистки: {entry.lesson_id}")
+        staging = self.workspace / entry.staging_relative_path
+        if source.exists() and staging.exists():
+            raise ContentConflictError(f"Найдены оба каталога очистки: {entry.lesson_id}")
+        if source.exists():
+            staging.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(staging)
+        self.repository.complete_purge_database(entry.lesson_id, operation.id)
+        if staging.exists():
+            shutil.rmtree(staging)
+        self._remove_empty_directory(staging.parent)
+        self.repository.complete_cleanup(operation.id)
 
     def import_lesson(
         self,

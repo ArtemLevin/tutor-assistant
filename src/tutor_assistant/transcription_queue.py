@@ -142,3 +142,12 @@ class TranscriptionQueue:
 
     def get(self, job_id: str) -> TranscriptionJob | None:
         return self._jobs.get(job_id)
+
+    def discard(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return
+        if job.status in {QueueStatus.WAITING, QueueStatus.RUNNING}:
+            raise ValueError("Нельзя убрать активное задание транскрибации")
+        self._jobs.pop(job_id, None)
+        self._waiting = deque(item for item in self._waiting if item != job_id)

@@ -12,6 +12,7 @@ def test_config_round_trip(tmp_path: Path) -> None:
     config.recording.silence_warning_seconds = 30
     config.repository.auto_create_pr = True
     config.whisper.cpu_threads = 3
+    config.content.trash_retention_days = 45
     config.save(path)
     restored = AppConfig.load(path)
     assert restored.setup_completed
@@ -21,6 +22,7 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert restored.recording.silence_warning_seconds == 30
     assert restored.repository.auto_create_pr
     assert restored.whisper.cpu_threads == 3
+    assert restored.content.trash_retention_days == 45
     assert not path.with_suffix(".yaml.tmp").exists()
 
 
