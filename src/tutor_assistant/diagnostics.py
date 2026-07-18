@@ -129,6 +129,19 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
             f"Невозможно записывать в {config.workspace}",
         )
     )
+    try:
+        free_bytes = shutil.disk_usage(workspace_parent).free
+        checks.append(
+            _check(
+                "Свободное место",
+                free_bytes >= 1024**3,
+                f"{free_bytes / 1024**3:.1f} ГБ доступно",
+                f"Осталось {free_bytes / 1024**3:.1f} ГБ; рекомендуется освободить место",
+                required=False,
+            )
+        )
+    except OSError as exc:
+        checks.append(DiagnosticCheck("Свободное место", "warning", str(exc), required=False))
     checks.append(
         _check(
             "Список учеников",

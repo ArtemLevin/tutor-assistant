@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -37,11 +38,13 @@ class ContentTrashDialog(QDialog):
     purge_requested = Signal(str)
     purge_expired_requested = Signal()
     retention_changed = Signal(int)
+    refresh_requested = Signal()
 
     def __init__(self, retention_days: int, parent=None) -> None:
         super().__init__(parent)
         self.summary = TrashSummary()
         self.setWindowTitle("Корзина материалов")
+        self.setAccessibleName("Корзина локальных материалов")
         self.resize(980, 720)
 
         layout = QVBoxLayout(self)
@@ -61,6 +64,7 @@ class ContentTrashDialog(QDialog):
         self.retention_days.setRange(0, 3650)
         self.retention_days.setSuffix(" дн.")
         self.retention_days.setValue(retention_days)
+        self.retention_days.setAccessibleName("Срок хранения удалённых занятий в днях")
         retention.addWidget(self.retention_days)
         save_retention = set_button_kind(QPushButton("Сохранить срок"), "ghost")
         save_retention.clicked.connect(lambda: self.retention_changed.emit(self.retention_days.value()))
@@ -76,6 +80,7 @@ class ContentTrashDialog(QDialog):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAccessibleName("Удалённые занятия")
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -107,6 +112,7 @@ class ContentTrashDialog(QDialog):
         self.operations.setHorizontalHeaderLabels(["Время", "Операция", "Занятие", "Статус", "Объём"])
         self.operations.setEditTriggers(QTableWidget.NoEditTriggers)
         self.operations.setSelectionMode(QTableWidget.NoSelection)
+        self.operations.setAccessibleName("Журнал операций корзины")
         self.operations.verticalHeader().setVisible(False)
         self.operations.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         layout.addWidget(self.operations, 1)
@@ -117,6 +123,15 @@ class ContentTrashDialog(QDialog):
         close.clicked.connect(self.accept)
         close_row.addWidget(close)
         layout.addLayout(close_row)
+
+        self.refresh_shortcut = QShortcut(QKeySequence.Refresh, self)
+        self.refresh_shortcut.activated.connect(self.refresh_requested.emit)
+        self.restore_shortcut = QShortcut(QKeySequence("Ctrl+R"), self)
+        self.restore_shortcut.activated.connect(self._restore)
+        self.purge_shortcut = QShortcut(QKeySequence("Ctrl+Delete"), self)
+        self.purge_shortcut.activated.connect(self._purge)
+        self.restore_button.setToolTip("Восстановить выбранное занятие · Ctrl+R")
+        self.purge_button.setToolTip("Удалить выбранное занятие навсегда · Ctrl+Delete")
 
     def set_data(self, summary: TrashSummary, operations: list[ContentOperation]) -> None:
         self.summary = summary

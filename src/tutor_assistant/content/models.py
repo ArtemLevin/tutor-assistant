@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path, PureWindowsPath
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 from ..domain import JobStatus, Lesson
 
@@ -57,6 +57,12 @@ class ContentOperationStatus(StrEnum):
     CLEANUP_PENDING = "cleanup_pending"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class IntegritySeverity(StrEnum):
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
 
 
 class LessonAsset(BaseModel):
@@ -229,6 +235,60 @@ class ContentOperation(BaseModel):
     details: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
+
+
+class ContentIntegrityIssue(BaseModel):
+    severity: IntegritySeverity
+    code: str
+    message: str
+    lesson_id: str | None = None
+    relative_path: str | None = None
+
+
+class StorageUsage(BaseModel):
+    lessons_bytes: int = Field(default=0, ge=0)
+    trash_bytes: int = Field(default=0, ge=0)
+    temporary_bytes: int = Field(default=0, ge=0)
+    database_bytes: int = Field(default=0, ge=0)
+    free_bytes: int = Field(default=0, ge=0)
+
+    @computed_field
+    @property
+    def managed_bytes(self) -> int:
+        return self.lessons_bytes + self.trash_bytes + self.temporary_bytes + self.database_bytes
+
+
+class ContentIntegrityReport(BaseModel):
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    database_ok: bool = True
+    database_message: str = "ok"
+    fts_enabled: bool = False
+    fts_documents: int = Field(default=0, ge=0)
+    indexed_lessons: int = Field(default=0, ge=0)
+    lesson_directories: int = Field(default=0, ge=0)
+    trash_items: int = Field(default=0, ge=0)
+    orphan_directories: list[str] = Field(default_factory=list)
+    temporary_paths: list[str] = Field(default_factory=list)
+    storage: StorageUsage = Field(default_factory=StorageUsage)
+    issues: list[ContentIntegrityIssue] = Field(default_factory=list)
+
+    @property
+    def errors(self) -> int:
+        return sum(issue.severity == IntegritySeverity.ERROR for issue in self.issues)
+
+    @property
+    def warnings(self) -> int:
+        return sum(issue.severity == IntegritySeverity.WARNING for issue in self.issues)
+
+    @property
+    def healthy(self) -> bool:
+        return self.database_ok and self.errors == 0
+
+
+class TemporaryCleanupResult(BaseModel):
+    removed_paths: list[str] = Field(default_factory=list)
+    released_bytes: int = Field(default=0, ge=0)
+    errors: list[str] = Field(default_factory=list)
 
 
 class IndexReport(BaseModel):

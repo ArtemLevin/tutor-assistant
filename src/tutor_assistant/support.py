@@ -27,6 +27,7 @@ def _safe_config(config: AppConfig) -> dict[str, object]:
         "recording": config.recording.model_dump(mode="json"),
         "whisper": config.whisper.model_dump(mode="json"),
         "latex": config.latex.model_dump(mode="json"),
+        "content": config.content.model_dump(mode="json"),
         "repository": {
             "base_branch": config.repository.base_branch,
             "push": config.repository.push,

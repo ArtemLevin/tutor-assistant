@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
@@ -134,6 +135,42 @@ class StudentContentRepository:
     def _operation_from_row(row: sqlite3.Row) -> ContentOperation:
         return ContentOperation.model_validate(dict(row))
 
+    @staticmethod
+    def _fts_available(db: sqlite3.Connection) -> bool:
+        try:
+            row = db.execute("SELECT enabled FROM content_capabilities WHERE name='fts5'").fetchone()
+        except sqlite3.OperationalError:
+            return False
+        return bool(row and row[0])
+
+    @staticmethod
+    def _fts_query(value: str) -> str:
+        tokens = re.findall(r"\w+", value.casefold(), flags=re.UNICODE)
+        return " AND ".join(f'"{token}"*' for token in tokens)
+
+    @classmethod
+    def _refresh_search_document(cls, db: sqlite3.Connection, lesson_id: str) -> None:
+        if not cls._fts_available(db):
+            return
+        db.execute("DELETE FROM lesson_search WHERE lesson_id=?", (lesson_id,))
+        row = db.execute(
+            """
+            SELECT l.payload,
+                   COALESCE((
+                       SELECT r.content FROM transcript_revisions r
+                       WHERE r.lesson_id=l.lesson_id AND r.deleted_at IS NULL
+                       ORDER BY r.revision_number DESC LIMIT 1
+                   ), '') AS transcript
+            FROM lessons l WHERE l.lesson_id=?
+            """,
+            (lesson_id,),
+        ).fetchone()
+        if row:
+            db.execute(
+                "INSERT INTO lesson_search (lesson_id, metadata, transcript) VALUES (?, ?, ?)",
+                (lesson_id, str(row["payload"]), str(row["transcript"])),
+            )
+
     def upsert_lesson(self, lesson: Lesson) -> None:
         payload = lesson.model_dump_json()
 
@@ -167,6 +204,7 @@ class StudentContentRepository:
                         lesson.created_at.isoformat(),
                     ),
                 )
+                self._refresh_search_document(db, lesson.lesson_id)
 
         self._retry(operation)
 
@@ -247,6 +285,7 @@ class StudentContentRepository:
                         current.lesson_id,
                     ),
                 )
+                self._refresh_search_document(db, current.lesson_id)
                 return current
 
         return self._retry(operation)
@@ -256,58 +295,97 @@ class StudentContentRepository:
         clauses: list[str] = []
         parameters: list[str] = []
         if not filters.include_deleted:
-            clauses.append("deleted_at IS NULL")
+            clauses.append("l.deleted_at IS NULL")
         if filters.student_id:
-            clauses.append("student_id = ?")
+            clauses.append("l.student_id = ?")
             parameters.append(filters.student_id)
         if filters.subject:
-            clauses.append("subject = ?")
+            clauses.append("l.subject = ?")
             parameters.append(filters.subject)
         if filters.status:
-            clauses.append("status = ?")
+            clauses.append("l.status = ?")
             parameters.append(filters.status.value)
         if filters.lesson_date_from:
-            clauses.append("lesson_date >= ?")
+            clauses.append("l.lesson_date >= ?")
             parameters.append(filters.lesson_date_from.isoformat())
         if filters.lesson_date_to:
-            clauses.append("lesson_date <= ?")
+            clauses.append("l.lesson_date <= ?")
             parameters.append(filters.lesson_date_to.isoformat())
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
         def operation() -> tuple[int, list[sqlite3.Row]]:
             with self.connect() as db:
                 if filters.query:
+                    match = self._fts_query(filters.query)
+                    if match and self._fts_available(db):
+                        search_where = " WHERE lesson_search MATCH ?"
+                        if clauses:
+                            search_where += f" AND {' AND '.join(clauses)}"
+                        search_parameters = [match, *parameters]
+                        total = int(
+                            db.execute(
+                                f"""
+                                SELECT COUNT(*) FROM lesson_search
+                                JOIN lessons l ON l.lesson_id=lesson_search.lesson_id
+                                {search_where}
+                                """,
+                                search_parameters,
+                            ).fetchone()[0]
+                        )
+                        rows = db.execute(
+                            f"""
+                            SELECT l.payload FROM lesson_search
+                            JOIN lessons l ON l.lesson_id=lesson_search.lesson_id
+                            {search_where}
+                            ORDER BY bm25(lesson_search), l.lesson_date DESC,
+                                     l.updated_at DESC, l.lesson_id ASC
+                            LIMIT ? OFFSET ?
+                            """,
+                            [*search_parameters, filters.limit, filters.offset],
+                        ).fetchall()
+                        return total, rows
                     rows = db.execute(
                         f"""
-                        SELECT payload, topic, student_id, subject
-                        FROM lessons
+                        SELECT l.payload, l.topic, l.student_id, l.subject,
+                               COALESCE((
+                                   SELECT r.content FROM transcript_revisions r
+                                   WHERE r.lesson_id=l.lesson_id AND r.deleted_at IS NULL
+                                   ORDER BY r.revision_number DESC LIMIT 1
+                               ), '') AS transcript
+                        FROM lessons l
                         {where}
-                        ORDER BY lesson_date DESC, updated_at DESC, lesson_id ASC
+                        ORDER BY l.lesson_date DESC, l.updated_at DESC, l.lesson_id ASC
                         """,
                         parameters,
                     ).fetchall()
-                    needle = filters.query.casefold()
+                    needles = re.findall(r"\w+", filters.query.casefold(), flags=re.UNICODE)
+                    if not needles:
+                        needles = [filters.query.casefold()]
                     matched = [
                         row
                         for row in rows
-                        if needle
-                        in "\n".join(
-                            (
-                                str(row["topic"]),
-                                str(row["student_id"]),
-                                str(row["subject"]),
-                                str(row["payload"]),
-                            )
-                        ).casefold()
+                        if all(
+                            needle
+                            in "\n".join(
+                                (
+                                    str(row["topic"]),
+                                    str(row["student_id"]),
+                                    str(row["subject"]),
+                                    str(row["payload"]),
+                                    str(row["transcript"]),
+                                )
+                            ).casefold()
+                            for needle in needles
+                        )
                     ]
                     return len(matched), matched[filters.offset : filters.offset + filters.limit]
-                total = int(db.execute(f"SELECT COUNT(*) FROM lessons{where}", parameters).fetchone()[0])
+                total = int(db.execute(f"SELECT COUNT(*) FROM lessons l{where}", parameters).fetchone()[0])
                 rows = db.execute(
                     f"""
-                    SELECT payload
-                    FROM lessons
+                    SELECT l.payload
+                    FROM lessons l
                     {where}
-                    ORDER BY lesson_date DESC, updated_at DESC, lesson_id ASC
+                    ORDER BY l.lesson_date DESC, l.updated_at DESC, l.lesson_id ASC
                     LIMIT ? OFFSET ?
                     """,
                     [*parameters, filters.limit, filters.offset],
@@ -579,6 +657,8 @@ class StudentContentRepository:
                 db.execute("DELETE FROM transcript_revisions WHERE lesson_id=?", (lesson_id,))
                 db.execute("DELETE FROM lesson_assets WHERE lesson_id=?", (lesson_id,))
                 db.execute("DELETE FROM content_trash WHERE lesson_id=?", (lesson_id,))
+                if self._fts_available(db):
+                    db.execute("DELETE FROM lesson_search WHERE lesson_id=?", (lesson_id,))
                 db.execute("DELETE FROM lessons WHERE lesson_id=?", (lesson_id,))
                 db.execute(
                     "UPDATE content_operations SET status=? WHERE id=?",
@@ -836,6 +916,7 @@ class StudentContentRepository:
                             transcript.deleted_at.isoformat() if transcript.deleted_at else None,
                         ),
                     )
+                self._refresh_search_document(db, lesson.lesson_id)
 
         self._retry(operation)
 
@@ -927,6 +1008,7 @@ class StudentContentRepository:
                         (revision.lesson_id, revision.relative_path, revision.content_sha256),
                     ).fetchone()
                     if existing:
+                        self._refresh_search_document(db, revision.lesson_id)
                         return existing
                 number = int(
                     db.execute(
@@ -955,7 +1037,7 @@ class StudentContentRepository:
                         revision.deleted_at.isoformat() if revision.deleted_at else None,
                     ),
                 )
-                return db.execute(
+                row = db.execute(
                     """
                     SELECT id, lesson_id, revision_number, relative_path, content,
                            content_sha256, created_by, created_at, deleted_at
@@ -963,6 +1045,8 @@ class StudentContentRepository:
                     """,
                     (cursor.lastrowid,),
                 ).fetchone()
+                self._refresh_search_document(db, revision.lesson_id)
+                return row
 
         return self._revision_from_row(self._retry(operation))
 
@@ -1024,6 +1108,7 @@ class StudentContentRepository:
                         lesson.lesson_id,
                     ),
                 )
+                self._refresh_search_document(db, lesson.lesson_id)
                 row = db.execute(
                     """
                     SELECT id, lesson_id, revision_number, relative_path, content,
@@ -1157,14 +1242,84 @@ class StudentContentRepository:
 
         def operation() -> None:
             with self.connect() as db:
+                row = db.execute(
+                    "SELECT lesson_id FROM transcript_revisions WHERE id=?",
+                    (revision_id,),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Версия транскрипта не найдена: {revision_id}")
                 cursor = db.execute(
                     "UPDATE transcript_revisions SET deleted_at=? WHERE id=?",
                     (timestamp, revision_id),
                 )
                 if cursor.rowcount == 0:
                     raise ContentNotFoundError(f"Версия транскрипта не найдена: {revision_id}")
+                self._refresh_search_document(db, str(row["lesson_id"]))
 
         self._retry(operation)
+
+    def rebuild_search_index(self) -> int:
+        def operation() -> int:
+            with self.connect() as db:
+                if not self._fts_available(db):
+                    return 0
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM lesson_search")
+                lesson_ids = [
+                    str(row["lesson_id"])
+                    for row in db.execute("SELECT lesson_id FROM lessons ORDER BY lesson_id")
+                ]
+                for lesson_id in lesson_ids:
+                    self._refresh_search_document(db, lesson_id)
+                return len(lesson_ids)
+
+        return self._retry(operation)
+
+    def search_index_status(self) -> tuple[bool, int]:
+        def operation() -> tuple[bool, int]:
+            with self.connect() as db:
+                enabled = self._fts_available(db)
+                count = int(db.execute("SELECT COUNT(*) FROM lesson_search").fetchone()[0]) if enabled else 0
+                return enabled, count
+
+        return self._retry(operation)
+
+    def database_integrity_status(self) -> tuple[bool, str]:
+        def operation() -> tuple[bool, str]:
+            with self.connect() as db:
+                quick = [str(row[0]) for row in db.execute("PRAGMA quick_check").fetchall()]
+                foreign_keys = db.execute("PRAGMA foreign_key_check").fetchall()
+                messages = [item for item in quick if item.casefold() != "ok"]
+                if foreign_keys:
+                    messages.append(f"нарушений внешних ключей: {len(foreign_keys)}")
+                return not messages, "; ".join(messages) or "ok"
+
+        return self._retry(operation)
+
+    def list_lesson_index_states(self) -> list[tuple[str, bool]]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute("SELECT lesson_id, deleted_at FROM lessons ORDER BY lesson_id").fetchall()
+
+        return [(str(row["lesson_id"]), row["deleted_at"] is not None) for row in self._retry(operation)]
+
+    def protected_temporary_paths(self) -> set[str]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT destination_relative_path FROM content_operations
+                    WHERE operation=? AND status IN (?, ?)
+                      AND destination_relative_path IS NOT NULL
+                    """,
+                    (
+                        ContentOperationKind.PURGE.value,
+                        ContentOperationStatus.PENDING.value,
+                        ContentOperationStatus.CLEANUP_PENDING.value,
+                    ),
+                ).fetchall()
+
+        return {str(row[0]) for row in self._retry(operation)}
 
     def applied_migrations(self) -> list[tuple[int, str]]:
         with self.connect() as db:

@@ -20,12 +20,17 @@ from .importing import (
 )
 from .models import (
     AssetKind,
+    ContentIntegrityIssue,
+    ContentIntegrityReport,
     ContentOperationKind,
     IndexReport,
+    IntegritySeverity,
     LessonAsset,
     LessonContent,
     LessonFilters,
     LessonPage,
+    StorageUsage,
+    TemporaryCleanupResult,
     TranscriptDraft,
     TranscriptRevision,
     TrashActionResult,
@@ -82,6 +87,9 @@ class StudentContentService:
             database_path or self.workspace / "tutor-assistant.sqlite3"
         )
         self.recover_trash_operations()
+        fts_enabled, fts_documents = self.repository.search_index_status()
+        if fts_enabled and fts_documents != len(self.repository.list_lesson_index_states()):
+            self.repository.rebuild_search_index()
 
     def _resolve_path(self, path: Path | str) -> tuple[Path, str]:
         candidate = Path(path)
@@ -161,6 +169,324 @@ class StudentContentService:
         if not path.is_dir():
             return path.stat().st_size if path.is_file() else 0
         return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+    @staticmethod
+    def _safe_path_size(path: Path) -> int:
+        try:
+            if path.is_symlink():
+                return path.lstat().st_size
+            if path.is_file():
+                return path.stat().st_size
+            if not path.is_dir():
+                return 0
+            total = 0
+            for item in path.rglob("*"):
+                try:
+                    if item.is_symlink():
+                        total += item.lstat().st_size
+                    elif item.is_file():
+                        total += item.stat().st_size
+                except OSError:
+                    continue
+            return total
+        except OSError:
+            return 0
+
+    def storage_usage(self) -> StorageUsage:
+        database = self.repository.path
+        database_bytes = sum(
+            self._safe_path_size(Path(f"{database}{suffix}")) for suffix in ("", "-wal", "-shm")
+        )
+        try:
+            free_bytes = shutil.disk_usage(self.workspace).free
+        except OSError:
+            free_bytes = 0
+        return StorageUsage(
+            lessons_bytes=self._safe_path_size(self.workspace / "lessons"),
+            trash_bytes=self._safe_path_size(self.workspace / "trash"),
+            temporary_bytes=(
+                self._safe_path_size(self.workspace / ".import-staging")
+                + self._safe_path_size(self.workspace / ".trash-purge")
+            ),
+            database_bytes=database_bytes,
+            free_bytes=free_bytes,
+        )
+
+    def _temporary_candidates(
+        self,
+        *,
+        now: datetime | None = None,
+        minimum_age: timedelta = timedelta(hours=24),
+    ) -> list[Path]:
+        threshold = (now or datetime.now(UTC)).timestamp() - minimum_age.total_seconds()
+        protected = self.repository.protected_temporary_paths()
+        candidates: list[Path] = []
+
+        for root_name in (".import-staging", ".trash-purge"):
+            root = self.workspace / root_name
+            if not root.is_dir():
+                continue
+            for child in root.iterdir():
+                relative = child.relative_to(self.workspace).as_posix()
+                if relative in protected:
+                    continue
+                try:
+                    if child.lstat().st_mtime <= threshold:
+                        candidates.append(child)
+                except OSError:
+                    continue
+
+        lessons = self.workspace / "lessons"
+        if lessons.is_dir():
+            for candidate in lessons.rglob("*"):
+                if not candidate.name.endswith((".tmp", ".part")):
+                    continue
+                try:
+                    if candidate.lstat().st_mtime <= threshold:
+                        candidates.append(candidate)
+                except OSError:
+                    continue
+        return sorted(set(candidates), key=lambda path: path.as_posix().casefold())
+
+    def cleanup_temporary_files(
+        self,
+        *,
+        now: datetime | None = None,
+        minimum_age: timedelta = timedelta(hours=24),
+    ) -> TemporaryCleanupResult:
+        result = TemporaryCleanupResult()
+        for candidate in self._temporary_candidates(now=now, minimum_age=minimum_age):
+            relative = candidate.relative_to(self.workspace).as_posix()
+            size = self._safe_path_size(candidate)
+            try:
+                if candidate.is_symlink() or candidate.is_file():
+                    candidate.unlink()
+                elif candidate.is_dir():
+                    resolved = candidate.resolve()
+                    resolved.relative_to(self.workspace)
+                    shutil.rmtree(resolved)
+                else:
+                    continue
+                result.removed_paths.append(relative)
+                result.released_bytes += size
+                self._remove_empty_directory(candidate.parent)
+            except (OSError, ValueError) as exc:
+                result.errors.append(f"{relative}: {exc}")
+        return result
+
+    def inspect_content_integrity(self) -> ContentIntegrityReport:
+        database_ok, database_message = self.repository.database_integrity_status()
+        fts_enabled, fts_documents = self.repository.search_index_status()
+        states = self.repository.list_lesson_index_states()
+        indexed_ids = {lesson_id for lesson_id, _deleted in states}
+        active_ids = {lesson_id for lesson_id, deleted in states if not deleted}
+        deleted_ids = {lesson_id for lesson_id, deleted in states if deleted}
+        trash_entries = {item.lesson.lesson_id: item.entry for item in self.repository.list_trash_items()}
+        lesson_root = self.workspace / "lessons"
+        trash_root = self.workspace / "trash" / "lessons"
+        lesson_directories = (
+            {path.name: path for path in lesson_root.iterdir() if path.is_dir()}
+            if lesson_root.is_dir()
+            else {}
+        )
+        trash_directories = (
+            {path.name: path for path in trash_root.iterdir() if path.is_dir()} if trash_root.is_dir() else {}
+        )
+        issues: list[ContentIntegrityIssue] = []
+
+        def issue(
+            severity: IntegritySeverity,
+            code: str,
+            message: str,
+            *,
+            lesson_id: str | None = None,
+            path: str | None = None,
+        ) -> None:
+            issues.append(
+                ContentIntegrityIssue(
+                    severity=severity,
+                    code=code,
+                    message=message,
+                    lesson_id=lesson_id,
+                    relative_path=path,
+                )
+            )
+
+        if not database_ok:
+            issue(IntegritySeverity.ERROR, "database", database_message)
+        if fts_enabled and fts_documents != len(states):
+            issue(
+                IntegritySeverity.WARNING,
+                "search_index",
+                f"FTS содержит {fts_documents} документов вместо {len(states)}",
+            )
+        if not fts_enabled:
+            issue(
+                IntegritySeverity.INFO,
+                "search_fallback",
+                "SQLite FTS5 недоступен; используется совместимый линейный поиск",
+            )
+
+        orphan_directories = [
+            path.relative_to(self.workspace).as_posix()
+            for lesson_id, path in lesson_directories.items()
+            if lesson_id not in indexed_ids
+        ]
+        orphan_directories.extend(
+            path.relative_to(self.workspace).as_posix()
+            for lesson_id, path in trash_directories.items()
+            if lesson_id not in trash_entries
+        )
+        for relative in orphan_directories:
+            issue(
+                IntegritySeverity.WARNING,
+                "orphan_directory",
+                "Каталог не связан с записью SQLite и оставлен без изменений",
+                path=relative,
+            )
+
+        for lesson_id in sorted(active_ids):
+            directory = lesson_directories.get(lesson_id)
+            if directory is None:
+                issue(
+                    IntegritySeverity.ERROR,
+                    "missing_lesson_directory",
+                    "Для активного занятия отсутствует управляемый каталог",
+                    lesson_id=lesson_id,
+                    path=f"lessons/{lesson_id}",
+                )
+                continue
+            lesson_json = directory / "lesson.json"
+            try:
+                disk_lesson = Lesson.read_json(lesson_json)
+                if disk_lesson.lesson_id != lesson_id:
+                    raise ValueError("lesson_id не совпадает с именем каталога")
+            except Exception as exc:
+                issue(
+                    IntegritySeverity.ERROR,
+                    "invalid_lesson_json",
+                    str(exc),
+                    lesson_id=lesson_id,
+                    path=lesson_json.relative_to(self.workspace).as_posix(),
+                )
+            try:
+                content = self.repository.get_content(lesson_id)
+            except Exception as exc:
+                issue(IntegritySeverity.ERROR, "content_read", str(exc), lesson_id=lesson_id)
+                continue
+            for asset in content.assets:
+                try:
+                    absolute, relative = self._resolve_path(asset.relative_path)
+                except ContentPathError as exc:
+                    issue(
+                        IntegritySeverity.ERROR,
+                        "unsafe_path",
+                        str(exc),
+                        lesson_id=lesson_id,
+                        path=asset.relative_path,
+                    )
+                    continue
+                if not absolute.is_file():
+                    issue(
+                        IntegritySeverity.WARNING,
+                        "missing_asset",
+                        "Зарегистрированный файл отсутствует",
+                        lesson_id=lesson_id,
+                        path=relative,
+                    )
+                    continue
+                try:
+                    measured_size = absolute.stat().st_size
+                    changed = measured_size != asset.size_bytes or _sha256_file(absolute) != asset.sha256
+                except OSError as exc:
+                    issue(
+                        IntegritySeverity.ERROR,
+                        "asset_read",
+                        str(exc),
+                        lesson_id=lesson_id,
+                        path=relative,
+                    )
+                    continue
+                if changed:
+                    issue(
+                        IntegritySeverity.WARNING,
+                        "asset_changed",
+                        "Размер или SHA-256 файла отличается от индекса",
+                        lesson_id=lesson_id,
+                        path=relative,
+                    )
+            if content.transcript:
+                try:
+                    transcript_path, relative = self._resolve_path(content.transcript.relative_path)
+                    try:
+                        changed = (
+                            transcript_path.is_file()
+                            and _sha256_file(transcript_path) != content.transcript.content_sha256
+                        )
+                    except OSError as exc:
+                        issue(
+                            IntegritySeverity.ERROR,
+                            "transcript_read",
+                            str(exc),
+                            lesson_id=lesson_id,
+                            path=relative,
+                        )
+                        continue
+                    if changed:
+                        issue(
+                            IntegritySeverity.WARNING,
+                            "transcript_changed",
+                            "Файл транскрипта отличается от подтверждённой копии SQLite",
+                            lesson_id=lesson_id,
+                            path=relative,
+                        )
+                except ContentPathError as exc:
+                    issue(
+                        IntegritySeverity.ERROR,
+                        "unsafe_transcript_path",
+                        str(exc),
+                        lesson_id=lesson_id,
+                        path=content.transcript.relative_path,
+                    )
+
+        for lesson_id in sorted(deleted_ids):
+            if lesson_id not in trash_entries:
+                issue(
+                    IntegritySeverity.ERROR,
+                    "missing_trash_record",
+                    "Удалённое занятие не связано с корзиной",
+                    lesson_id=lesson_id,
+                )
+        for lesson_id, entry in trash_entries.items():
+            path = self.workspace / entry.trash_relative_path
+            if not path.is_dir():
+                issue(
+                    IntegritySeverity.ERROR,
+                    "missing_trash_directory",
+                    "Каталог занятия отсутствует в корзине",
+                    lesson_id=lesson_id,
+                    path=entry.trash_relative_path,
+                )
+
+        temporary_paths = [
+            path.relative_to(self.workspace).as_posix() for path in self._temporary_candidates()
+        ]
+        return ContentIntegrityReport(
+            database_ok=database_ok,
+            database_message=database_message,
+            fts_enabled=fts_enabled,
+            fts_documents=fts_documents,
+            indexed_lessons=len(states),
+            lesson_directories=len(lesson_directories),
+            trash_items=len(trash_entries),
+            orphan_directories=sorted(orphan_directories),
+            temporary_paths=temporary_paths,
+            storage=self.storage_usage(),
+            issues=issues,
+        )
+
+    def rebuild_search_index(self) -> int:
+        return self.repository.rebuild_search_index()
 
     def set_trash_retention_days(self, days: int) -> None:
         if not 0 <= days <= 3650:

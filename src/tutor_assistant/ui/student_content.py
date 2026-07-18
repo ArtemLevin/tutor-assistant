@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QHideEvent, QShowEvent
+from PySide6.QtGui import QBrush, QColor, QHideEvent, QKeySequence, QShortcut, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..content import (
+    ContentIntegrityReport,
     ContentOperation,
     ImportCancellationToken,
     LessonContent,
@@ -37,6 +38,7 @@ from ..content import (
     LessonImportResult,
     LessonPage,
     StudentContentService,
+    TemporaryCleanupResult,
     TranscriptDraft,
     TranscriptRevision,
     TrashActionResult,
@@ -57,6 +59,7 @@ from .content_edit import (
     MetadataEditDialog,
     RevisionHistoryDialog,
 )
+from .content_health import ContentHealthDialog
 from .content_import import ImportLessonDialog
 from .content_trash import ContentTrashDialog
 from .playback import PlaybackPanel, QtPlaybackBackend
@@ -112,6 +115,7 @@ class StudentContentPage(QWidget):
         self.metadata_dialog: MetadataEditDialog | None = None
         self.history_dialog: RevisionHistoryDialog | None = None
         self.trash_dialog: ContentTrashDialog | None = None
+        self.health_dialog: ContentHealthDialog | None = None
         self._current_content: LessonContent | None = None
         self._transcript_editing = False
         self._transcript_base_revision: int | None = None
@@ -120,6 +124,7 @@ class StudentContentPage(QWidget):
         self._save_after_draft = False
         self._cancel_after_draft = False
         self._build()
+        self._install_shortcuts()
         self.draft_timer = QTimer(self)
         self.draft_timer.setSingleShot(True)
         self.draft_timer.setInterval(900)
@@ -132,6 +137,7 @@ class StudentContentPage(QWidget):
         self.search_timer.timeout.connect(self._filters_changed_now)
 
     def _build(self) -> None:
+        self.setAccessibleName("Архив материалов учеников")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 4, 2, 4)
         layout.setSpacing(12)
@@ -150,8 +156,13 @@ class StudentContentPage(QWidget):
         self.import_button.clicked.connect(self.open_import_dialog)
         heading.addWidget(self.import_button)
         self.trash_button = set_button_kind(QPushButton("Корзина"), "ghost")
+        self.trash_button.setToolTip("Открыть удалённые занятия · Ctrl+Shift+Delete")
         self.trash_button.clicked.connect(self.open_trash)
         heading.addWidget(self.trash_button)
+        self.health_button = set_button_kind(QPushButton("Диагностика"), "ghost")
+        self.health_button.setToolTip("Проверить индекс, файлы и место · Ctrl+Shift+D")
+        self.health_button.clicked.connect(self.open_content_health)
+        heading.addWidget(self.health_button)
         self.sync_button = set_button_kind(QPushButton("Синхронизировать каталог"), "ghost")
         self.sync_button.setToolTip("Однократно проверить data/lessons и обновить индекс SQLite")
         self.sync_button.clicked.connect(self.synchronize)
@@ -197,8 +208,12 @@ class StudentContentPage(QWidget):
         self.date_to.setMaximumWidth(120)
         filters_layout.addWidget(self.date_to, 0, 5)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Тема, ученик или предмет")
+        self.search.setPlaceholderText("Тема, ученик, предмет или текст транскрипта")
         self.search.setClearButtonEnabled(True)
+        self.search.setAccessibleName("Полнотекстовый поиск по материалам")
+        self.search.setAccessibleDescription(
+            "Поиск по карточкам занятий и последним подтверждённым транскриптам"
+        )
         filters_layout.addWidget(self.search, 1, 0, 1, 5)
         self.reset_button = set_button_kind(QPushButton("Сбросить"), "ghost")
         self.reset_button.clicked.connect(self.reset_filters)
@@ -231,6 +246,7 @@ class StudentContentPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
+        self.table.setAccessibleName("Список занятий")
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
@@ -313,6 +329,7 @@ class StudentContentPage(QWidget):
         self.files_table.setSelectionMode(QTableWidget.SingleSelection)
         self.files_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.files_table.setShowGrid(False)
+        self.files_table.setAccessibleName("Файлы выбранного занятия")
         self.files_table.verticalHeader().setVisible(False)
         self.files_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.files_table.itemSelectionChanged.connect(self._file_selection_changed)
@@ -338,6 +355,7 @@ class StudentContentPage(QWidget):
         details_layout.addWidget(self.transcript_state)
         self.transcript = QPlainTextEdit()
         self.transcript.setReadOnly(True)
+        self.transcript.setAccessibleName("Подтверждённый транскрипт занятия")
         self.transcript.setPlaceholderText("Для занятия пока нет проиндексированного транскрипта")
         details_layout.addWidget(self.transcript, 2)
         self.transcript_actions = QWidget()
@@ -356,6 +374,34 @@ class StudentContentPage(QWidget):
         splitter.setSizes([670, 500])
         layout.addWidget(splitter, 1)
         self._clear_details()
+
+    def _install_shortcuts(self) -> None:
+        self.search_shortcut = QShortcut(QKeySequence.Find, self)
+        self.search_shortcut.activated.connect(self._focus_search)
+        self.refresh_shortcut = QShortcut(QKeySequence.Refresh, self)
+        self.refresh_shortcut.activated.connect(self.refresh)
+        self.sync_shortcut = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
+        self.sync_shortcut.activated.connect(self.synchronize)
+        self.import_shortcut = QShortcut(QKeySequence.New, self)
+        self.import_shortcut.activated.connect(self.open_import_dialog)
+        self.trash_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Delete"), self)
+        self.trash_shortcut.activated.connect(self.open_trash)
+        self.health_shortcut = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+        self.health_shortcut.activated.connect(self.open_content_health)
+        self.delete_shortcut = QShortcut(QKeySequence.Delete, self.table)
+        self.delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.delete_shortcut.activated.connect(self.delete_selected_lesson)
+        self.save_shortcut = QShortcut(QKeySequence.Save, self.transcript)
+        self.save_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        self.save_shortcut.activated.connect(self._save_transcript_shortcut)
+
+    def _focus_search(self) -> None:
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def _save_transcript_shortcut(self) -> None:
+        if self._transcript_editing:
+            self.save_transcript_editing()
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
@@ -520,6 +566,7 @@ class StudentContentPage(QWidget):
         )
         dialog.purge_expired_requested.connect(lambda current=dialog: self._purge_expired(current))
         dialog.retention_changed.connect(self._change_trash_retention)
+        dialog.refresh_requested.connect(lambda current=dialog: self._reload_trash(current))
         dialog.finished.connect(lambda _result, current=dialog: self._trash_dialog_closed(current))
         dialog.open()
         self._reload_trash(dialog)
@@ -620,6 +667,84 @@ class StudentContentPage(QWidget):
     def _trash_dialog_closed(self, dialog: ContentTrashDialog) -> None:
         if self.trash_dialog is dialog:
             self.trash_dialog = None
+
+    def open_content_health(self) -> None:
+        if self.health_dialog is not None:
+            self.health_dialog.raise_()
+            self.health_dialog.activateWindow()
+            return
+        dialog = ContentHealthDialog(self)
+        self.health_dialog = dialog
+        dialog.rescan_requested.connect(lambda current=dialog: self._reload_content_health(current))
+        dialog.cleanup_requested.connect(lambda current=dialog: self._cleanup_content_temp(current))
+        dialog.rebuild_search_requested.connect(lambda current=dialog: self._rebuild_content_search(current))
+        dialog.finished.connect(lambda _result, current=dialog: self._health_dialog_closed(current))
+        dialog.open()
+        self._reload_content_health(dialog)
+
+    def _reload_content_health(self, dialog: ContentHealthDialog) -> None:
+        dialog.set_busy("Проверяю SQLite, индекс и локальные файлы…")
+        self.run_background(
+            self.service.inspect_content_integrity,
+            lambda result, current=dialog: self._content_health_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось проверить хранилище")
+            ),
+        )
+
+    def _content_health_ready(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, ContentIntegrityReport):
+            dialog.show_error("Некорректный результат диагностики")
+            return
+        dialog.set_report(result)
+        tone = "success" if result.healthy else "warning"
+        self.status_changed.emit(
+            f"Диагностика: ошибок {result.errors}, предупреждений {result.warnings}",
+            tone,
+        )
+
+    def _cleanup_content_temp(self, dialog: ContentHealthDialog) -> None:
+        self.run_background(
+            self.service.cleanup_temporary_files,
+            lambda result, current=dialog: self._content_cleanup_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось очистить временные данные")
+            ),
+        )
+
+    def _content_cleanup_ready(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, TemporaryCleanupResult):
+            dialog.show_error("Некорректный результат очистки")
+            return
+        tone = "warning" if result.errors else "success"
+        self.status_changed.emit(
+            f"Временные данные очищены · освобождено {format_size(result.released_bytes)} · "
+            f"ошибок: {len(result.errors)}",
+            tone,
+        )
+        self._reload_content_health(dialog)
+
+    def _rebuild_content_search(self, dialog: ContentHealthDialog) -> None:
+        dialog.set_busy("Перестраиваю полнотекстовый индекс…")
+        self.run_background(
+            self.service.rebuild_search_index,
+            lambda result, current=dialog: self._content_search_rebuilt(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось перестроить поиск")
+            ),
+        )
+
+    def _content_search_rebuilt(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, int):
+            dialog.show_error("Некорректный результат перестроения индекса")
+            return
+        self.status_changed.emit(f"Полнотекстовый индекс обновлён: {result}", "success")
+        self.refresh()
+        self._reload_content_health(dialog)
+
+    def _health_dialog_closed(self, dialog: ContentHealthDialog) -> None:
+        if self.health_dialog is dialog:
+            self.health_dialog = None
 
     @staticmethod
     def _operation_message(details: str, fallback: str) -> str:

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -106,6 +107,7 @@ class PlaybackPanel(QGroupBox):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__("Аудиозапись", parent)
+        self.setAccessibleName("Аудиоплеер занятия")
         self.controller = controller
         self.backend = backend
         self.segments: tuple[PlaybackSegment, ...] = ()
@@ -127,6 +129,7 @@ class PlaybackPanel(QGroupBox):
         self.track = QComboBox()
         self.track.setMinimumWidth(180)
         self.track.setToolTip("Выберите смешанную дорожку, преподавателя или ученика")
+        self.track.setAccessibleName("Аудиодорожка")
         self.track.currentIndexChanged.connect(self._track_changed)
         selectors.addWidget(self.track, 1)
         speed_label = QLabel("Скорость")
@@ -142,28 +145,34 @@ class PlaybackPanel(QGroupBox):
         ):
             self.speed.addItem(label, value)
         self.speed.setCurrentIndex(1)
+        self.speed.setAccessibleName("Скорость воспроизведения")
         self.speed.currentIndexChanged.connect(self._speed_changed)
         selectors.addWidget(self.speed)
         layout.addLayout(selectors)
 
         transport = QHBoxLayout()
         self.previous = set_button_kind(QPushButton("← Сегмент"), "ghost")
+        self.previous.setToolTip("Перейти к предыдущему сегменту")
         self.previous.clicked.connect(lambda: self._step_segment(-1))
         transport.addWidget(self.previous)
         self.play_pause = set_button_kind(QPushButton("▶"), "primary")
         self.play_pause.setFixedWidth(48)
         self.play_pause.setToolTip("Воспроизвести или приостановить")
+        self.play_pause.setAccessibleName("Воспроизвести или приостановить аудио")
         self.play_pause.clicked.connect(self.toggle)
         transport.addWidget(self.play_pause)
         self.stop_button = set_button_kind(QPushButton("■"), "ghost")
         self.stop_button.setFixedWidth(42)
         self.stop_button.setToolTip("Остановить")
+        self.stop_button.setAccessibleName("Остановить аудио")
         self.stop_button.clicked.connect(self.stop)
         transport.addWidget(self.stop_button)
         self.next = set_button_kind(QPushButton("Сегмент →"), "ghost")
+        self.next.setToolTip("Перейти к следующему сегменту")
         self.next.clicked.connect(lambda: self._step_segment(1))
         transport.addWidget(self.next)
         self.position = QSlider(Qt.Horizontal)
+        self.position.setAccessibleName("Позиция воспроизведения")
         self.position.setRange(0, 0)
         self.position.sliderPressed.connect(self._seek_started)
         self.position.sliderReleased.connect(self._seek_finished)
@@ -178,6 +187,7 @@ class PlaybackPanel(QGroupBox):
         segment_label.setObjectName("muted")
         segment_row.addWidget(segment_label)
         self.segment = QComboBox()
+        self.segment.setAccessibleName("Сегмент транскрипта для перехода")
         self.segment.setMinimumContentsLength(24)
         self.segment.activated.connect(self.play_selected_segment)
         segment_row.addWidget(self.segment, 1)
@@ -187,6 +197,10 @@ class PlaybackPanel(QGroupBox):
         self.state.setObjectName("muted")
         self.state.setWordWrap(True)
         layout.addWidget(self.state)
+
+        self.play_shortcut = QShortcut(QKeySequence("Ctrl+Space"), self)
+        self.play_shortcut.activated.connect(self.toggle)
+        self.play_pause.setToolTip("Воспроизвести или приостановить · Ctrl+Space")
 
     def set_tracks(self, paths: list[Path]) -> None:
         self.stop(clear_source=True)

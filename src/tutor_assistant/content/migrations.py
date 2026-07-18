@@ -191,11 +191,59 @@ def _content_trash(db: sqlite3.Connection) -> None:
     )
 
 
+def _content_hardening(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS content_capabilities (
+            name TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL CHECK(enabled IN (0, 1))
+        )
+        """
+    )
+    try:
+        db.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS lesson_search USING fts5(
+                lesson_id UNINDEXED,
+                metadata,
+                transcript,
+                tokenize='unicode61'
+            )
+            """
+        )
+        db.execute("DELETE FROM lesson_search")
+        db.execute(
+            """
+            INSERT INTO lesson_search (lesson_id, metadata, transcript)
+            SELECT l.lesson_id, l.payload,
+                   COALESCE((
+                       SELECT r.content FROM transcript_revisions r
+                       WHERE r.lesson_id=l.lesson_id AND r.deleted_at IS NULL
+                       ORDER BY r.revision_number DESC LIMIT 1
+                   ), '')
+            FROM lessons l
+            """
+        )
+        fts_enabled = 1
+    except sqlite3.OperationalError as exc:
+        if "fts5" not in str(exc).casefold():
+            raise
+        fts_enabled = 0
+    db.execute(
+        """
+        INSERT INTO content_capabilities (name, enabled) VALUES ('fts5', ?)
+        ON CONFLICT(name) DO UPDATE SET enabled=excluded.enabled
+        """,
+        (fts_enabled,),
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
     Migration(3, "student_content_editing", _content_editing),
     Migration(4, "student_content_trash", _content_trash),
+    Migration(5, "student_content_hardening", _content_hardening),
 )
 
 
