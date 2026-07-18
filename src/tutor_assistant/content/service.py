@@ -129,8 +129,9 @@ class StudentContentService:
     def _atomic_write(path: Path, text: str) -> None:
         atomic_write_text(path, text)
 
-    def _synchronize_lesson_files(self, lesson_id: str) -> None:
+    def _synchronize_lesson_files(self, lesson_id: str, *, project_assets: bool = True) -> int:
         content = self.repository.get_content(lesson_id, include_deleted=True)
+        indexed_assets = 0
         try:
             if content.transcript:
                 transcript_path = self._managed_path_for_lesson(
@@ -143,10 +144,20 @@ class StudentContentService:
                 (Path("lessons") / lesson_id / "lesson.json").as_posix(),
             )
             self._atomic_write(lesson_json, content.lesson.model_dump_json(indent=2))
+            if content.deleted_at is None:
+                if project_assets:
+                    indexed_assets = self._index_lesson_assets(
+                        content.lesson,
+                        self.workspace / "lessons" / lesson_id,
+                    )
+                else:
+                    self.register_asset(lesson_id, lesson_json, kind=AssetKind.METADATA)
+                    indexed_assets = 1
         except Exception as exc:
             self.repository.fail_file_sync(lesson_id, str(exc))
             raise
         self.repository.complete_file_sync(lesson_id)
+        return indexed_assets
 
     def recover_file_sync(self) -> None:
         for lesson_id, _last_error in self.repository.pending_file_sync():
@@ -192,7 +203,10 @@ class StudentContentService:
             expected_row_version=expected_row_version,
             force_status=force_status,
         )
-        self._synchronize_lesson_files(updated.lesson_id)
+        self._synchronize_lesson_files(
+            updated.lesson_id,
+            project_assets=bool(frozenset(fields) & {"source_audio_local", "artifacts", "latex"}),
+        )
         return updated
 
     def update_lesson_metadata(
@@ -221,7 +235,7 @@ class StudentContentService:
             expected_updated_at=expected_updated_at,
             expected_row_version=expected_row_version,
         )
-        self._synchronize_lesson_files(lesson_id)
+        self._synchronize_lesson_files(lesson_id, project_assets=False)
         return lesson
 
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
@@ -1123,7 +1137,9 @@ class StudentContentService:
             expected_revision_number=expected_revision_number,
         )
 
-    def index_existing_lessons(self) -> IndexReport:
+    def repair_archive(self) -> IndexReport:
+        """Repair managed files and indexes without overwriting SQLite lesson state."""
+
         report = IndexReport()
         lessons_root = self.workspace / "lessons"
         if not lessons_root.is_dir():
@@ -1137,29 +1153,41 @@ class StudentContentService:
                 report.skipped_directories += 1
                 continue
             try:
-                lesson = Lesson.read_json(lesson_json)
-                if lesson.lesson_id != directory.name:
+                disk_lesson = Lesson.read_json(lesson_json)
+                if disk_lesson.lesson_id != directory.name:
                     raise ValueError(
-                        f"lesson_id {lesson.lesson_id!r} не совпадает с каталогом {directory.name!r}"
+                        f"lesson_id {disk_lesson.lesson_id!r} не совпадает с каталогом {directory.name!r}"
                     )
-                self.repository.upsert_lesson(lesson)
-                self.repository.complete_file_sync(lesson.lesson_id)
+                stored = self.repository.get_lesson(directory.name, include_deleted=True)
+                if stored is None:
+                    self.repository.insert_lesson(disk_lesson)
+                    stored = disk_lesson
+                content = self.repository.get_content(directory.name, include_deleted=True)
+                if content.deleted_at is not None:
+                    report.skipped_directories += 1
+                    continue
                 report.indexed_lessons += 1
-                report.indexed_assets += self._index_lesson_assets(lesson, directory)
-                report.indexed_transcripts += self._index_lesson_transcript(lesson, directory)
+                report.indexed_assets += self._synchronize_lesson_files(directory.name)
+                report.indexed_transcripts += self._index_lesson_transcript(stored, directory)
             except Exception as exc:
                 report.errors.append(f"{directory.name}: {exc}")
         return report
 
+    def index_existing_lessons(self) -> IndexReport:
+        """Compatibility alias for the explicit archive repair operation."""
+
+        return self.repair_archive()
+
     def _index_lesson_assets(self, lesson: Lesson, directory: Path) -> int:
-        candidates: set[Path] = {directory / "lesson.json"}
-        recording = directory / "recording"
+        candidates: set[Path] = {
+            candidate
+            for candidate in directory.rglob("*")
+            if candidate.is_file()
+            and not candidate.name.endswith((".tmp", ".part"))
+            and candidate.name != "transcript_draft.json"
+        }
+        candidates.add(directory / "lesson.json")
         transcript_directory = directory / "transcript"
-        for content_directory in (recording, transcript_directory):
-            if content_directory.is_dir():
-                candidates.update(
-                    candidate for candidate in content_directory.iterdir() if candidate.is_file()
-                )
         if lesson.source_audio_local:
             source = Path(lesson.source_audio_local)
             if source.is_file():
@@ -1187,7 +1215,7 @@ class StudentContentService:
                 self._resolve_path(candidate)
             except ContentPathError:
                 continue
-            if candidate.suffix.casefold() == ".wav":
+            if candidate.suffix.casefold() in AUDIO_IMPORT_SUFFIXES:
                 kind = AssetKind.AUDIO
             elif candidate.parent == transcript_directory and candidate.suffix.casefold() == ".txt":
                 kind = AssetKind.TRANSCRIPT
