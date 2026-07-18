@@ -27,6 +27,7 @@ SEVERITY_LABELS = {
 
 class ContentHealthDialog(QDialog):
     rescan_requested = Signal()
+    repair_requested = Signal()
     cleanup_requested = Signal()
     rebuild_search_requested = Signal()
 
@@ -80,6 +81,10 @@ class ContentHealthDialog(QDialog):
         self.rescan_button.setToolTip("Повторить проверку · F5")
         self.rescan_button.clicked.connect(self.rescan_requested.emit)
         actions.addWidget(self.rescan_button)
+        self.repair_button = set_button_kind(QPushButton("Безопасно восстановить"), "ghost")
+        self.repair_button.setToolTip("Восстановить проекции из SQLite и зарегистрировать найденные файлы")
+        self.repair_button.clicked.connect(self.repair_requested.emit)
+        actions.addWidget(self.repair_button)
         self.rebuild_button = set_button_kind(QPushButton("Перестроить поиск"), "ghost")
         self.rebuild_button.setToolTip("Пересоздать полнотекстовый индекс · Ctrl+R")
         self.rebuild_button.clicked.connect(self.rebuild_search_requested.emit)
@@ -152,6 +157,7 @@ class ContentHealthDialog(QDialog):
         self.cleanup_button.setEnabled(bool(report.temporary_paths))
         self.cleanup_button.setText(f"Очистить временные ({len(report.temporary_paths)})")
         self.rebuild_button.setEnabled(report.fts_enabled)
+        self.repair_button.setEnabled(bool(report.issues))
 
     def set_busy(self, message: str) -> None:
         self._set_buttons_enabled(False)
@@ -162,6 +168,7 @@ class ContentHealthDialog(QDialog):
         self._set_buttons_enabled(True)
         self.cleanup_button.setEnabled(bool(self.report.temporary_paths))
         self.rebuild_button.setEnabled(self.report.fts_enabled)
+        self.repair_button.setEnabled(bool(self.report.issues))
         self.state.setStyleSheet("color: #A33636;")
         self.state.setText(message)
 
@@ -171,6 +178,7 @@ class ContentHealthDialog(QDialog):
 
     def _set_buttons_enabled(self, enabled: bool) -> None:
         self.rescan_button.setEnabled(enabled)
+        self.repair_button.setEnabled(enabled)
         self.rebuild_button.setEnabled(enabled)
         self.cleanup_button.setEnabled(enabled)
 
