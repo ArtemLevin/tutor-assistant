@@ -292,6 +292,23 @@ class TemporaryCleanupResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class ContentMaintenanceResult(BaseModel):
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+    skipped: bool = False
+    repaired_lessons: list[str] = Field(default_factory=list)
+    indexed_assets: int = Field(default=0, ge=0)
+    rebuilt_search_documents: int | None = Field(default=None, ge=0)
+    purged_lessons: list[str] = Field(default_factory=list)
+    temporary_cleanup: TemporaryCleanupResult = Field(default_factory=TemporaryCleanupResult)
+    errors: list[str] = Field(default_factory=list)
+    report: ContentIntegrityReport | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return not self.errors and bool(self.report and self.report.healthy)
+
+
 class IndexReport(BaseModel):
     scanned_directories: int = 0
     indexed_lessons: int = 0
