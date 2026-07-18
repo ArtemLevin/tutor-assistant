@@ -81,7 +81,7 @@ def test_integrity_report_finds_changed_files_orphans_and_search_drift(tmp_path:
     assert "asset_changed" in codes
     assert "orphan_directory" in codes
     if report.fts_enabled:
-        assert "search_index" in codes
+        assert "search_index_missing" in codes
     assert "lessons/lost-folder" in report.orphan_directories
     assert any(issue.severity == IntegritySeverity.WARNING for issue in report.issues)
     assert orphan.is_dir()
