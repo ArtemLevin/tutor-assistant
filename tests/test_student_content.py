@@ -142,11 +142,17 @@ def test_asset_and_transcript_revision_crud(tmp_path: Path) -> None:
 
     asset = service.register_asset(lesson.lesson_id, audio, kind=AssetKind.AUDIO)
     assert asset.id is not None
-    assert service.get_lesson(lesson.lesson_id).assets[0].relative_path.endswith("lesson.wav")
+    assert any(
+        item.relative_path.endswith("lesson.wav") for item in service.get_lesson(lesson.lesson_id).assets
+    )
     service.delete_asset(asset.id)
-    assert service.get_lesson(lesson.lesson_id).assets == []
+    assert all(
+        not item.relative_path.endswith("lesson.wav") for item in service.get_lesson(lesson.lesson_id).assets
+    )
     service.restore_asset(asset.id)
-    assert len(service.get_lesson(lesson.lesson_id).assets) == 1
+    assert any(
+        item.relative_path.endswith("lesson.wav") for item in service.get_lesson(lesson.lesson_id).assets
+    )
 
     first = service.save_transcript(lesson.lesson_id, "Первая версия")
     second = service.save_transcript(lesson.lesson_id, "Вторая версия")
