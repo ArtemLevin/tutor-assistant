@@ -193,6 +193,7 @@ def test_legacy_indexer_is_idempotent(tmp_path: Path) -> None:
     transcript.parent.mkdir(parents=True)
     recording.write_bytes(b"RIFF-legacy")
     transcript.write_text("Существующий транскрипт", encoding="utf-8")
+    (lesson_dir / "transcript" / "manifest.json").write_text("{}", encoding="utf-8")
     lesson.write_json(lesson_dir / "lesson.json")
 
     service = StudentContentService(workspace)
@@ -201,7 +202,7 @@ def test_legacy_indexer_is_idempotent(tmp_path: Path) -> None:
 
     assert first.errors == second.errors == []
     assert first.indexed_lessons == second.indexed_lessons == 1
-    assert len(service.repository.list_assets(lesson.lesson_id)) == 2
+    assert len(service.repository.list_assets(lesson.lesson_id)) == 4
     revisions = service.repository.list_transcript_revisions(lesson.lesson_id)
     assert len(revisions) == 1
     assert revisions[0].content == "Существующий транскрипт"

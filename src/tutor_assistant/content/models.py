@@ -34,6 +34,7 @@ def _validate_relative_path(value: str) -> str:
 class AssetKind(StrEnum):
     AUDIO = "audio"
     METADATA = "metadata"
+    TRANSCRIPT = "transcript"
     DOCUMENT = "document"
     OTHER = "other"
 

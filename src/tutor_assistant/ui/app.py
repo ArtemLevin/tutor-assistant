@@ -44,6 +44,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_students
+from ..content import StudentContentService
+from ..content_browser import is_audio_path
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
@@ -60,6 +62,7 @@ from ..recording import (
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
+from .student_content import StudentContentPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 
 
@@ -129,6 +132,9 @@ class MainWindow(QMainWindow):
         self.crm_store = CrmStore(self.pipeline.store.path)
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
+        self.content_service = StudentContentService(
+            self.config.workspace, self.pipeline.store.path
+        )
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
             self.devices, self.config.recording.target_sample_rate
@@ -250,9 +256,20 @@ class MainWindow(QMainWindow):
         self.crm_schedule_page = SchedulePage(self.crm_store)
         self.crm_students_page.changed.connect(self._crm_students_changed)
         self.crm_students_page.changed.connect(self.crm_schedule_page.refresh)
+        self.crm_students_page.materials_requested.connect(self._open_student_materials)
         self.crm_schedule_page.start_requested.connect(self._start_scheduled_lesson)
         self.tabs.addTab(self.crm_students_page, "06  Ученики")
         self.tabs.addTab(self.crm_schedule_page, "07  Расписание")
+        self.student_content_page = StudentContentPage(
+            self.content_service,
+            self.students,
+            self._run_content_task,
+        )
+        self.student_content_page.status_changed.connect(self._set_status)
+        self.student_content_page.file_open_requested.connect(self._open_material_file)
+        self.materials_tab_index = self.tabs.addTab(
+            self.student_content_page, "08  Материалы"
+        )
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -337,6 +354,32 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(index)
             combo.blockSignals(False)
         self._refresh_quick_readiness()
+        self.student_content_page.set_students(self.students)
+
+    def _run_content_task(self, callable_, succeeded, failed) -> None:
+        worker = Worker(callable_)
+        worker.purpose = "content-browser"
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _open_student_materials(self, student_id: str) -> None:
+        self.student_content_page.show_student(student_id)
+        self._go_to(self.materials_tab_index)
+
+    def _open_material_file(self, path: Path) -> None:
+        recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
+        if recording_busy and is_audio_path(path):
+            QMessageBox.warning(
+                self,
+                "Воспроизведение отключено",
+                "Во время записи нельзя открывать аудио из архива: "
+                "оно попадёт в дорожку ученика через WASAPI Loopback.",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _start_scheduled_lesson(
         self,

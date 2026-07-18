@@ -201,12 +201,31 @@ class StudentContentService:
     def _index_lesson_assets(self, lesson: Lesson, directory: Path) -> int:
         candidates: set[Path] = {directory / "lesson.json"}
         recording = directory / "recording"
-        if recording.is_dir():
-            candidates.update(recording.glob("*.wav"))
+        transcript_directory = directory / "transcript"
+        for content_directory in (recording, transcript_directory):
+            if content_directory.is_dir():
+                candidates.update(
+                    candidate for candidate in content_directory.iterdir() if candidate.is_file()
+                )
         if lesson.source_audio_local:
             source = Path(lesson.source_audio_local)
             if source.is_file():
                 candidates.add(source)
+        known_paths = [
+            *lesson.artifacts.model_dump().values(),
+            lesson.latex.tex_path,
+            lesson.latex.pdf_path,
+            lesson.latex.report_path,
+            *lesson.latex.preview_paths,
+        ]
+        for value in known_paths:
+            if not value:
+                continue
+            candidate = Path(value)
+            if not candidate.is_absolute():
+                candidate = self.workspace / candidate
+            if candidate.is_file():
+                candidates.add(candidate)
         indexed = 0
         for candidate in sorted(candidates):
             if not candidate.is_file():
@@ -215,7 +234,14 @@ class StudentContentService:
                 self._resolve_path(candidate)
             except ContentPathError:
                 continue
-            kind = AssetKind.AUDIO if candidate.suffix.casefold() == ".wav" else AssetKind.METADATA
+            if candidate.suffix.casefold() == ".wav":
+                kind = AssetKind.AUDIO
+            elif candidate.parent == transcript_directory and candidate.suffix.casefold() == ".txt":
+                kind = AssetKind.TRANSCRIPT
+            elif candidate.suffix.casefold() == ".json":
+                kind = AssetKind.METADATA
+            else:
+                kind = AssetKind.DOCUMENT
             self.register_asset(lesson.lesson_id, candidate, kind=kind)
             indexed += 1
         return indexed

@@ -109,6 +109,7 @@ class GuardianDialog(QDialog):
 
 class StudentsPage(QWidget):
     changed = Signal()
+    materials_requested = Signal(str)
 
     def __init__(self, store: CrmStore, parent=None) -> None:
         super().__init__(parent)
@@ -239,6 +240,11 @@ class StudentsPage(QWidget):
         archive = set_button_kind(QPushButton("В архив"), "ghost")
         archive.clicked.connect(self._archive)
         actions.addWidget(archive)
+        self.materials_button = set_button_kind(QPushButton("Материалы"), "ghost")
+        self.materials_button.setToolTip("Открыть локальный архив занятий этого ученика")
+        self.materials_button.setEnabled(False)
+        self.materials_button.clicked.connect(self._open_materials)
+        actions.addWidget(self.materials_button)
         actions.addStretch(1)
         save = set_button_kind(QPushButton("Сохранить карточку"), "primary")
         save.clicked.connect(self._save)
@@ -290,6 +296,7 @@ class StudentsPage(QWidget):
 
     def new_student(self) -> None:
         self.current_id = None
+        self.materials_button.setEnabled(False)
         self.student_id.setEnabled(True)
         text_fields = (
             self.student_id,
@@ -321,6 +328,7 @@ class StudentsPage(QWidget):
         if profile is None:
             return
         self.current_id = profile.id
+        self.materials_button.setEnabled(True)
         self.student_id.setText(profile.id)
         self.student_id.setEnabled(False)
         self.full_name.setText(profile.full_name)
@@ -403,6 +411,7 @@ class StudentsPage(QWidget):
             QMessageBox.critical(self, "Карточка", str(exc))
             return
         self.current_id = student_id
+        self.materials_button.setEnabled(True)
         self.student_id.setEnabled(False)
         self.refresh()
         self.changed.emit()
@@ -416,6 +425,10 @@ class StudentsPage(QWidget):
             self.new_student()
             self.refresh()
             self.changed.emit()
+
+    def _open_materials(self) -> None:
+        if self.current_id:
+            self.materials_requested.emit(self.current_id)
 
 
 class ScheduleDialog(QDialog):
