@@ -6,7 +6,6 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QMessageBox, QPushButton
 
 from ..domain import JobStatus, Lesson
-from ..transcription_queue import QueueStatus
 from . import app as base_app
 from .parallel_review import (
     ParallelReviewPolicy,
