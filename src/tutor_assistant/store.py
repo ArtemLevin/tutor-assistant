@@ -7,6 +7,7 @@ from pathlib import Path
 from time import sleep
 from typing import TypeVar
 
+from .content.migrations import apply_migrations
 from .domain import Lesson
 
 T = TypeVar("T")
@@ -30,6 +31,7 @@ class LessonStore:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
         connection.execute("PRAGMA synchronous=NORMAL")
         return connection
@@ -49,32 +51,7 @@ class LessonStore:
         with self.connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS lessons (
-                    lesson_id TEXT PRIMARY KEY,
-                    student_id TEXT NOT NULL,
-                    lesson_date TEXT NOT NULL,
-                    topic TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    payload TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS transcription_jobs (
-                    lesson_id TEXT PRIMARY KEY,
-                    audio_path TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error TEXT,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id)
-                )
-                """
-            )
+            apply_migrations(db)
 
     def save(self, lesson: Lesson) -> None:
         payload = lesson.model_dump_json()
@@ -83,14 +60,19 @@ class LessonStore:
             with self.connect() as db:
                 db.execute(
                     """
-                    INSERT INTO lessons VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO lessons (
+                        lesson_id, student_id, lesson_date, topic, status, payload,
+                        updated_at, subject, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(lesson_id) DO UPDATE SET
                       student_id=excluded.student_id,
                       lesson_date=excluded.lesson_date,
                       topic=excluded.topic,
                       status=excluded.status,
                       payload=excluded.payload,
-                      updated_at=excluded.updated_at
+                      updated_at=excluded.updated_at,
+                      subject=excluded.subject,
+                      created_at=excluded.created_at
                     """,
                     (
                         lesson.lesson_id,
@@ -100,6 +82,8 @@ class LessonStore:
                         lesson.status.value,
                         payload,
                         lesson.updated_at.isoformat(),
+                        lesson.subject,
+                        lesson.created_at.isoformat(),
                     ),
                 )
 
@@ -157,9 +141,7 @@ class LessonStore:
     def get(self, lesson_id: str) -> Lesson | None:
         def operation():
             with self.connect() as db:
-                return db.execute(
-                    "SELECT payload FROM lessons WHERE lesson_id=?", (lesson_id,)
-                ).fetchone()
+                return db.execute("SELECT payload FROM lessons WHERE lesson_id=?", (lesson_id,)).fetchone()
 
         row = self._retry(operation)
         return Lesson.model_validate_json(row["payload"]) if row else None

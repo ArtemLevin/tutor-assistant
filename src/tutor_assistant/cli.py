@@ -22,6 +22,10 @@ def parser() -> argparse.ArgumentParser:
     doctor = commands.add_parser("doctor", help="Проверить всё окружение приложения")
     doctor.add_argument("--json", action="store_true", help="Вывести машиночитаемый JSON")
     doctor.add_argument("--strict", action="store_true", help="Вернуть код 1 при обязательных ошибках")
+    commands.add_parser(
+        "content-index",
+        help="Проиндексировать существующие локальные занятия, аудио и транскрипты",
+    )
     create = commands.add_parser("create", help="Создать занятие")
     create.add_argument("--student", required=True)
     create.add_argument("--subject", required=True)
@@ -80,6 +84,12 @@ def main() -> None:
 
         print(json.dumps(inspect_latex_environment(config.latex).to_dict(), ensure_ascii=False, indent=2))
         return
+    if args.command == "content-index":
+        from .content import StudentContentService
+
+        report = StudentContentService(config.workspace).index_existing_lessons()
+        print(report.model_dump_json(indent=2))
+        raise SystemExit(1 if report.errors else 0)
     if args.command == "compile":
         from .latex import LatexCompiler
 
