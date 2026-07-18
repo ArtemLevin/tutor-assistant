@@ -100,6 +100,27 @@ class TranscriptRevision(BaseModel):
         return value
 
 
+class TranscriptDraft(BaseModel):
+    lesson_id: str
+    base_revision_number: int | None = Field(default=None, ge=1)
+    content: str
+    content_sha256: str = Field(min_length=64, max_length=64)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("lesson_id")
+    @classmethod
+    def validate_lesson_id(cls, value: str) -> str:
+        return _validate_lesson_id(value)
+
+    @field_validator("content_sha256")
+    @classmethod
+    def validate_sha256(cls, value: str) -> str:
+        value = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("content_sha256 must be a 64-character hexadecimal digest")
+        return value
+
+
 class LessonFilters(BaseModel):
     student_id: str | None = None
     subject: str | None = None
@@ -131,6 +152,7 @@ class LessonContent(BaseModel):
     lesson: Lesson
     assets: list[LessonAsset] = Field(default_factory=list)
     transcript: TranscriptRevision | None = None
+    draft: TranscriptDraft | None = None
     deleted_at: datetime | None = None
 
 

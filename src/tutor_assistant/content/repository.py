@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from time import sleep
 from typing import TypeVar
 
-from ..domain import Lesson
+from ..domain import Lesson, Student
 from .migrations import apply_migrations
 from .models import (
     AssetKind,
@@ -15,6 +15,7 @@ from .models import (
     LessonContent,
     LessonFilters,
     LessonPage,
+    TranscriptDraft,
     TranscriptRevision,
 )
 
@@ -27,6 +28,20 @@ class ContentNotFoundError(LookupError):
 
 class ContentConflictError(ValueError):
     pass
+
+
+class LessonEditConflictError(ContentConflictError):
+    pass
+
+
+class TranscriptEditConflictError(ContentConflictError):
+    def __init__(self, expected: int | None, current: int | None) -> None:
+        self.expected = expected
+        self.current = current
+        super().__init__(
+            "Транскрипт уже изменён в другом окне: "
+            f"ожидалась версия {expected or 'без версии'}, текущая — {current or 'без версии'}"
+        )
 
 
 class DuplicateAssetError(ContentConflictError):
@@ -82,6 +97,10 @@ class StudentContentRepository:
     @staticmethod
     def _revision_from_row(row: sqlite3.Row) -> TranscriptRevision:
         return TranscriptRevision.model_validate(dict(row))
+
+    @staticmethod
+    def _draft_from_row(row: sqlite3.Row) -> TranscriptDraft:
+        return TranscriptDraft.model_validate(dict(row))
 
     def upsert_lesson(self, lesson: Lesson) -> None:
         payload = lesson.model_dump_json()
@@ -145,8 +164,60 @@ class StudentContentRepository:
             lesson=self._lesson_from_row(row),
             assets=self.list_assets(lesson_id, include_deleted=include_deleted),
             transcript=self.current_transcript(lesson_id, include_deleted=include_deleted),
+            draft=self.get_transcript_draft(lesson_id),
             deleted_at=row["deleted_at"],
         )
+
+    def update_lesson_metadata(
+        self,
+        lesson_id: str,
+        *,
+        student: Student,
+        subject: str,
+        lesson_date: date,
+        topic: str,
+        expected_updated_at: datetime,
+    ) -> Lesson:
+        def operation() -> Lesson:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT payload, updated_at FROM lessons WHERE lesson_id=? AND deleted_at IS NULL",
+                    (lesson_id,),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+                current = self._lesson_from_row(row)
+                if current.updated_at != expected_updated_at:
+                    raise LessonEditConflictError(
+                        "Карточка занятия уже изменена в другом окне. Обновите данные и повторите."
+                    )
+                current.student = student
+                current.subject = subject
+                current.lesson_date = lesson_date
+                current.topic = topic
+                current.mark_generated_materials_stale()
+                current.updated_at = datetime.now(UTC)
+                db.execute(
+                    """
+                    UPDATE lessons SET student_id=?, lesson_date=?, topic=?, status=?, payload=?,
+                        updated_at=?, subject=?, created_at=? WHERE lesson_id=?
+                    """,
+                    (
+                        current.student.id,
+                        current.lesson_date.isoformat(),
+                        current.topic,
+                        current.status.value,
+                        current.model_dump_json(),
+                        current.updated_at.isoformat(),
+                        current.subject,
+                        current.created_at.isoformat(),
+                        current.lesson_id,
+                    ),
+                )
+                return current
+
+        return self._retry(operation)
 
     def list_lessons(self, filters: LessonFilters | None = None) -> LessonPage:
         filters = filters or LessonFilters()
@@ -482,6 +553,152 @@ class StudentContentRepository:
                 ).fetchone()
 
         return self._revision_from_row(self._retry(operation))
+
+    def commit_transcript_revision(
+        self,
+        revision: TranscriptRevision,
+        *,
+        expected_revision_number: int | None,
+        verified_transcript: str,
+    ) -> tuple[TranscriptRevision, Lesson]:
+        """Append a revision and update lesson state under one optimistic transaction."""
+
+        def operation() -> tuple[sqlite3.Row, Lesson]:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                lesson_row = db.execute(
+                    "SELECT payload FROM lessons WHERE lesson_id=? AND deleted_at IS NULL",
+                    (revision.lesson_id,),
+                ).fetchone()
+                if lesson_row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено: {revision.lesson_id}")
+                current_number = db.execute(
+                    "SELECT MAX(revision_number) FROM transcript_revisions WHERE lesson_id=?",
+                    (revision.lesson_id,),
+                ).fetchone()[0]
+                current_number = int(current_number) if current_number is not None else None
+                if current_number != expected_revision_number:
+                    raise TranscriptEditConflictError(expected_revision_number, current_number)
+                number = (current_number or 0) + 1
+                cursor = db.execute(
+                    """
+                    INSERT INTO transcript_revisions (
+                        lesson_id, revision_number, relative_path, content,
+                        content_sha256, created_by, created_at, deleted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        revision.lesson_id,
+                        number,
+                        revision.relative_path,
+                        revision.content,
+                        revision.content_sha256,
+                        revision.created_by,
+                        revision.created_at.isoformat(),
+                    ),
+                )
+                lesson = self._lesson_from_row(lesson_row)
+                lesson.artifacts.verified_transcript = verified_transcript
+                lesson.mark_generated_materials_stale(transcript_revision=number)
+                lesson.updated_at = datetime.now(UTC)
+                db.execute(
+                    """
+                    UPDATE lessons SET status=?, payload=?, updated_at=? WHERE lesson_id=?
+                    """,
+                    (
+                        lesson.status.value,
+                        lesson.model_dump_json(),
+                        lesson.updated_at.isoformat(),
+                        lesson.lesson_id,
+                    ),
+                )
+                row = db.execute(
+                    """
+                    SELECT id, lesson_id, revision_number, relative_path, content,
+                           content_sha256, created_by, created_at, deleted_at
+                    FROM transcript_revisions WHERE id=?
+                    """,
+                    (cursor.lastrowid,),
+                ).fetchone()
+                return row, lesson
+
+        row, lesson = self._retry(operation)
+        return self._revision_from_row(row), lesson
+
+    def save_transcript_draft(self, draft: TranscriptDraft) -> TranscriptDraft:
+        def operation() -> sqlite3.Row:
+            with self.connect() as db:
+                if not db.execute(
+                    "SELECT 1 FROM lessons WHERE lesson_id=? AND deleted_at IS NULL",
+                    (draft.lesson_id,),
+                ).fetchone():
+                    raise ContentNotFoundError(f"Занятие не найдено: {draft.lesson_id}")
+                db.execute(
+                    """
+                    INSERT INTO transcript_drafts (
+                        lesson_id, base_revision_number, content, content_sha256, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(lesson_id) DO UPDATE SET
+                        base_revision_number=excluded.base_revision_number,
+                        content=excluded.content,
+                        content_sha256=excluded.content_sha256,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        draft.lesson_id,
+                        draft.base_revision_number,
+                        draft.content,
+                        draft.content_sha256,
+                        draft.updated_at.isoformat(),
+                    ),
+                )
+                return db.execute(
+                    """
+                    SELECT lesson_id, base_revision_number, content, content_sha256, updated_at
+                    FROM transcript_drafts WHERE lesson_id=?
+                    """,
+                    (draft.lesson_id,),
+                ).fetchone()
+
+        return self._draft_from_row(self._retry(operation))
+
+    def get_transcript_draft(self, lesson_id: str) -> TranscriptDraft | None:
+        def operation() -> sqlite3.Row | None:
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT lesson_id, base_revision_number, content, content_sha256, updated_at
+                    FROM transcript_drafts WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+
+        row = self._retry(operation)
+        return self._draft_from_row(row) if row else None
+
+    def delete_transcript_draft(
+        self,
+        lesson_id: str,
+        *,
+        content_sha256: str | None = None,
+        base_revision_number: int | None = None,
+        conditional: bool = False,
+    ) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                if conditional:
+                    db.execute(
+                        """
+                        DELETE FROM transcript_drafts
+                        WHERE lesson_id=? AND content_sha256=?
+                          AND base_revision_number IS ?
+                        """,
+                        (lesson_id, content_sha256, base_revision_number),
+                    )
+                else:
+                    db.execute("DELETE FROM transcript_drafts WHERE lesson_id=?", (lesson_id,))
+
+        self._retry(operation)
 
     def list_transcript_revisions(
         self, lesson_id: str, *, include_deleted: bool = False

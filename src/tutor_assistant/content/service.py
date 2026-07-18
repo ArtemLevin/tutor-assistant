@@ -4,11 +4,12 @@ import hashlib
 import mimetypes
 import shutil
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
-from ..domain import JobStatus, Lesson
+from ..domain import JobStatus, Lesson, Student
 from .importing import (
     DuplicateImportError,
     ImportCancellationToken,
@@ -24,6 +25,7 @@ from .models import (
     LessonContent,
     LessonFilters,
     LessonPage,
+    TranscriptDraft,
     TranscriptRevision,
     _validate_lesson_id,
 )
@@ -37,6 +39,7 @@ from .repository import (
 AUDIO_IMPORT_SUFFIXES = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
 TRANSCRIPT_IMPORT_SUFFIXES = {".txt", ".md", ".markdown"}
 MAX_TRANSCRIPT_IMPORT_BYTES = 25 * 1024 * 1024
+_EXPECTED_REVISION_UNSET = object()
 
 
 class ContentPathError(ValueError):
@@ -105,6 +108,33 @@ class StudentContentService:
         self.repository.upsert_lesson(lesson)
         return lesson
 
+    def update_lesson_metadata(
+        self,
+        lesson_id: str,
+        *,
+        student: Student,
+        subject: str,
+        lesson_date: date,
+        topic: str,
+        expected_updated_at: datetime,
+    ) -> Lesson:
+        subject = subject.strip()
+        topic = topic.strip()
+        if not subject:
+            raise ValueError("Укажите предмет")
+        if not topic:
+            raise ValueError("Укажите тему занятия")
+        lesson = self.repository.update_lesson_metadata(
+            lesson_id,
+            student=student,
+            subject=subject,
+            lesson_date=lesson_date,
+            topic=topic,
+            expected_updated_at=expected_updated_at,
+        )
+        self._atomic_write(self._lesson_json_path(lesson_id), lesson.model_dump_json(indent=2))
+        return lesson
+
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
         return self.repository.get_content(lesson_id, include_deleted=include_deleted)
 
@@ -149,8 +179,7 @@ class StudentContentService:
             raise ImportValidationError("Для постановки в очередь выберите аудиофайл")
         if request.enqueue_audio and transcript_source is not None:
             raise ImportValidationError(
-                "Нельзя одновременно импортировать готовый транскрипт "
-                "и ставить аудио в очередь"
+                "Нельзя одновременно импортировать готовый транскрипт и ставить аудио в очередь"
             )
         if self.repository.get_lesson(lesson_id, include_deleted=True):
             raise ContentConflictError(f"Занятие уже существует: {lesson_id}")
@@ -187,8 +216,11 @@ class StudentContentService:
             assets: list[LessonAsset] = []
 
             if audio_source:
-                audio_relative = Path("lessons") / lesson_id / "recording" / (
-                    f"imported_audio{audio_source.suffix.casefold()}"
+                audio_relative = (
+                    Path("lessons")
+                    / lesson_id
+                    / "recording"
+                    / (f"imported_audio{audio_source.suffix.casefold()}")
                 )
                 staged_audio = staging_directory / "recording" / audio_relative.name
                 audio_sha256, audio_size = self._copy_import_file(
@@ -211,17 +243,14 @@ class StudentContentService:
                         lesson_id=lesson_id,
                         kind=AssetKind.AUDIO,
                         relative_path=audio_relative.as_posix(),
-                        media_type=mimetypes.guess_type(audio_target.name)[0]
-                        or "application/octet-stream",
+                        media_type=mimetypes.guess_type(audio_target.name)[0] or "application/octet-stream",
                         size_bytes=audio_size,
                         sha256=audio_sha256,
                     )
                 )
 
             if transcript_source:
-                transcript_relative = (
-                    Path("lessons") / lesson_id / "transcript" / "imported_transcript.txt"
-                )
+                transcript_relative = Path("lessons") / lesson_id / "transcript" / "imported_transcript.txt"
                 staged_transcript = staging_directory / "transcript" / transcript_relative.name
                 self._copy_import_file(
                     transcript_source,
@@ -388,15 +417,22 @@ class StudentContentService:
         *,
         path: Path | str | None = None,
         created_by: str = "teacher",
+        expected_revision_number: int | None | object = _EXPECTED_REVISION_UNSET,
     ) -> TranscriptRevision:
         lesson = self.repository.get_lesson(lesson_id, include_deleted=True)
         if lesson is None:
             raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
-        target = path or Path("lessons") / lesson_id / "transcript" / "transcript_verified.txt"
+        current = self.repository.current_transcript(lesson_id, include_deleted=True)
+        if expected_revision_number is _EXPECTED_REVISION_UNSET:
+            expected_revision_number = current.revision_number if current else None
+        target = (
+            path
+            or (current.relative_path if current else None)
+            or Path("lessons") / lesson_id / "transcript" / "transcript_verified.txt"
+        )
         resolved, relative = self._resolve_path(target)
         normalized = text.rstrip() + "\n"
-        self._atomic_write(resolved, normalized)
-        revision = self.repository.add_transcript_revision(
+        revision, updated_lesson = self.repository.commit_transcript_revision(
             TranscriptRevision(
                 lesson_id=lesson_id,
                 revision_number=1,
@@ -404,11 +440,65 @@ class StudentContentService:
                 content=normalized,
                 content_sha256=_sha256_text(normalized),
                 created_by=created_by,
+            ),
+            expected_revision_number=expected_revision_number,
+            verified_transcript=str(resolved),
+        )
+        # SQLite is the durable source of truth. Files are refreshed only after the
+        # optimistic transaction succeeds, so a conflict can never overwrite them.
+        self._atomic_write(resolved, normalized)
+        self._atomic_write(
+            self._lesson_json_path(lesson_id),
+            updated_lesson.model_dump_json(indent=2),
+        )
+        self.repository.delete_transcript_draft(
+            lesson_id,
+            content_sha256=_sha256_text(text),
+            base_revision_number=expected_revision_number,
+            conditional=True,
+        )
+        return revision
+
+    def save_transcript_draft(
+        self,
+        lesson_id: str,
+        text: str,
+        *,
+        base_revision_number: int | None,
+    ) -> TranscriptDraft:
+        return self.repository.save_transcript_draft(
+            TranscriptDraft(
+                lesson_id=lesson_id,
+                base_revision_number=base_revision_number,
+                content=text,
+                content_sha256=_sha256_text(text),
             )
         )
-        lesson.artifacts.verified_transcript = str(resolved)
-        self.update_lesson(lesson)
-        return revision
+
+    def discard_transcript_draft(self, lesson_id: str) -> None:
+        self.repository.delete_transcript_draft(lesson_id)
+
+    def list_transcript_revisions(self, lesson_id: str) -> list[TranscriptRevision]:
+        if not self.repository.get_lesson(lesson_id):
+            raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+        return self.repository.list_transcript_revisions(lesson_id)
+
+    def compare_transcript_revisions(self, first_id: int, second_id: int) -> str:
+        first = self.repository.get_transcript_revision(first_id)
+        second = self.repository.get_transcript_revision(second_id)
+        if first is None or second is None or first.lesson_id != second.lesson_id:
+            raise ContentNotFoundError("Версии транскрипта не найдены в одном занятии")
+        return (
+            "".join(
+                unified_diff(
+                    first.content.splitlines(keepends=True),
+                    second.content.splitlines(keepends=True),
+                    fromfile=f"версия {first.revision_number}",
+                    tofile=f"версия {second.revision_number}",
+                )
+            )
+            or "Версии совпадают\n"
+        )
 
     def delete_transcript_revision(self, revision_id: int) -> None:
         self.repository.set_transcript_deleted(revision_id, deleted=True)
@@ -416,7 +506,13 @@ class StudentContentService:
     def restore_transcript_revision(self, revision_id: int) -> None:
         self.repository.set_transcript_deleted(revision_id, deleted=False)
 
-    def revert_transcript(self, revision_id: int, *, created_by: str = "teacher") -> TranscriptRevision:
+    def revert_transcript(
+        self,
+        revision_id: int,
+        *,
+        expected_revision_number: int | None | object = _EXPECTED_REVISION_UNSET,
+        created_by: str = "teacher-restore",
+    ) -> TranscriptRevision:
         revision = self.repository.get_transcript_revision(revision_id, include_deleted=True)
         if revision is None:
             raise ContentNotFoundError(f"Версия транскрипта не найдена: {revision_id}")
@@ -425,6 +521,7 @@ class StudentContentService:
             revision.content,
             path=revision.relative_path,
             created_by=created_by,
+            expected_revision_number=expected_revision_number,
         )
 
     def index_existing_lessons(self) -> IndexReport:

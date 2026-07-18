@@ -13,12 +13,15 @@ from .models import (
     LessonContent,
     LessonFilters,
     LessonPage,
+    TranscriptDraft,
     TranscriptRevision,
 )
 from .repository import (
     ContentConflictError,
     ContentNotFoundError,
+    LessonEditConflictError,
     StudentContentRepository,
+    TranscriptEditConflictError,
 )
 from .service import ContentPathError, StudentContentService
 
@@ -38,7 +41,10 @@ __all__ = [
     "LessonImportRequest",
     "LessonImportResult",
     "LessonPage",
+    "LessonEditConflictError",
     "StudentContentRepository",
     "StudentContentService",
+    "TranscriptDraft",
+    "TranscriptEditConflictError",
     "TranscriptRevision",
 ]

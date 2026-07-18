@@ -26,6 +26,11 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class GeneratedMaterial(StrEnum):
+    PDF = "pdf"
+    WEB = "web"
+
+
 ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.DRAFT: {JobStatus.RECORDING, JobStatus.RECORDED, JobStatus.TRANSCRIBING, JobStatus.FAILED},
     JobStatus.RECORDING: {JobStatus.RECORDED, JobStatus.FAILED},
@@ -130,6 +135,8 @@ class Lesson(BaseModel):
     pipeline: PipelineOptions = Field(default_factory=PipelineOptions)
     publication: PublicationInfo | None = None
     latex: LatexState = Field(default_factory=LatexState)
+    stale_materials: list[GeneratedMaterial] = Field(default_factory=list)
+    materials_stale_since_revision: int | None = None
     error: str | None = None
 
     def transition(self, status: JobStatus, error: str | None = None, *, force: bool = False) -> None:
@@ -138,6 +145,16 @@ class Lesson(BaseModel):
         self.status = status
         self.updated_at = datetime.now(UTC)
         self.error = error
+
+    def mark_generated_materials_stale(self, *, transcript_revision: int | None = None) -> None:
+        stale = set(self.stale_materials)
+        if self.latex.tex_path or self.latex.pdf_path:
+            stale.add(GeneratedMaterial.PDF)
+        if self.publication is not None and self.pipeline.web:
+            stale.add(GeneratedMaterial.WEB)
+        self.stale_materials = sorted(stale, key=lambda item: item.value)
+        if stale and transcript_revision is not None:
+            self.materials_stale_since_revision = transcript_revision
 
     @property
     def date_slug(self) -> str:

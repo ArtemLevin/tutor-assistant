@@ -137,9 +137,25 @@ def _content_indexes(db: sqlite3.Connection) -> None:
         db.execute(statement)
 
 
+def _content_editing(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transcript_drafts (
+            lesson_id TEXT PRIMARY KEY,
+            base_revision_number INTEGER,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id)
+        )
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
+    Migration(3, "student_content_editing", _content_editing),
 )
 
 
