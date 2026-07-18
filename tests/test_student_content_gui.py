@@ -128,6 +128,8 @@ def test_archive_accessibility_filters_delete_and_restore(
     assert page.table.rowCount() == 1
 
     monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
+    page.table.selectRow(0)
+    application.processEvents()
     page.delete_shortcut.activated.emit()
     assert service.list_lessons().total == 0
 
