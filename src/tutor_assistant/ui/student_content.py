@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TypeAlias
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QShowEvent
+from PySide6.QtGui import QBrush, QColor, QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,8 +28,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..content import LessonContent, LessonFilters, LessonPage, StudentContentService
-from ..content_browser import content_file_rows, format_size, pagination_text, status_label
+from ..content_browser import (
+    content_file_rows,
+    format_size,
+    is_audio_path,
+    pagination_text,
+    resolve_known_path,
+    status_label,
+)
 from ..domain import JobStatus, Student
+from ..playback import PlaybackController, SegmentLoadResult, load_playback_segments
+from .playback import PlaybackPanel, QtPlaybackBackend
 from .theme import set_button_kind
 
 BackgroundRunner: TypeAlias = Callable[
@@ -54,12 +63,16 @@ class StudentContentPage(QWidget):
         service: StudentContentService,
         students: list[Student],
         run_background: BackgroundRunner,
+        playback_controller: PlaybackController,
+        playback_backend: QtPlaybackBackend,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.service = service
         self.workspace = service.workspace
         self.run_background = run_background
+        self.playback_controller = playback_controller
+        self.playback_backend = playback_backend
         self.page_size = 50
         self.offset = 0
         self.total = 0
@@ -192,9 +205,14 @@ class StudentContentPage(QWidget):
         details_layout = QVBoxLayout(details)
         details_layout.setContentsMargins(18, 16, 18, 16)
         details_layout.setSpacing(10)
+        details_header = QHBoxLayout()
         details_title = QLabel("Содержимое занятия")
         details_title.setObjectName("tileTitle")
-        details_layout.addWidget(details_title)
+        details_header.addWidget(details_title, 1)
+        self.close_details_button = set_button_kind(QPushButton("Закрыть карточку"), "ghost")
+        self.close_details_button.clicked.connect(self.close_details)
+        details_header.addWidget(self.close_details_button)
+        details_layout.addLayout(details_header)
         metadata_form = QFormLayout()
         metadata_form.setVerticalSpacing(6)
         self.metadata: dict[str, QLabel] = {}
@@ -213,6 +231,13 @@ class StudentContentPage(QWidget):
             self.metadata[key] = value
             metadata_form.addRow(label, value)
         details_layout.addLayout(metadata_form)
+
+        self.playback_panel = PlaybackPanel(
+            self.playback_controller,
+            self.playback_backend,
+        )
+        self.playback_panel.status_changed.connect(self.status_changed)
+        details_layout.addWidget(self.playback_panel)
 
         files_header = QHBoxLayout()
         files_title = QLabel("Файлы")
@@ -254,6 +279,10 @@ class StudentContentPage(QWidget):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self.ensure_loaded()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self.playback_panel.stop(clear_source=True)
+        super().hideEvent(event)
 
     def set_students(self, students: list[Student]) -> None:
         selected = self.student_filter.currentData() if hasattr(self, "student_filter") else None
@@ -454,6 +483,8 @@ class StudentContentPage(QWidget):
         lesson_id = str(items[0].data(Qt.UserRole))
         if not lesson_id:
             return
+        if lesson_id != self._selected_lesson_id:
+            self.playback_panel.stop(clear_source=True)
         self._selected_lesson_id = lesson_id
         self._detail_request += 1
         request_id = self._detail_request
@@ -477,6 +508,28 @@ class StudentContentPage(QWidget):
         self.metadata["updated"].setText(lesson.updated_at.astimezone().strftime("%d.%m.%Y %H:%M"))
 
         rows = content_file_rows(result, self.workspace)
+        audio_paths = [
+            file.absolute_path
+            for file in rows
+            if file.absolute_path and file.exists and is_audio_path(file.absolute_path)
+        ]
+        self.playback_panel.set_tracks(audio_paths)
+        segment_result = None
+        if lesson.artifacts.segments_json:
+            segment_path, _display, state = resolve_known_path(
+                lesson.artifacts.segments_json,
+                self.workspace,
+            )
+            if segment_path and state == "available":
+                segment_result = load_playback_segments(segment_path)
+            elif state == "outside_workspace":
+                segment_result = SegmentLoadResult(error="Файл сегментов находится вне каталога данных")
+            else:
+                segment_result = SegmentLoadResult(error="Файл сегментов отсутствует")
+        self.playback_panel.set_segments(
+            segment_result.segments if segment_result else (),
+            segment_result.error if segment_result else None,
+        )
         self.files_table.blockSignals(True)
         self.files_table.setRowCount(len(rows))
         for row_index, file in enumerate(rows):
@@ -532,11 +585,24 @@ class StudentContentPage(QWidget):
             self.transcript_state.setStyleSheet("")
         if hasattr(self, "open_file_button"):
             self.open_file_button.setEnabled(False)
+            self.open_file_button.setText("Открыть файл")
+        if hasattr(self, "playback_panel"):
+            self.playback_panel.reset()
+
+    def close_details(self) -> None:
+        self.playback_panel.stop(clear_source=True)
+        self.table.clearSelection()
+        self._selected_lesson_id = None
+        self._detail_request += 1
+        self._clear_details()
 
     def _file_selection_changed(self) -> None:
         items = self.files_table.selectedItems()
         path = items[0].data(Qt.UserRole) if items else None
         self.open_file_button.setEnabled(bool(path))
+        self.open_file_button.setText(
+            "Воспроизвести" if path and is_audio_path(Path(str(path))) else "Открыть файл"
+        )
 
     def open_selected_file(self) -> None:
         items = self.files_table.selectedItems()
@@ -547,4 +613,7 @@ class StudentContentPage(QWidget):
             return
         path = Path(str(value))
         if path.is_file():
-            self.file_open_requested.emit(path)
+            if is_audio_path(path):
+                self.playback_panel.play_path(path)
+            else:
+                self.file_open_requested.emit(path)

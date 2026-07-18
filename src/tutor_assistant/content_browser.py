@@ -71,7 +71,7 @@ def pagination_text(page: LessonPage) -> str:
     return f"{start}–{end} из {page.total}"
 
 
-def _resolve_known_path(value: str, workspace: Path) -> tuple[Path | None, str, str]:
+def resolve_known_path(value: str, workspace: Path) -> tuple[Path | None, str, str]:
     raw = value.strip()
     if not raw:
         return None, "", "missing"
@@ -101,7 +101,7 @@ def content_file_rows(content: LessonContent, workspace: Path) -> list[ContentFi
     ) -> None:
         if not value:
             return
-        absolute, display, state = _resolve_known_path(value, workspace)
+        absolute, display, state = resolve_known_path(value, workspace)
         if not display:
             return
         measured_size = size_bytes
