@@ -31,7 +31,7 @@ dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
 
 [project.scripts]
 tutor-assistant = "tutor_assistant.cli:main"
-tutor-assistant-gui = "tutor_assistant.ui.app:main"
+tutor-assistant-gui = "tutor_assistant.ui.concurrent_app:main"
 tutor-assistant-recover = "tutor_assistant.recording.recovery:main"
 
 [tool.hatch.build.targets.wheel]
