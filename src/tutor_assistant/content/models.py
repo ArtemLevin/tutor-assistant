@@ -259,6 +259,51 @@ class StorageUsage(BaseModel):
         return self.lessons_bytes + self.trash_bytes + self.temporary_bytes + self.database_bytes
 
 
+class DatabaseBackupManifest(BaseModel):
+    format_version: int = 1
+    backup_id: str
+    created_at: datetime
+    reason: str
+    database_file: str
+    source_database_name: str
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(min_length=64, max_length=64)
+    schema_version: int = Field(ge=0)
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_backup_sha256(cls, value: str) -> str:
+        value = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("sha256 must be a 64-character hexadecimal digest")
+        return value
+
+
+class DatabaseBackupInfo(BaseModel):
+    path: Path
+    manifest_path: Path
+    manifest: DatabaseBackupManifest
+
+
+class DatabaseBackupVerification(BaseModel):
+    path: Path
+    valid: bool
+    errors: list[str] = Field(default_factory=list)
+    manifest: DatabaseBackupManifest | None = None
+
+
+class DatabaseBackupRetentionResult(BaseModel):
+    removed: list[Path] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class DatabaseRestoreResult(BaseModel):
+    restored_from: Path
+    safety_backup: DatabaseBackupInfo | None = None
+    raw_safety_path: Path | None = None
+    verified: bool = True
+
+
 class ContentIntegrityReport(BaseModel):
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     database_ok: bool = True
@@ -301,6 +346,11 @@ class ContentMaintenanceResult(BaseModel):
     rebuilt_search_documents: int | None = Field(default=None, ge=0)
     purged_lessons: list[str] = Field(default_factory=list)
     temporary_cleanup: TemporaryCleanupResult = Field(default_factory=TemporaryCleanupResult)
+    backup: DatabaseBackupInfo | None = None
+    backup_retention: DatabaseBackupRetentionResult = Field(
+        default_factory=DatabaseBackupRetentionResult
+    )
+    skip_reason: str | None = None
     errors: list[str] = Field(default_factory=list)
     report: ContentIntegrityReport | None = None
 

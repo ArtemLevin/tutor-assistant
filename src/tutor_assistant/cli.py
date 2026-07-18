@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -37,6 +38,20 @@ def parser() -> argparse.ArgumentParser:
     content_doctor.add_argument("--import-legacy", action="store_true")
     content_doctor.add_argument("--purge-expired", action="store_true")
     content_doctor.add_argument("--strict", action="store_true")
+    content_backup = commands.add_parser(
+        "content-backup",
+        help="Создать, проверить или восстановить резервную копию SQLite",
+    )
+    backup_action = content_backup.add_mutually_exclusive_group()
+    backup_action.add_argument("--create", action="store_true")
+    backup_action.add_argument("--verify", type=Path)
+    backup_action.add_argument("--restore", type=Path)
+    backup_action.add_argument("--prune", action="store_true")
+    content_backup.add_argument(
+        "--yes",
+        action="store_true",
+        help="Подтвердить восстановление основной базы данных",
+    )
     create = commands.add_parser("create", help="Создать занятие")
     create.add_argument("--student", required=True)
     create.add_argument("--subject", required=True)
@@ -118,7 +133,7 @@ def main() -> None:
                 temporary_retention=timedelta(hours=config.content.temporary_retention_hours),
             )
         cleanup = maintenance.temporary_cleanup if maintenance and args.cleanup_temp else None
-        rebuilt = service.rebuild_search_index() if args.rebuild_search else None
+        rebuilt = service.coordinated_rebuild_search_index() if args.rebuild_search else None
         report = service.inspect_content_integrity()
         if args.json:
             payload = report.model_dump(mode="json")
@@ -165,6 +180,53 @@ def main() -> None:
         if args.strict and (not report.healthy or bool(maintenance and maintenance.errors)):
             raise SystemExit(1)
         return
+    if args.command == "content-backup":
+        from .content import StudentContentService
+
+        if args.restore and not args.yes:
+            raise SystemExit("Для восстановления укажите --yes")
+        try:
+            service = StudentContentService(
+                config.workspace,
+                trash_retention_days=config.content.trash_retention_days,
+            )
+        except sqlite3.DatabaseError:
+            if not args.restore:
+                raise
+            payload = StudentContentService.restore_database_backup_offline(
+                config.workspace,
+                args.restore,
+            )
+            recovered = StudentContentService(
+                config.workspace,
+                trash_retention_days=config.content.trash_retention_days,
+            )
+            recovered.repair_content_integrity()
+            print(payload.model_dump_json(indent=2))
+            return
+        if args.create:
+            payload: object = service.create_database_backup(reason="manual-cli")
+        elif args.verify:
+            payload = service.verify_database_backup(args.verify)
+        elif args.restore:
+            payload = service.restore_database_backup(args.restore)
+        elif args.prune:
+            payload = service.prune_database_backups(config.content.backup_retention_count)
+        else:
+            payload = service.list_database_backups()
+        if isinstance(payload, list):
+            print(
+                json.dumps(
+                    [item.model_dump(mode="json") for item in payload],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(payload.model_dump_json(indent=2))
+        if args.verify and not payload.valid:
+            raise SystemExit(1)
+        return
     if args.command == "compile":
         from .latex import LatexCompiler
 
@@ -192,11 +254,12 @@ def main() -> None:
         from .latex import RemoteLatexService
 
         lesson = Lesson.read_json(args.lesson_json)
-        result = RemoteLatexService(config.repository, config.latex).compile_lesson(
-            lesson,
-            force=args.force,
-            cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
-        )
+        with pipeline.content_service.activity("latex-compilation", lesson_id=lesson.lesson_id):
+            result = RemoteLatexService(config.repository, config.latex).compile_lesson(
+                lesson,
+                force=args.force,
+                cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
+            )
         pipeline.save_state(
             result.lesson,
             "latex",

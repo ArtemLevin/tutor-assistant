@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..config import LatexConfig, RepositoryConfig
 from ..domain import JobStatus, Lesson
-from ..publisher import run_git
+from ..publisher import GitError, run_git
 from .compiler import LatexCompiler
 from .models import CompilationResult
 
@@ -28,6 +28,28 @@ class RemoteCompilationResult:
     commit: str
 
 
+LATEX_MONITOR_STATUSES = {
+    JobStatus.PUBLISHED,
+    JobStatus.GENERATED_TEX,
+    JobStatus.COMPILING_PDF,
+    JobStatus.COMPILE_FAILED,
+    JobStatus.PDF_REVIEW_REQUIRED,
+}
+
+
+def _is_missing_remote_ref(error: GitError) -> bool:
+    message = str(error).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "couldn't find remote ref",
+            "could not find remote ref",
+            "no such remote ref",
+            "remote ref does not exist",
+        )
+    )
+
+
 class RemoteLatexService:
     def __init__(self, repository: RepositoryConfig, latex: LatexConfig) -> None:
         self.repository = repository
@@ -39,7 +61,12 @@ class RemoteLatexService:
             return None
         branch = lesson.publication.branch
         remote_ref = f"{self.repository.remote}/{branch}"
-        run_git(self.repo, "fetch", self.repository.remote, branch)
+        try:
+            run_git(self.repo, "fetch", self.repository.remote, branch)
+        except GitError as exc:
+            if _is_missing_remote_ref(exc):
+                return None
+            raise
         handbook = f"{lesson.publication.repository_path}/handbook"
         names = run_git(self.repo, "ls-tree", "-r", "--name-only", remote_ref, handbook).splitlines()
         candidates = sorted(name for name in names if name.lower().endswith(".tex"))
@@ -51,6 +78,8 @@ class RemoteLatexService:
 
     def is_ready(self, lesson: Lesson) -> bool:
         if not self.latex.enabled or not lesson.pipeline.compile_pdf:
+            return False
+        if lesson.status not in LATEX_MONITOR_STATUSES:
             return False
         if not lesson.publication or lesson.latex.attempt >= self.latex.max_attempts:
             return False

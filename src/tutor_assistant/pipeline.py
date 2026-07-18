@@ -68,6 +68,10 @@ class LessonPipeline:
         return stored
 
     def transcribe(self, lesson: Lesson, audio: Path) -> Lesson:
+        with self.content_service.activity("transcription", lesson_id=lesson.lesson_id):
+            return self._transcribe(lesson, audio)
+
+    def _transcribe(self, lesson: Lesson, audio: Path) -> Lesson:
         directory = self.lesson_dir(lesson)
         try:
             lesson.transition(JobStatus.TRANSCRIBING)
@@ -145,6 +149,10 @@ class LessonPipeline:
         self._replace_lesson(lesson, stored)
 
     def publish(self, lesson: Lesson) -> PublicationResult:
+        with self.content_service.activity("publication", lesson_id=lesson.lesson_id):
+            return self._publish(lesson)
+
+    def _publish(self, lesson: Lesson) -> PublicationResult:
         content = self.content_service.get_lesson(lesson.lesson_id)
         current = content.lesson
         target = LessonPublisher(self.config.repository).publish(

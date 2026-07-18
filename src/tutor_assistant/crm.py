@@ -16,6 +16,7 @@ from typing import Protocol
 from pydantic import BaseModel, Field, field_validator
 
 from .domain import Student
+from .sqlite_utils import ClosingConnection
 
 
 class SecretCodec(Protocol):
@@ -203,7 +204,7 @@ class CrmStore:
         self._initialize()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10)
+        connection = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
