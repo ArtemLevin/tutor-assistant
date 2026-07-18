@@ -755,7 +755,12 @@ class StudentContentPage(QWidget):
     def open_metadata_editor(self) -> None:
         if self._current_content is None or self.metadata_dialog is not None:
             return
-        dialog = MetadataEditDialog(self._current_content.lesson, self.students, self)
+        dialog = MetadataEditDialog(
+            self._current_content.lesson,
+            self.students,
+            self._current_content.row_version,
+            self,
+        )
         self.metadata_dialog = dialog
         dialog.save_requested.connect(lambda edit, current=dialog: self._save_metadata(current, edit))
         dialog.finished.connect(lambda _result, current=dialog: self._metadata_dialog_closed(current))
@@ -773,6 +778,7 @@ class StudentContentPage(QWidget):
                 lesson_date=edit.lesson_date,
                 topic=edit.topic,
                 expected_updated_at=edit.expected_updated_at,
+                expected_row_version=edit.expected_row_version,
             ),
             lambda _result, current=dialog: self._metadata_saved(current),
             lambda details, current=dialog: current.show_error(

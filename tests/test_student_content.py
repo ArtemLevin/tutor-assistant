@@ -65,8 +65,7 @@ def test_migrates_legacy_database_without_losing_lessons(tmp_path: Path) -> None
             ),
         )
 
-    store = LessonStore(database)
-    store.save(lesson)
+    LessonStore(database)
     repository = StudentContentRepository(database)
 
     assert repository.get_lesson(lesson.lesson_id) == lesson
@@ -76,10 +75,15 @@ def test_migrates_legacy_database_without_losing_lessons(tmp_path: Path) -> None
         (3, "student_content_editing"),
         (4, "student_content_trash"),
         (5, "student_content_hardening"),
+        (6, "content_write_consistency"),
     ]
     with repository.connect() as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(lessons)")}
-    assert {"subject", "created_at", "deleted_at"} <= columns
+    assert {"subject", "created_at", "deleted_at", "row_version"} <= columns
+    with repository.connect() as db:
+        assert db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='content_file_sync'"
+        ).fetchone()
 
 
 def test_migrations_are_idempotent(tmp_path: Path) -> None:
@@ -87,9 +91,9 @@ def test_migrations_are_idempotent(tmp_path: Path) -> None:
     StudentContentRepository(database)
     repository = StudentContentRepository(database)
 
-    assert len(repository.applied_migrations()) == 5
+    assert len(repository.applied_migrations()) == 6
     with repository.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 def test_filters_pagination_and_lesson_soft_delete(tmp_path: Path) -> None:
@@ -168,7 +172,8 @@ def test_service_create_update_delete_and_path_boundary(tmp_path: Path) -> None:
 
     lesson.topic = "Обновлённая тема"
     previous_updated_at = lesson.updated_at
-    service.update_lesson(lesson)
+    row_version = service.get_lesson(lesson.lesson_id).row_version
+    service.update_lesson(lesson, expected_row_version=row_version)
     assert service.get_lesson(lesson.lesson_id).lesson.topic == "Обновлённая тема"
     assert lesson.updated_at >= previous_updated_at
 

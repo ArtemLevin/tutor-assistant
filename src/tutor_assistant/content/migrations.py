@@ -238,12 +238,27 @@ def _content_hardening(db: sqlite3.Connection) -> None:
     )
 
 
+def _content_write_consistency(db: sqlite3.Connection) -> None:
+    _add_column(db, "lessons", "row_version INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS content_file_sync (
+            lesson_id TEXT PRIMARY KEY,
+            last_error TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id) ON DELETE CASCADE
+        )
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
     Migration(3, "student_content_editing", _content_editing),
     Migration(4, "student_content_trash", _content_trash),
     Migration(5, "student_content_hardening", _content_hardening),
+    Migration(6, "content_write_consistency", _content_write_consistency),
 )
 
 

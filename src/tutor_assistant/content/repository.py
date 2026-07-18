@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import sleep
@@ -61,6 +62,18 @@ class DuplicateAssetError(ContentConflictError):
         self.lesson_id = lesson_id
         self.relative_path = relative_path
         super().__init__(f"Файл уже зарегистрирован: {lesson_id}/{relative_path}")
+
+
+PIPELINE_WRITABLE_FIELDS = frozenset(
+    {
+        "status",
+        "error",
+        "source_audio_local",
+        "artifacts",
+        "publication",
+        "latex",
+    }
+)
 
 
 class StudentContentRepository:
@@ -171,6 +184,49 @@ class StudentContentRepository:
                 (lesson_id, str(row["payload"]), str(row["transcript"])),
             )
 
+    @classmethod
+    def _mark_file_sync(cls, db: sqlite3.Connection, lesson_id: str) -> None:
+        db.execute(
+            """
+            INSERT INTO content_file_sync (lesson_id, last_error, updated_at)
+            VALUES (?, NULL, ?)
+            ON CONFLICT(lesson_id) DO UPDATE SET
+                last_error=NULL,
+                updated_at=excluded.updated_at
+            """,
+            (lesson_id, cls._now()),
+        )
+
+    def insert_lesson(self, lesson: Lesson) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                try:
+                    db.execute(
+                        """
+                        INSERT INTO lessons (
+                            lesson_id, student_id, lesson_date, topic, status, payload,
+                            updated_at, subject, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            lesson.lesson_id,
+                            lesson.student.id,
+                            lesson.lesson_date.isoformat(),
+                            lesson.topic,
+                            lesson.status.value,
+                            lesson.model_dump_json(),
+                            lesson.updated_at.isoformat(),
+                            lesson.subject,
+                            lesson.created_at.isoformat(),
+                        ),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ContentConflictError(f"Занятие уже существует: {lesson.lesson_id}") from exc
+                self._mark_file_sync(db, lesson.lesson_id)
+                self._refresh_search_document(db, lesson.lesson_id)
+
+        self._retry(operation)
+
     def upsert_lesson(self, lesson: Lesson) -> None:
         payload = lesson.model_dump_json()
 
@@ -190,7 +246,8 @@ class StudentContentRepository:
                         payload=excluded.payload,
                         updated_at=excluded.updated_at,
                         subject=excluded.subject,
-                        created_at=excluded.created_at
+                        created_at=excluded.created_at,
+                        row_version=lessons.row_version + 1
                     """,
                     (
                         lesson.lesson_id,
@@ -204,9 +261,155 @@ class StudentContentRepository:
                         lesson.created_at.isoformat(),
                     ),
                 )
+                self._mark_file_sync(db, lesson.lesson_id)
                 self._refresh_search_document(db, lesson.lesson_id)
 
         self._retry(operation)
+
+    def replace_lesson(self, incoming: Lesson, *, expected_row_version: int) -> Lesson:
+        def operation() -> Lesson:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    """
+                    SELECT row_version FROM lessons
+                    WHERE lesson_id=? AND deleted_at IS NULL
+                    """,
+                    (incoming.lesson_id,),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено: {incoming.lesson_id}")
+                if int(row["row_version"]) != expected_row_version:
+                    raise LessonEditConflictError(
+                        "Занятие уже изменено другим процессом. Обновите данные и повторите."
+                    )
+                replacement = incoming.model_copy(deep=True)
+                replacement.updated_at = datetime.now(UTC)
+                cursor = db.execute(
+                    """
+                    UPDATE lessons SET student_id=?, lesson_date=?, topic=?, status=?, payload=?,
+                        updated_at=?, subject=?, created_at=?, row_version=row_version + 1
+                    WHERE lesson_id=? AND row_version=? AND deleted_at IS NULL
+                    """,
+                    (
+                        replacement.student.id,
+                        replacement.lesson_date.isoformat(),
+                        replacement.topic,
+                        replacement.status.value,
+                        replacement.model_dump_json(),
+                        replacement.updated_at.isoformat(),
+                        replacement.subject,
+                        replacement.created_at.isoformat(),
+                        replacement.lesson_id,
+                        expected_row_version,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LessonEditConflictError(
+                        "Занятие уже изменено другим процессом. Обновите данные и повторите."
+                    )
+                self._mark_file_sync(db, replacement.lesson_id)
+                self._refresh_search_document(db, replacement.lesson_id)
+                return replacement
+
+        return self._retry(operation)
+
+    def update_pipeline_lesson(
+        self,
+        incoming: Lesson,
+        fields: Collection[str],
+        *,
+        expected_row_version: int | None = None,
+        force_status: bool = False,
+    ) -> Lesson:
+        selected = frozenset(fields)
+        unknown = selected - PIPELINE_WRITABLE_FIELDS
+        if unknown:
+            raise ValueError(f"Pipeline не может изменять поля: {', '.join(sorted(unknown))}")
+        if not selected:
+            raise ValueError("Не указаны поля pipeline для сохранения")
+
+        def operation() -> Lesson:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    """
+                    SELECT payload, row_version FROM lessons
+                    WHERE lesson_id=? AND deleted_at IS NULL
+                    """,
+                    (incoming.lesson_id,),
+                ).fetchone()
+                if row is None:
+                    raise ContentNotFoundError(f"Занятие не найдено: {incoming.lesson_id}")
+                row_version = int(row["row_version"])
+                if expected_row_version is not None and row_version != expected_row_version:
+                    raise LessonEditConflictError(
+                        "Занятие уже изменено другим процессом. Обновите данные и повторите."
+                    )
+                current = self._lesson_from_row(row)
+                if "status" in selected:
+                    error = incoming.error if "error" in selected else current.error
+                    current.transition(incoming.status, error, force=force_status)
+                elif "error" in selected:
+                    current.error = incoming.error
+                for field in selected - {"status", "error"}:
+                    setattr(current, field, deepcopy(getattr(incoming, field)))
+                current.updated_at = datetime.now(UTC)
+                cursor = db.execute(
+                    """
+                    UPDATE lessons SET status=?, payload=?, updated_at=?, row_version=row_version + 1
+                    WHERE lesson_id=? AND row_version=? AND deleted_at IS NULL
+                    """,
+                    (
+                        current.status.value,
+                        current.model_dump_json(),
+                        current.updated_at.isoformat(),
+                        current.lesson_id,
+                        row_version,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LessonEditConflictError(
+                        "Занятие уже изменено другим процессом. Обновите данные и повторите."
+                    )
+                self._mark_file_sync(db, current.lesson_id)
+                self._refresh_search_document(db, current.lesson_id)
+                return current
+
+        return self._retry(operation)
+
+    def complete_file_sync(self, lesson_id: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("DELETE FROM content_file_sync WHERE lesson_id=?", (lesson_id,))
+
+        self._retry(operation)
+
+    def fail_file_sync(self, lesson_id: str, details: str) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute(
+                    """
+                    UPDATE content_file_sync SET last_error=?, updated_at=? WHERE lesson_id=?
+                    """,
+                    (details[-3000:], self._now(), lesson_id),
+                )
+
+        self._retry(operation)
+
+    def pending_file_sync(self) -> list[tuple[str, str | None]]:
+        def operation() -> list[sqlite3.Row]:
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT lesson_id, last_error FROM content_file_sync ORDER BY updated_at
+                    """
+                ).fetchall()
+
+        return [
+            (str(row["lesson_id"]), str(row["last_error"]) if row["last_error"] else None)
+            for row in self._retry(operation)
+        ]
 
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> Lesson | None:
         def operation() -> sqlite3.Row | None:
@@ -219,10 +422,23 @@ class StudentContentRepository:
         row = self._retry(operation)
         return self._lesson_from_row(row) if row else None
 
+    def lesson_row_version(self, lesson_id: str) -> int:
+        def operation() -> sqlite3.Row | None:
+            with self.connect() as db:
+                return db.execute(
+                    "SELECT row_version FROM lessons WHERE lesson_id=?",
+                    (lesson_id,),
+                ).fetchone()
+
+        row = self._retry(operation)
+        if row is None:
+            raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+        return int(row["row_version"])
+
     def get_content(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
         def operation() -> sqlite3.Row | None:
             with self.connect() as db:
-                sql = "SELECT payload, deleted_at FROM lessons WHERE lesson_id=?"
+                sql = "SELECT payload, deleted_at, row_version FROM lessons WHERE lesson_id=?"
                 if not include_deleted:
                     sql += " AND deleted_at IS NULL"
                 return db.execute(sql, (lesson_id,)).fetchone()
@@ -232,6 +448,7 @@ class StudentContentRepository:
             raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
         return LessonContent(
             lesson=self._lesson_from_row(row),
+            row_version=int(row["row_version"]),
             assets=self.list_assets(lesson_id, include_deleted=include_deleted),
             transcript=self.current_transcript(lesson_id, include_deleted=include_deleted),
             draft=self.get_transcript_draft(lesson_id),
@@ -247,18 +464,26 @@ class StudentContentRepository:
         lesson_date: date,
         topic: str,
         expected_updated_at: datetime,
+        expected_row_version: int | None = None,
     ) -> Lesson:
         def operation() -> Lesson:
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
-                    "SELECT payload, updated_at FROM lessons WHERE lesson_id=? AND deleted_at IS NULL",
+                    """
+                    SELECT payload, updated_at, row_version FROM lessons
+                    WHERE lesson_id=? AND deleted_at IS NULL
+                    """,
                     (lesson_id,),
                 ).fetchone()
                 if row is None:
                     raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
                 current = self._lesson_from_row(row)
-                if current.updated_at != expected_updated_at:
+                if expected_row_version is not None:
+                    conflict = int(row["row_version"]) != expected_row_version
+                else:
+                    conflict = current.updated_at != expected_updated_at
+                if conflict:
                     raise LessonEditConflictError(
                         "Карточка занятия уже изменена в другом окне. Обновите данные и повторите."
                     )
@@ -271,7 +496,8 @@ class StudentContentRepository:
                 db.execute(
                     """
                     UPDATE lessons SET student_id=?, lesson_date=?, topic=?, status=?, payload=?,
-                        updated_at=?, subject=?, created_at=? WHERE lesson_id=?
+                        updated_at=?, subject=?, created_at=?, row_version=row_version + 1
+                    WHERE lesson_id=?
                     """,
                     (
                         current.student.id,
@@ -285,6 +511,7 @@ class StudentContentRepository:
                         current.lesson_id,
                     ),
                 )
+                self._mark_file_sync(db, current.lesson_id)
                 self._refresh_search_document(db, current.lesson_id)
                 return current
 
@@ -916,6 +1143,7 @@ class StudentContentRepository:
                             transcript.deleted_at.isoformat() if transcript.deleted_at else None,
                         ),
                     )
+                self._mark_file_sync(db, lesson.lesson_id)
                 self._refresh_search_document(db, lesson.lesson_id)
 
         self._retry(operation)
@@ -1099,7 +1327,8 @@ class StudentContentRepository:
                 lesson.updated_at = datetime.now(UTC)
                 db.execute(
                     """
-                    UPDATE lessons SET status=?, payload=?, updated_at=? WHERE lesson_id=?
+                    UPDATE lessons SET status=?, payload=?, updated_at=?,
+                        row_version=row_version + 1 WHERE lesson_id=?
                     """,
                     (
                         lesson.status.value,
@@ -1108,6 +1337,7 @@ class StudentContentRepository:
                         lesson.lesson_id,
                     ),
                 )
+                self._mark_file_sync(db, lesson.lesson_id)
                 self._refresh_search_document(db, lesson.lesson_id)
                 row = db.execute(
                     """

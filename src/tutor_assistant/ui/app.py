@@ -43,7 +43,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, load_students
-from ..content import StudentContentService
 from ..content_browser import is_audio_path
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
@@ -134,11 +133,7 @@ class MainWindow(QMainWindow):
         self.crm_store = CrmStore(self.pipeline.store.path)
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
-        self.content_service = StudentContentService(
-            self.config.workspace,
-            self.pipeline.store.path,
-            trash_retention_days=self.config.content.trash_retention_days,
-        )
+        self.content_service = self.pipeline.content_service
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
             self.devices, self.config.recording.target_sample_rate
@@ -1348,7 +1343,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
             self.recorder.start(directory, int(self.mic.currentData()), system_source)
             recording_lesson.transition(JobStatus.RECORDING)
-            self.pipeline.store.save(recording_lesson)
+            self.pipeline.save_state(recording_lesson, "status", "error")
             self._update_scheduled_occurrence("in_progress", lesson_id=recording_lesson.lesson_id)
             self.recording_seconds = 0
             self._recording_stop_started = False
@@ -1384,8 +1379,7 @@ class MainWindow(QMainWindow):
             if failed_lesson:
                 try:
                     failed_lesson.transition(JobStatus.FAILED, str(exc))
-                    failed_lesson.write_json(self.pipeline.lesson_dir(failed_lesson) / "lesson.json")
-                    self.pipeline.store.save(failed_lesson)
+                    self.pipeline.save_state(failed_lesson, "status", "error")
                 except Exception:
                     logging.exception("Не удалось сохранить ошибку запуска записи")
             self.start_button.setEnabled(True)
@@ -1438,8 +1432,7 @@ class MainWindow(QMainWindow):
             logging.error("Ошибка финализации записанного занятия\n%s", details)
             try:
                 recorded_lesson.transition(JobStatus.FAILED, details[-2000:])
-                recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
-                self.pipeline.store.save(recorded_lesson)
+                self.pipeline.save_state(recorded_lesson, "status", "error")
             except Exception:
                 logging.exception("Не удалось сохранить состояние ошибки записи")
             self._recording_stop_started = False
@@ -1471,8 +1464,12 @@ class MainWindow(QMainWindow):
             return
         recorded_lesson.source_audio_local = str(result.mixed_file.resolve())
         recorded_lesson.transition(JobStatus.RECORDED)
-        recorded_lesson.write_json(self.pipeline.lesson_dir(recorded_lesson) / "lesson.json")
-        self.pipeline.store.save(recorded_lesson)
+        self.pipeline.save_state(
+            recorded_lesson,
+            "source_audio_local",
+            "status",
+            "error",
+        )
         self._update_scheduled_occurrence(
             "completed",
             lesson_id=recorded_lesson.lesson_id,
@@ -1660,8 +1657,12 @@ class MainWindow(QMainWindow):
                 lesson.transition(JobStatus.RECORDED)
             elif lesson.status == JobStatus.FAILED:
                 lesson.transition(JobStatus.RECORDED)
-            lesson.write_json(self.pipeline.lesson_dir(lesson) / "lesson.json")
-            self.pipeline.store.save(lesson)
+            self.pipeline.save_state(
+                lesson,
+                "source_audio_local",
+                "status",
+                "error",
+            )
             self._enqueue_transcription(lesson, audio)
             self.lesson = None
             self._prepare_next_lesson()
@@ -1757,8 +1758,12 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {job.audio}")
                     return
                 job.lesson.transition(JobStatus.RECORDED, force=True)
-                self.pipeline.store.save(job.lesson)
-                job.lesson.write_json(self.pipeline.lesson_dir(job.lesson) / "lesson.json")
+                self.pipeline.save_state(
+                    job.lesson,
+                    "status",
+                    "error",
+                    force_status=True,
+                )
                 self.transcription_queue.retry(job.id)
                 self._update_transcription_queue_ui()
                 self._pump_transcription_queue()
@@ -2050,8 +2055,13 @@ class MainWindow(QMainWindow):
             self._set_status("Новых TEX-файлов нет")
             return
         lesson = remote_result.lesson
-        self.pipeline.store.save(lesson)
-        lesson.write_json(self.pipeline.lesson_dir(lesson) / "lesson.json")
+        self.pipeline.save_state(
+            lesson,
+            "latex",
+            "status",
+            "error",
+            force_status=True,
+        )
         result = remote_result.compilation
         if result.success:
             message = f"PDF создан и отправлен в {remote_result.branch}"

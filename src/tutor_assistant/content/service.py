@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import mimetypes
 import shutil
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
+from ..atomic_io import atomic_write_text
 from ..domain import JobStatus, Lesson, Student
 from .importing import (
     DuplicateImportError,
@@ -87,6 +90,7 @@ class StudentContentService:
             database_path or self.workspace / "tutor-assistant.sqlite3"
         )
         self.recover_trash_operations()
+        self.recover_file_sync()
         fts_enabled, fts_documents = self.repository.search_index_status()
         if fts_enabled and fts_documents != len(self.repository.list_lesson_index_states()):
             self.repository.rebuild_search_index()
@@ -105,31 +109,91 @@ class StudentContentService:
             raise ContentPathError(f"Путь выходит за пределы каталога данных: {path}") from exc
         return resolved, relative
 
-    def _lesson_json_path(self, lesson_id: str) -> Path:
-        _validate_lesson_id(lesson_id)
-        return self.workspace / "lessons" / lesson_id / "lesson.json"
+    def _managed_path_for_lesson(self, lesson_id: str, relative_path: str) -> Path:
+        content = self.repository.get_content(lesson_id, include_deleted=True)
+        if content.deleted_at:
+            trash = self.repository.get_trash_entry(lesson_id)
+            if trash is None:
+                raise ContentNotFoundError(f"Удалённое занятие не связано с корзиной: {lesson_id}")
+            relative = Path(relative_path)
+            lesson_prefix = Path("lessons") / lesson_id
+            try:
+                suffix = relative.relative_to(lesson_prefix)
+            except ValueError as exc:
+                raise ContentPathError(f"Путь не принадлежит занятию {lesson_id}: {relative_path}") from exc
+            return self.workspace / trash.trash_relative_path / suffix
+        resolved, _relative = self._resolve_path(relative_path)
+        return resolved
 
     @staticmethod
     def _atomic_write(path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, text)
+
+    def _synchronize_lesson_files(self, lesson_id: str) -> None:
+        content = self.repository.get_content(lesson_id, include_deleted=True)
+        try:
+            if content.transcript:
+                transcript_path = self._managed_path_for_lesson(
+                    lesson_id,
+                    content.transcript.relative_path,
+                )
+                self._atomic_write(transcript_path, content.transcript.content)
+            lesson_json = self._managed_path_for_lesson(
+                lesson_id,
+                (Path("lessons") / lesson_id / "lesson.json").as_posix(),
+            )
+            self._atomic_write(lesson_json, content.lesson.model_dump_json(indent=2))
+        except Exception as exc:
+            self.repository.fail_file_sync(lesson_id, str(exc))
+            raise
+        self.repository.complete_file_sync(lesson_id)
+
+    def recover_file_sync(self) -> None:
+        for lesson_id, _last_error in self.repository.pending_file_sync():
+            try:
+                self._synchronize_lesson_files(lesson_id)
+            except ContentNotFoundError:
+                self.repository.complete_file_sync(lesson_id)
+            except Exception:
+                logging.exception(
+                    "Не удалось восстановить файлы занятия из SQLite: %s",
+                    lesson_id,
+                )
 
     def create_lesson(self, lesson: Lesson) -> Lesson:
-        if self.repository.get_lesson(lesson.lesson_id, include_deleted=True):
-            raise ContentConflictError(f"Занятие уже существует: {lesson.lesson_id}")
-        self._atomic_write(self._lesson_json_path(lesson.lesson_id), lesson.model_dump_json(indent=2))
-        self.repository.upsert_lesson(lesson)
+        _validate_lesson_id(lesson.lesson_id)
+        self.repository.insert_lesson(lesson)
+        self._synchronize_lesson_files(lesson.lesson_id)
         return lesson
 
-    def update_lesson(self, lesson: Lesson) -> Lesson:
-        if not self.repository.get_lesson(lesson.lesson_id, include_deleted=True):
-            raise ContentNotFoundError(f"Занятие не найдено: {lesson.lesson_id}")
-        lesson.updated_at = datetime.now(UTC)
-        self._atomic_write(self._lesson_json_path(lesson.lesson_id), lesson.model_dump_json(indent=2))
-        self.repository.upsert_lesson(lesson)
-        return lesson
+    def update_lesson(self, lesson: Lesson, *, expected_row_version: int) -> Lesson:
+        _validate_lesson_id(lesson.lesson_id)
+        updated = self.repository.replace_lesson(
+            lesson,
+            expected_row_version=expected_row_version,
+        )
+        self._synchronize_lesson_files(updated.lesson_id)
+        for field in Lesson.model_fields:
+            setattr(lesson, field, deepcopy(getattr(updated, field)))
+        return updated
+
+    def persist_pipeline_lesson(
+        self,
+        lesson: Lesson,
+        fields: set[str] | frozenset[str],
+        *,
+        expected_row_version: int | None = None,
+        force_status: bool = False,
+    ) -> Lesson:
+        _validate_lesson_id(lesson.lesson_id)
+        updated = self.repository.update_pipeline_lesson(
+            lesson,
+            fields,
+            expected_row_version=expected_row_version,
+            force_status=force_status,
+        )
+        self._synchronize_lesson_files(updated.lesson_id)
+        return updated
 
     def update_lesson_metadata(
         self,
@@ -140,6 +204,7 @@ class StudentContentService:
         lesson_date: date,
         topic: str,
         expected_updated_at: datetime,
+        expected_row_version: int | None = None,
     ) -> Lesson:
         subject = subject.strip()
         topic = topic.strip()
@@ -154,8 +219,9 @@ class StudentContentService:
             lesson_date=lesson_date,
             topic=topic,
             expected_updated_at=expected_updated_at,
+            expected_row_version=expected_row_version,
         )
-        self._atomic_write(self._lesson_json_path(lesson_id), lesson.model_dump_json(indent=2))
+        self._synchronize_lesson_files(lesson_id)
         return lesson
 
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
@@ -854,6 +920,7 @@ class StudentContentService:
                 shutil.rmtree(final_directory, ignore_errors=True)
                 moved_to_final = False
                 raise
+            self.repository.complete_file_sync(lesson_id)
             report("Импорт завершён", 100)
             stored_transcript = self.repository.current_transcript(lesson_id)
             return LessonImportResult(
@@ -968,7 +1035,7 @@ class StudentContentService:
         )
         resolved, relative = self._resolve_path(target)
         normalized = text.rstrip() + "\n"
-        revision, updated_lesson = self.repository.commit_transcript_revision(
+        revision, _updated_lesson = self.repository.commit_transcript_revision(
             TranscriptRevision(
                 lesson_id=lesson_id,
                 revision_number=1,
@@ -982,11 +1049,7 @@ class StudentContentService:
         )
         # SQLite is the durable source of truth. Files are refreshed only after the
         # optimistic transaction succeeds, so a conflict can never overwrite them.
-        self._atomic_write(resolved, normalized)
-        self._atomic_write(
-            self._lesson_json_path(lesson_id),
-            updated_lesson.model_dump_json(indent=2),
-        )
+        self._synchronize_lesson_files(lesson_id)
         self.repository.delete_transcript_draft(
             lesson_id,
             content_sha256=_sha256_text(text),
@@ -1080,6 +1143,7 @@ class StudentContentService:
                         f"lesson_id {lesson.lesson_id!r} не совпадает с каталогом {directory.name!r}"
                     )
                 self.repository.upsert_lesson(lesson)
+                self.repository.complete_file_sync(lesson.lesson_id)
                 report.indexed_lessons += 1
                 report.indexed_assets += self._index_lesson_assets(lesson, directory)
                 report.indexed_transcripts += self._index_lesson_transcript(lesson, directory)

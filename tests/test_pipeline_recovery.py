@@ -24,7 +24,7 @@ def test_transcription_failure_is_persisted(monkeypatch, tmp_path) -> None:
     )
     pipeline.create(lesson)
     lesson.transition(JobStatus.RECORDED)
-    pipeline.store.save(lesson)
+    pipeline.save_state(lesson, "status", "error")
     audio = tmp_path / "lesson.wav"
     audio.touch()
     monkeypatch.setattr(pipeline, "transcriber", lambda: FailingTranscriber())

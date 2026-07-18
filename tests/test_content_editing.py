@@ -132,6 +132,7 @@ def test_metadata_edit_is_optimistic_and_preserves_publication(tmp_path: Path) -
     service = StudentContentService(tmp_path / "data")
     original = service.create_lesson(make_published_lesson())
     stale_timestamp = original.updated_at
+    stale_row_version = service.get_lesson(original.lesson_id).row_version
 
     updated = service.update_lesson_metadata(
         original.lesson_id,
@@ -140,6 +141,7 @@ def test_metadata_edit_is_optimistic_and_preserves_publication(tmp_path: Path) -
         lesson_date=date(2026, 7, 19),
         topic="Новая тема",
         expected_updated_at=stale_timestamp,
+        expected_row_version=stale_row_version,
     )
     with pytest.raises(LessonEditConflictError):
         service.update_lesson_metadata(
@@ -149,6 +151,7 @@ def test_metadata_edit_is_optimistic_and_preserves_publication(tmp_path: Path) -
             lesson_date=date(2026, 7, 20),
             topic="Конкурирующая тема",
             expected_updated_at=stale_timestamp,
+            expected_row_version=stale_row_version,
         )
 
     persisted = service.get_lesson(original.lesson_id).lesson

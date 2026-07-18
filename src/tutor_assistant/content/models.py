@@ -176,6 +176,7 @@ class LessonPage(BaseModel):
 
 class LessonContent(BaseModel):
     lesson: Lesson
+    row_version: int = Field(default=0, ge=0)
     assets: list[LessonAsset] = Field(default_factory=list)
     transcript: TranscriptRevision | None = None
     draft: TranscriptDraft | None = None
