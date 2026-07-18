@@ -1164,7 +1164,14 @@ class StudentContentRepository:
                         media_type=excluded.media_type,
                         size_bytes=excluded.size_bytes,
                         sha256=excluded.sha256,
-                        updated_at=excluded.updated_at
+                        updated_at=excluded.updated_at,
+                        deleted_at=CASE
+                            WHEN lesson_assets.deleted_at IS NOT NULL
+                             AND lesson_assets.sha256=excluded.sha256
+                             AND lesson_assets.size_bytes=excluded.size_bytes
+                            THEN lesson_assets.deleted_at
+                            ELSE excluded.deleted_at
+                        END
                     """,
                     (
                         asset.lesson_id,
