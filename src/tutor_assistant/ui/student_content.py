@@ -163,8 +163,10 @@ class StudentContentPage(QWidget):
         self.health_button.setToolTip("Проверить индекс, файлы и место · Ctrl+Shift+D")
         self.health_button.clicked.connect(self.open_content_health)
         heading.addWidget(self.health_button)
-        self.sync_button = set_button_kind(QPushButton("Синхронизировать каталог"), "ghost")
-        self.sync_button.setToolTip("Однократно проверить data/lessons и обновить индекс SQLite")
+        self.sync_button = set_button_kind(QPushButton("Проверить и восстановить"), "ghost")
+        self.sync_button.setToolTip(
+            "Восстановить файлы и индекс архива; карточки SQLite не перезаписываются с диска"
+        )
         self.sync_button.clicked.connect(self.synchronize)
         heading.addWidget(self.sync_button)
         self.refresh_button = set_button_kind(QPushButton("Обновить"), "primary")
@@ -405,7 +407,10 @@ class StudentContentPage(QWidget):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
-        self.ensure_loaded()
+        if self._initial_sync_started:
+            self.refresh()
+        else:
+            self.ensure_loaded()
 
     def hideEvent(self, event: QHideEvent) -> None:
         if self._transcript_editing:
@@ -1039,17 +1044,16 @@ class StudentContentPage(QWidget):
             return
         self._initial_sync_started = True
         self.refresh()
-        self.synchronize()
 
     def synchronize(self) -> None:
         if self._sync_running:
             return
         self._sync_running = True
         self.sync_button.setEnabled(False)
-        self.loading_label.setText("Синхронизирую локальный каталог…")
-        self.status_changed.emit("Синхронизирую материалы…", "working")
+        self.loading_label.setText("Проверяю и восстанавливаю локальный архив…")
+        self.status_changed.emit("Проверяю архив материалов…", "working")
         self.run_background(
-            self.service.index_existing_lessons,
+            self.service.repair_archive,
             self._synchronization_ready,
             self._synchronization_failed,
         )
@@ -1059,18 +1063,18 @@ class StudentContentPage(QWidget):
         self.sync_button.setEnabled(True)
         errors = getattr(result, "errors", [])
         if errors:
-            self.loading_label.setText(f"Индекс обновлён с предупреждениями: {len(errors)}")
-            self.status_changed.emit("Материалы обновлены с предупреждениями", "warning")
+            self.loading_label.setText(f"Архив восстановлен с предупреждениями: {len(errors)}")
+            self.status_changed.emit("Проверка архива завершена с предупреждениями", "warning")
         else:
-            self.loading_label.setText("Индекс локальных материалов обновлён")
-            self.status_changed.emit("Материалы синхронизированы", "success")
+            self.loading_label.setText("Архив проверен и восстановлен")
+            self.status_changed.emit("Архив материалов проверен", "success")
         self.refresh()
 
     def _synchronization_failed(self, details: str) -> None:
         self._sync_running = False
         self.sync_button.setEnabled(True)
-        self.loading_label.setText("Не удалось синхронизировать локальный каталог")
-        self.status_changed.emit("Ошибка синхронизации материалов", "error")
+        self.loading_label.setText("Не удалось проверить локальный архив")
+        self.status_changed.emit("Ошибка восстановления архива", "error")
         self.loading_label.setToolTip(details[-3000:])
 
     def _period_toggled(self, enabled: bool) -> None:
