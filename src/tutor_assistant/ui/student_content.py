@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ..content import (
     ContentIntegrityReport,
+    ContentMaintenanceResult,
     ContentOperation,
     ImportCancellationToken,
     LessonContent,
@@ -681,6 +682,7 @@ class StudentContentPage(QWidget):
         dialog = ContentHealthDialog(self)
         self.health_dialog = dialog
         dialog.rescan_requested.connect(lambda current=dialog: self._reload_content_health(current))
+        dialog.repair_requested.connect(lambda current=dialog: self._repair_content_health(current))
         dialog.cleanup_requested.connect(lambda current=dialog: self._cleanup_content_temp(current))
         dialog.rebuild_search_requested.connect(lambda current=dialog: self._rebuild_content_search(current))
         dialog.finished.connect(lambda _result, current=dialog: self._health_dialog_closed(current))
@@ -727,6 +729,28 @@ class StudentContentPage(QWidget):
             f"ошибок: {len(result.errors)}",
             tone,
         )
+        self._reload_content_health(dialog)
+
+    def _repair_content_health(self, dialog: ContentHealthDialog) -> None:
+        dialog.set_busy("Восстанавливаю файловую и поисковую проекции из SQLite…")
+        self.run_background(
+            self.service.repair_content_integrity,
+            lambda result, current=dialog: self._content_repair_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось восстановить архив")
+            ),
+        )
+
+    def _content_repair_ready(self, dialog: ContentHealthDialog, result: object) -> None:
+        if not isinstance(result, ContentMaintenanceResult):
+            dialog.show_error("Некорректный результат восстановления")
+            return
+        tone = "warning" if result.errors else "success"
+        self.status_changed.emit(
+            f"Архив восстановлен · занятий {len(result.repaired_lessons)} · ошибок {len(result.errors)}",
+            tone,
+        )
+        self.refresh()
         self._reload_content_health(dialog)
 
     def _rebuild_content_search(self, dialog: ContentHealthDialog) -> None:
@@ -1044,6 +1068,10 @@ class StudentContentPage(QWidget):
             return
         self._initial_sync_started = True
         self.refresh()
+
+    def refresh_if_loaded(self) -> None:
+        if self._initial_sync_started:
+            self.refresh()
 
     def synchronize(self) -> None:
         if self._sync_running:
