@@ -1,10 +1,12 @@
 from datetime import date
 
+import pytest
+
 from tutor_assistant.domain import Lesson, Student
 from tutor_assistant.store import LessonStore
 
 
-def test_store_upserts_lesson(tmp_path) -> None:
+def test_store_creates_lesson_but_rejects_legacy_updates(tmp_path) -> None:
     store = LessonStore(tmp_path / "lessons.sqlite3")
     lesson = Lesson(
         student=Student(id="student", full_name="Ученик"),
@@ -14,8 +16,9 @@ def test_store_upserts_lesson(tmp_path) -> None:
     )
     store.save(lesson)
     lesson.topic = "Механический резонанс"
-    store.save(lesson)
-    assert store.get(lesson.lesson_id).topic == "Механический резонанс"
+    with pytest.raises(RuntimeError, match="StudentContentService"):
+        store.save(lesson)
+    assert store.get(lesson.lesson_id).topic == "Резонанс"
     assert len(store.list()) == 1
 
 

@@ -33,14 +33,22 @@ class LessonMetadataEdit:
     lesson_date: date
     topic: str
     expected_updated_at: datetime
+    expected_row_version: int
 
 
 class MetadataEditDialog(QDialog):
     save_requested = Signal(object)
 
-    def __init__(self, lesson: Lesson, students: list[Student], parent=None) -> None:
+    def __init__(
+        self,
+        lesson: Lesson,
+        students: list[Student],
+        row_version: int = 0,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.lesson = lesson
+        self.row_version = row_version
         self.setWindowTitle("Редактирование занятия")
         self.setMinimumWidth(520)
 
@@ -119,6 +127,7 @@ class MetadataEditDialog(QDialog):
                 lesson_date=date(value.year(), value.month(), value.day()),
                 topic=topic,
                 expected_updated_at=self.lesson.updated_at,
+                expected_row_version=self.row_version,
             )
         )
 

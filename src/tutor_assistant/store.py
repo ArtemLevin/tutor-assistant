@@ -8,6 +8,7 @@ from time import sleep
 from typing import TypeVar
 
 from .content.migrations import apply_migrations
+from .content.repository import StudentContentRepository
 from .domain import Lesson
 
 T = TypeVar("T")
@@ -54,40 +55,14 @@ class LessonStore:
             apply_migrations(db)
 
     def save(self, lesson: Lesson) -> None:
-        payload = lesson.model_dump_json()
+        """Create a legacy lesson; updates must use StudentContentService."""
 
-        def operation() -> None:
-            with self.connect() as db:
-                db.execute(
-                    """
-                    INSERT INTO lessons (
-                        lesson_id, student_id, lesson_date, topic, status, payload,
-                        updated_at, subject, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(lesson_id) DO UPDATE SET
-                      student_id=excluded.student_id,
-                      lesson_date=excluded.lesson_date,
-                      topic=excluded.topic,
-                      status=excluded.status,
-                      payload=excluded.payload,
-                      updated_at=excluded.updated_at,
-                      subject=excluded.subject,
-                      created_at=excluded.created_at
-                    """,
-                    (
-                        lesson.lesson_id,
-                        lesson.student.id,
-                        lesson.lesson_date.isoformat(),
-                        lesson.topic,
-                        lesson.status.value,
-                        payload,
-                        lesson.updated_at.isoformat(),
-                        lesson.subject,
-                        lesson.created_at.isoformat(),
-                    ),
-                )
-
-        self._retry(operation)
+        repository = StudentContentRepository(self.path)
+        if repository.get_lesson(lesson.lesson_id, include_deleted=True) is not None:
+            raise RuntimeError(
+                "LessonStore.save() больше не обновляет занятия; используйте StudentContentService"
+            )
+        repository.insert_lesson(lesson)
 
     def save_transcription_job(
         self,

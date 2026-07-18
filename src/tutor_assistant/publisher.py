@@ -157,7 +157,7 @@ class LessonPublisher:
         )
         return target
 
-    def publish(self, lesson: Lesson, lesson_dir: Path) -> PublicationResult:
+    def publish(self, lesson: Lesson, _lesson_dir: Path) -> PublicationResult:
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
             raise GitError(f"Git-репозиторий не найден: {repo}")
@@ -200,7 +200,6 @@ class LessonPublisher:
                 run_git(checkout, "push", "-u", self.config.remote, "HEAD")
             pr_url, warnings = create_draft_pr(self.config, checkout, lesson, branch)
             lesson.transition(JobStatus.PUBLISHED)
-            lesson.write_json(lesson_dir / "lesson.json")
             return PublicationResult(
                 branch, str(target.relative_to(checkout)), commit, pr_url, tuple(warnings)
             )

@@ -172,8 +172,13 @@ def main() -> None:
             force=args.force,
             cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
         )
-        result.lesson.write_json(args.lesson_json)
-        pipeline.store.save(result.lesson)
+        pipeline.save_state(
+            result.lesson,
+            "latex",
+            "status",
+            "error",
+            force_status=True,
+        )
         print(
             json.dumps(
                 {

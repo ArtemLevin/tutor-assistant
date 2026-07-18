@@ -171,8 +171,12 @@ class MainWindow(base_app.MainWindow):
                     )
                     return
                 job.lesson.transition(JobStatus.RECORDED, force=True)
-                self.pipeline.store.save(job.lesson)
-                job.lesson.write_json(self.pipeline.lesson_dir(job.lesson) / "lesson.json")
+                self.pipeline.save_state(
+                    job.lesson,
+                    "status",
+                    "error",
+                    force_status=True,
+                )
                 self.transcription_queue.retry(job.id)
                 self._update_transcription_queue_ui()
                 self._pump_transcription_queue()

@@ -8,6 +8,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from .atomic_io import atomic_write_text
+
 
 class JobStatus(StrEnum):
     DRAFT = "draft"
@@ -166,10 +168,7 @@ class Lesson(BaseModel):
         return f"{self.date_slug}_{topic[:60]}"
 
     def write_json(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(self.model_dump_json(indent=2), encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, self.model_dump_json(indent=2))
 
     @classmethod
     def read_json(cls, path: Path) -> Lesson:
