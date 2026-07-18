@@ -13,6 +13,8 @@ def test_config_round_trip(tmp_path: Path) -> None:
     config.repository.auto_create_pr = True
     config.whisper.cpu_threads = 3
     config.content.trash_retention_days = 45
+    config.content.maintenance_interval_minutes = 15
+    config.content.temporary_retention_hours = 12
     config.save(path)
     restored = AppConfig.load(path)
     assert restored.setup_completed
@@ -23,6 +25,8 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert restored.repository.auto_create_pr
     assert restored.whisper.cpu_threads == 3
     assert restored.content.trash_retention_days == 45
+    assert restored.content.maintenance_interval_minutes == 15
+    assert restored.content.temporary_retention_hours == 12
     assert not path.with_suffix(".yaml.tmp").exists()
 
 
