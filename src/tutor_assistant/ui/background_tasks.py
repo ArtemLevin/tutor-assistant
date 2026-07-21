@@ -151,11 +151,7 @@ class BackgroundTaskCoordinator(QObject):
                 return False
             lease = acquisition.lease
 
-        key = (
-            f"{spec.purpose.value}:{next(self._sequence)}"
-            if spec.allow_parallel
-            else spec.purpose.value
-        )
+        key = f"{spec.purpose.value}:{next(self._sequence)}" if spec.allow_parallel else spec.purpose.value
 
         def execute() -> BackgroundTaskResult[Any]:
             try:

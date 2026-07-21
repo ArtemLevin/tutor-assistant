@@ -100,9 +100,7 @@ def test_service_try_acquire_is_non_throwing_and_legacy_api_is_structured(
         with pytest.raises(ContentBusyError) as captured:
             service.acquire_activity("latex-monitor")
 
-        assert [item.activity for item in captured.value.blockers] == [
-            "content-maintenance"
-        ]
+        assert [item.activity for item in captured.value.blockers] == ["content-maintenance"]
         assert "content-maintenance" in str(captured.value)
     finally:
         blocker.release()

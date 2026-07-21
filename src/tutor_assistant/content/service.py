@@ -4,7 +4,7 @@ import hashlib
 import logging
 import mimetypes
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
 from threading import Lock, get_ident
+from time import perf_counter
 from uuid import uuid4
 
 from ..atomic_io import atomic_write_text
@@ -44,6 +45,8 @@ from .models import (
     DatabaseBackupVerification,
     DatabaseRestoreResult,
     IndexReport,
+    IntegrityCheckMode,
+    IntegrityScanStats,
     IntegritySeverity,
     LessonAsset,
     LessonContent,
@@ -532,13 +535,30 @@ class StudentContentService:
                 result.errors.append(f"{relative}: {exc}")
         return result
 
-    def inspect_content_integrity(self) -> ContentIntegrityReport:
+    def inspect_content_integrity(
+        self,
+        *,
+        mode: IntegrityCheckMode = IntegrityCheckMode.FULL,
+        lesson_ids: Collection[str] | None = None,
+        deadline: datetime | None = None,
+        include_storage: bool = True,
+    ) -> ContentIntegrityReport:
+        started = datetime.now(UTC)
+        timer = perf_counter()
+        stats = IntegrityScanStats(mode=mode, started_at=started)
+        selected = set(lesson_ids) if lesson_ids is not None else None
         database_ok, database_message = self.repository.database_integrity_status()
         fts_enabled, fts_documents = self.repository.search_index_status()
         states = self.repository.list_lesson_index_states()
         indexed_ids = {lesson_id for lesson_id, _deleted in states}
         active_ids = {lesson_id for lesson_id, deleted in states if not deleted}
         deleted_ids = {lesson_id for lesson_id, deleted in states if deleted}
+        if selected is not None:
+            active_ids &= selected
+            deleted_ids &= selected
+        active_leases = {
+            item.lesson_id: item for item in self.active_activities() if item.lesson_id is not None
+        }
         trash_entries = {item.lesson.lesson_id: item.entry for item in self.repository.list_trash_items()}
         lesson_root = self.workspace / "lessons"
         trash_root = self.workspace / "trash" / "lessons"
@@ -573,21 +593,21 @@ class StudentContentService:
         if not database_ok:
             issue(IntegritySeverity.ERROR, "database", database_message)
         if fts_enabled:
-            search_messages = {
-                "missing": "Документ занятия отсутствует в FTS",
-                "stale": "FTS содержит устаревшую карточку или транскрипт",
-                "orphan": "FTS содержит документ без занятия в SQLite",
-            }
-            for lesson_id, state in self.repository.search_index_mismatches():
-                issue(
-                    IntegritySeverity.WARNING,
-                    f"search_index_{state}",
-                    search_messages[state],
-                    lesson_id=lesson_id,
-                )
-            if fts_documents != len(states) and not any(
-                item.code.startswith("search_index_") for item in issues
-            ):
+            if mode == IntegrityCheckMode.FULL:
+                search_messages = {
+                    "missing": "Документ занятия отсутствует в FTS",
+                    "stale": "FTS содержит устаревшую карточку или транскрипт",
+                    "orphan": "FTS содержит документ без занятия в SQLite",
+                }
+                for lesson_id, state in self.repository.search_index_mismatches():
+                    if selected is None or lesson_id in selected:
+                        issue(
+                            IntegritySeverity.WARNING,
+                            f"search_index_{state}",
+                            search_messages[state],
+                            lesson_id=lesson_id,
+                        )
+            elif fts_documents != len(states):
                 issue(
                     IntegritySeverity.WARNING,
                     "search_index_count",
@@ -601,33 +621,41 @@ class StudentContentService:
             )
 
         for lesson_id, last_error in self.repository.pending_file_sync():
-            issue(
-                IntegritySeverity.ERROR if last_error else IntegritySeverity.WARNING,
-                "failed_file_sync" if last_error else "pending_file_sync",
-                last_error or "Файловая проекция ожидает восстановления из SQLite",
-                lesson_id=lesson_id,
-                path=f"lessons/{lesson_id}",
-            )
+            if selected is None or lesson_id in selected:
+                issue(
+                    IntegritySeverity.ERROR if last_error else IntegritySeverity.WARNING,
+                    "failed_file_sync" if last_error else "pending_file_sync",
+                    last_error or "Файловая проекция ожидает восстановления из SQLite",
+                    lesson_id=lesson_id,
+                    path=f"lessons/{lesson_id}",
+                )
 
-        orphan_directories = [
-            path.relative_to(self.workspace).as_posix()
-            for lesson_id, path in lesson_directories.items()
-            if lesson_id not in indexed_ids
-        ]
-        orphan_directories.extend(
-            path.relative_to(self.workspace).as_posix()
-            for lesson_id, path in trash_directories.items()
-            if lesson_id not in trash_entries
-        )
-        for relative in orphan_directories:
-            issue(
-                IntegritySeverity.WARNING,
-                "orphan_directory",
-                "Каталог не связан с записью SQLite и оставлен без изменений",
-                path=relative,
+        orphan_directories: list[str] = []
+        if mode == IntegrityCheckMode.FULL and selected is None:
+            orphan_directories = [
+                path.relative_to(self.workspace).as_posix()
+                for lesson_id, path in lesson_directories.items()
+                if lesson_id not in indexed_ids
+            ]
+            orphan_directories.extend(
+                path.relative_to(self.workspace).as_posix()
+                for lesson_id, path in trash_directories.items()
+                if lesson_id not in trash_entries
             )
+            for relative in orphan_directories:
+                issue(
+                    IntegritySeverity.WARNING,
+                    "orphan_directory",
+                    "Каталог не связан с записью SQLite и оставлен без изменений",
+                    path=relative,
+                )
 
         for lesson_id in sorted(active_ids):
+            if deadline is not None and datetime.now(UTC) >= deadline:
+                stats.truncated = True
+                stats.truncated_reason = "time_budget"
+                break
+            stats.lessons_examined += 1
             directory = lesson_directories.get(lesson_id)
             if directory is None:
                 issue(
@@ -666,10 +694,21 @@ class StudentContentService:
                     path=lesson_json.relative_to(self.workspace).as_posix(),
                 )
             if content.lesson.status in VOLATILE_CONTENT_STATUSES:
+                stats.lessons_skipped += 1
                 issue(
                     IntegritySeverity.INFO,
                     "active_lesson_skipped",
                     "Проверка изменяемых файлов отложена до завершения pipeline-этапа",
+                    lesson_id=lesson_id,
+                    path=directory.relative_to(self.workspace).as_posix(),
+                )
+                continue
+            if lesson_id in active_leases:
+                stats.lessons_skipped += 1
+                issue(
+                    IntegritySeverity.INFO,
+                    "active_lease_skipped",
+                    f"Проверка отложена: выполняется {active_leases[lesson_id].activity}",
                     lesson_id=lesson_id,
                     path=directory.relative_to(self.workspace).as_posix(),
                 )
@@ -712,8 +751,26 @@ class StudentContentService:
                     )
                     continue
                 try:
-                    measured_size = absolute.stat().st_size
-                    changed = measured_size != asset.size_bytes or _sha256_file(absolute) != asset.sha256
+                    stat = absolute.stat()
+                    stats.assets_stat_checked += 1
+                    cache_hit = (
+                        mode == IntegrityCheckMode.QUICK
+                        and asset.file_mtime_ns == stat.st_mtime_ns
+                        and asset.last_verified_at is not None
+                        and asset.size_bytes == stat.st_size
+                    )
+                    if cache_hit:
+                        stats.asset_cache_hits += 1
+                        continue
+                    stats.asset_cache_misses += 1
+                    stats.assets_hashed += 1
+                    changed = stat.st_size != asset.size_bytes or _sha256_file(absolute) != asset.sha256
+                    if not changed and asset.id is not None:
+                        self.repository.update_asset_verification(
+                            asset.id,
+                            file_mtime_ns=stat.st_mtime_ns,
+                            verified_at=datetime.now(UTC),
+                        )
                 except OSError as exc:
                     issue(
                         IntegritySeverity.ERROR,
@@ -742,19 +799,7 @@ class StudentContentService:
                             lesson_id=lesson_id,
                             path=relative,
                         )
-                        continue
-                    try:
-                        changed = _sha256_file(transcript_path) != content.transcript.content_sha256
-                    except OSError as exc:
-                        issue(
-                            IntegritySeverity.ERROR,
-                            "transcript_read",
-                            str(exc),
-                            lesson_id=lesson_id,
-                            path=relative,
-                        )
-                        continue
-                    if changed:
+                    elif _sha256_file(transcript_path) != content.transcript.content_sha256:
                         issue(
                             IntegritySeverity.WARNING,
                             "transcript_changed",
@@ -762,10 +807,10 @@ class StudentContentService:
                             lesson_id=lesson_id,
                             path=relative,
                         )
-                except ContentPathError as exc:
+                except (ContentPathError, OSError) as exc:
                     issue(
                         IntegritySeverity.ERROR,
-                        "unsafe_transcript_path",
+                        "transcript_read",
                         str(exc),
                         lesson_id=lesson_id,
                         path=content.transcript.relative_path,
@@ -779,20 +824,23 @@ class StudentContentService:
                     "Удалённое занятие не связано с корзиной",
                     lesson_id=lesson_id,
                 )
-        for lesson_id, entry in trash_entries.items():
-            path = self.workspace / entry.trash_relative_path
-            if not path.is_dir():
-                issue(
-                    IntegritySeverity.ERROR,
-                    "missing_trash_directory",
-                    "Каталог занятия отсутствует в корзине",
-                    lesson_id=lesson_id,
-                    path=entry.trash_relative_path,
-                )
+        if selected is None:
+            for lesson_id, entry in trash_entries.items():
+                path = self.workspace / entry.trash_relative_path
+                if not path.is_dir():
+                    issue(
+                        IntegritySeverity.ERROR,
+                        "missing_trash_directory",
+                        "Каталог занятия отсутствует в корзине",
+                        lesson_id=lesson_id,
+                        path=entry.trash_relative_path,
+                    )
 
         temporary_paths = [
             path.relative_to(self.workspace).as_posix() for path in self._temporary_candidates()
         ]
+        stats.completed_at = datetime.now(UTC)
+        stats.duration_ms = max(0, int((perf_counter() - timer) * 1000))
         return ContentIntegrityReport(
             database_ok=database_ok,
             database_message=database_message,
@@ -803,8 +851,9 @@ class StudentContentService:
             trash_items=len(trash_entries),
             orphan_directories=sorted(orphan_directories),
             temporary_paths=temporary_paths,
-            storage=self.storage_usage(),
+            storage=self.storage_usage() if include_storage else StorageUsage(),
             issues=issues,
+            scan=stats,
         )
 
     def rebuild_search_index(self) -> int:
@@ -825,9 +874,11 @@ class StudentContentService:
         backup_enabled: bool = False,
         backup_interval: timedelta = timedelta(hours=24),
         backup_retention_count: int = 14,
+        mode: IntegrityCheckMode = IntegrityCheckMode.QUICK,
+        max_lessons: int = 50,
+        max_seconds: int = 120,
+        apply_max_seconds: int = 30,
     ) -> ContentMaintenanceResult:
-        """Run one coordinated, failure-isolated archive maintenance cycle."""
-
         return self._run_maintenance_cycle(
             now=now,
             auto_repair=auto_repair,
@@ -837,34 +888,15 @@ class StudentContentService:
             backup_enabled=backup_enabled,
             backup_interval=backup_interval,
             backup_retention_count=backup_retention_count,
-            acquire_lease=True,
+            mode=mode,
+            max_lessons=max_lessons,
+            max_seconds=max_seconds,
+            apply_max_seconds=apply_max_seconds,
         )
 
-    def run_maintenance_uncoordinated(
-        self,
-        *,
-        now: datetime | None = None,
-        auto_repair: bool = True,
-        purge_expired: bool = True,
-        cleanup_temporary: bool = True,
-        temporary_retention: timedelta = timedelta(hours=24),
-        backup_enabled: bool = False,
-        backup_interval: timedelta = timedelta(hours=24),
-        backup_retention_count: int = 14,
-    ) -> ContentMaintenanceResult:
-        """Run maintenance under a lease already owned by an external coordinator."""
-
-        return self._run_maintenance_cycle(
-            now=now,
-            auto_repair=auto_repair,
-            purge_expired=purge_expired,
-            cleanup_temporary=cleanup_temporary,
-            temporary_retention=temporary_retention,
-            backup_enabled=backup_enabled,
-            backup_interval=backup_interval,
-            backup_retention_count=backup_retention_count,
-            acquire_lease=False,
-        )
+    def run_maintenance_uncoordinated(self, **kwargs) -> ContentMaintenanceResult:
+        """Compatibility alias; PR 14 owns its short lease phases internally."""
+        return self.run_maintenance(**kwargs)
 
     def _run_maintenance_cycle(
         self,
@@ -877,36 +909,35 @@ class StudentContentService:
         backup_enabled: bool,
         backup_interval: timedelta,
         backup_retention_count: int,
-        acquire_lease: bool,
+        mode: IntegrityCheckMode,
+        max_lessons: int,
+        max_seconds: int,
+        apply_max_seconds: int,
     ) -> ContentMaintenanceResult:
         started_at = now or datetime.now(UTC)
-        result = ContentMaintenanceResult(started_at=started_at)
+        cycle_timer = perf_counter()
+        result = ContentMaintenanceResult(started_at=started_at, mode=mode)
         if not self._maintenance_lock.acquire(blocking=False):
             result.skipped = True
             result.skip_reason = "Обслуживание уже выполняется в этом процессе"
             result.completed_at = datetime.now(UTC)
             return result
-        maintenance_lease: ActivityLease | None = None
         try:
-            if acquire_lease:
-                acquisition = self.try_acquire_activity(
-                    "content-maintenance",
-                    exclusive=True,
-                    ttl=timedelta(minutes=5),
-                )
-                if acquisition.lease is None:
-                    result.skipped = True
-                    result.skip_reason = str(ContentBusyError.from_blockers(acquisition.blockers))
-                    return result
-                maintenance_lease = acquisition.lease
-            self._maintenance_thread_id = get_ident()
+            snapshot_timer = perf_counter()
+            row_versions = {
+                lesson_id: self.repository.lesson_row_version(lesson_id)
+                for lesson_id, deleted in self.repository.list_lesson_index_states()
+                if not deleted
+            }
+            result.snapshot_duration_ms = int((perf_counter() - snapshot_timer) * 1000)
 
             if backup_enabled:
                 try:
                     backups = self.backups.list()
                     due = not backups or (started_at - backups[0].manifest.created_at >= backup_interval)
                     if due:
-                        result.backup = self.backups.create(reason="scheduled-maintenance")
+                        with self.activity("database-backup"):
+                            result.backup = self.backups.create(reason="scheduled-maintenance")
                     result.backup_retention = self.backups.prune(backup_retention_count)
                     result.errors.extend(
                         f"backup retention: {details}" for details in result.backup_retention.errors
@@ -914,58 +945,125 @@ class StudentContentService:
                 except Exception as exc:
                     result.errors.append(f"backup: {exc}")
                     logging.exception("Не удалось создать резервную копию перед обслуживанием")
-                    return result
 
-            try:
-                before = self.inspect_content_integrity()
-            except Exception as exc:
-                result.errors.append(f"diagnostics: {exc}")
-                logging.exception("Не удалось проверить архив перед обслуживанием")
+            deadline = datetime.now(UTC) + timedelta(seconds=max_seconds)
+            scan_timer = perf_counter()
+            before = self.inspect_content_integrity(
+                mode=mode,
+                deadline=deadline,
+                include_storage=False,
+            )
+            result.scan_duration_ms = int((perf_counter() - scan_timer) * 1000)
+            result.truncated = before.scan.truncated
+
+            targets = sorted(
+                {
+                    item.lesson_id
+                    for item in before.issues
+                    if auto_repair and item.lesson_id and item.code in REPAIRABLE_CONTENT_ISSUES
+                }
+            )
+            expired = (
+                [
+                    item.lesson.lesson_id
+                    for item in self.repository.list_trash_items()
+                    if item.entry.state == TrashState.TRASHED and item.entry.purge_after <= started_at
+                ]
+                if purge_expired
+                else []
+            )
+            temporary = (
+                self._temporary_candidates(now=started_at, minimum_age=temporary_retention)
+                if cleanup_temporary
+                else []
+            )
+            result.planned_repairs = len(targets)
+            result.planned_purges = len(expired)
+            result.planned_temp_cleanup = len(temporary)
+
+            planned = [("repair", item) for item in targets] + [("purge", item) for item in expired]
+            if len(planned) > max_lessons:
+                result.truncated = True
+                result.deferred_actions += len(planned) - max_lessons
+                allowed = planned[:max_lessons]
+                targets = [value for kind, value in allowed if kind == "repair"]
+                expired = [value for kind, value in allowed if kind == "purge"]
+
+            rebuild_fts = (
+                auto_repair
+                and before.fts_enabled
+                and any(item.code.startswith("search_index_") for item in before.issues)
+            )
+            if not targets and not expired and not temporary and not rebuild_fts:
+                result.report = before
                 return result
 
-            if auto_repair:
-                targets = sorted(
-                    {
-                        item.lesson_id
-                        for item in before.issues
-                        if item.lesson_id and item.code in REPAIRABLE_CONTENT_ISSUES
-                    }
-                )
+            staged: list[tuple[str, Path, TrashActionResult]] = []
+            apply_timer = perf_counter()
+            exclusive_timer = perf_counter()
+            with self.activity(
+                "content-maintenance-apply",
+                exclusive=True,
+                ttl=timedelta(minutes=2),
+            ):
+                self._maintenance_thread_id = get_ident()
+                apply_deadline = perf_counter() + apply_max_seconds
+                active_lesson_ids = {
+                    item.lesson_id
+                    for item in self.active_activities()
+                    if item.lesson_id is not None and item.activity != "content-maintenance-apply"
+                }
                 for lesson_id in targets:
+                    if perf_counter() >= apply_deadline:
+                        result.truncated = True
+                        result.deferred_actions += 1
+                        continue
                     try:
+                        if lesson_id in active_lesson_ids:
+                            result.stale_actions.append(f"{lesson_id}: active lease")
+                            continue
+                        expected = row_versions.get(lesson_id)
+                        if expected is None or self.repository.lesson_row_version(lesson_id) != expected:
+                            result.stale_actions.append(f"{lesson_id}: row version changed")
+                            continue
                         content = self.repository.get_content(lesson_id, include_deleted=True)
                         if content.deleted_at is None and content.lesson.status in VOLATILE_CONTENT_STATUSES:
+                            result.stale_actions.append(f"{lesson_id}: active status")
                             continue
                         result.indexed_assets += self._synchronize_lesson_files(lesson_id)
                         result.repaired_lessons.append(lesson_id)
                     except Exception as exc:
                         result.errors.append(f"repair {lesson_id}: {exc}")
                         logging.exception("Не удалось восстановить занятие: %s", lesson_id)
-
-                if before.fts_enabled and any(
-                    item.code.startswith("search_index_") for item in before.issues
-                ):
+                if rebuild_fts:
                     try:
                         result.rebuilt_search_documents = self.rebuild_search_index()
                     except Exception as exc:
                         result.errors.append(f"search index: {exc}")
                         logging.exception("Не удалось перестроить FTS во время обслуживания")
-
-            if purge_expired:
-                expired = [
-                    item.lesson.lesson_id
-                    for item in self.repository.list_trash_items()
-                    if item.entry.state == TrashState.TRASHED and item.entry.purge_after <= started_at
-                ]
                 for lesson_id in expired:
+                    if perf_counter() >= apply_deadline:
+                        result.truncated = True
+                        result.deferred_actions += 1
+                        continue
                     try:
-                        self.permanently_delete_lesson(lesson_id)
+                        purge_result, operation_id, staging = self.stage_lesson_purge(lesson_id)
+                        staged.append((operation_id, staging, purge_result))
                         result.purged_lessons.append(lesson_id)
                     except Exception as exc:
                         result.errors.append(f"purge {lesson_id}: {exc}")
-                        logging.exception("Не удалось автоматически очистить корзину: %s", lesson_id)
+                        logging.exception("Не удалось подготовить очистку корзины: %s", lesson_id)
+            result.exclusive_duration_ms = int((perf_counter() - exclusive_timer) * 1000)
+            self._maintenance_thread_id = None
 
-            if cleanup_temporary:
+            for operation_id, staging, _purge_result in staged:
+                try:
+                    self.finalize_staged_purge(operation_id, staging)
+                except Exception as exc:
+                    result.errors.append(f"purge cleanup {operation_id}: {exc}")
+                    logging.exception("Не удалось физически удалить staging очистки: %s", operation_id)
+
+            if temporary:
                 result.temporary_cleanup = self.cleanup_temporary_files(
                     now=started_at,
                     minimum_age=temporary_retention,
@@ -974,25 +1072,36 @@ class StudentContentService:
                     f"temporary cleanup: {details}" for details in result.temporary_cleanup.errors
                 )
 
-            try:
-                result.report = self.inspect_content_integrity()
-            except Exception as exc:
-                result.errors.append(f"final diagnostics: {exc}")
-                logging.exception("Не удалось проверить архив после обслуживания")
+            result.apply_duration_ms = int((perf_counter() - apply_timer) * 1000)
+            result.mutated = bool(
+                result.repaired_lessons
+                or result.purged_lessons
+                or result.temporary_cleanup.removed_paths
+                or result.rebuilt_search_documents is not None
+            )
+            verify_timer = perf_counter()
+            result.report = self.inspect_content_integrity(
+                mode=IntegrityCheckMode.QUICK,
+                lesson_ids=set(result.repaired_lessons),
+                include_storage=False,
+            )
+            result.verify_duration_ms = int((perf_counter() - verify_timer) * 1000)
             return result
         finally:
             result.completed_at = datetime.now(UTC)
-            if maintenance_lease is not None:
-                maintenance_lease.release()
             self._maintenance_thread_id = None
             self._maintenance_lock.release()
             logging.info(
-                "Обслуживание архива завершено: repaired=%s assets=%s purged=%s temporary=%s errors=%s",
+                "Обслуживание архива завершено: mode=%s mutated=%s scan_ms=%s "
+                "exclusive_ms=%s repaired=%s purged=%s errors=%s total_ms=%s",
+                result.mode.value,
+                result.mutated,
+                result.scan_duration_ms,
+                result.exclusive_duration_ms,
                 len(result.repaired_lessons),
-                result.indexed_assets,
                 len(result.purged_lessons),
-                len(result.temporary_cleanup.removed_paths),
                 len(result.errors),
+                int((perf_counter() - cycle_timer) * 1000),
             )
 
     def repair_content_integrity(self) -> ContentMaintenanceResult:
@@ -1000,6 +1109,7 @@ class StudentContentService:
             auto_repair=True,
             purge_expired=False,
             cleanup_temporary=False,
+            mode=IntegrityCheckMode.FULL,
         )
 
     def set_trash_retention_days(self, days: int) -> None:
@@ -1089,7 +1199,10 @@ class StudentContentService:
         with self.activity("content-purge", lesson_id=lesson_id):
             return self._permanently_delete_lesson(lesson_id)
 
-    def _permanently_delete_lesson(self, lesson_id: str) -> TrashActionResult:
+    def stage_lesson_purge(
+        self,
+        lesson_id: str,
+    ) -> tuple[TrashActionResult, str, Path]:
         _validate_lesson_id(lesson_id)
         operation_id = uuid4().hex
         staging_relative = Path(".trash-purge") / operation_id
@@ -1107,27 +1220,36 @@ class StudentContentService:
             datetime.now(UTC),
         )
         moved = False
-        database_purged = False
         try:
             if source.exists():
                 staging.parent.mkdir(parents=True, exist_ok=True)
                 source.replace(staging)
                 moved = True
             self.repository.complete_purge_database(lesson_id, operation_id)
-            database_purged = True
-            if staging.exists():
-                shutil.rmtree(staging)
-            self._remove_empty_directory(staging.parent)
-            self.repository.complete_cleanup(operation_id)
         except Exception as exc:
-            if not moved and not database_purged:
+            if not moved:
                 self.repository.rollback_purge(lesson_id, operation_id, str(exc))
             raise
-        return TrashActionResult(
-            lesson_id=lesson_id,
-            size_bytes=entry.size_bytes,
-            operation=ContentOperationKind.PURGE,
+        return (
+            TrashActionResult(
+                lesson_id=lesson_id,
+                size_bytes=entry.size_bytes,
+                operation=ContentOperationKind.PURGE,
+            ),
+            operation_id,
+            staging,
         )
+
+    def finalize_staged_purge(self, operation_id: str, staging: Path) -> None:
+        if staging.exists():
+            shutil.rmtree(staging)
+        self._remove_empty_directory(staging.parent)
+        self.repository.complete_cleanup(operation_id)
+
+    def _permanently_delete_lesson(self, lesson_id: str) -> TrashActionResult:
+        result, operation_id, staging = self.stage_lesson_purge(lesson_id)
+        self.finalize_staged_purge(operation_id, staging)
+        return result
 
     def trash_summary(self, *, now: datetime | None = None) -> TrashSummary:
         current = now or datetime.now(UTC)

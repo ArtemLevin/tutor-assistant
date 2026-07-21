@@ -75,9 +75,7 @@ def test_guardian_contacts_and_notes_are_encrypted_at_rest(store: CrmStore) -> N
     assert contacts[0].phone == guardian.phone
     assert contacts[0].social_url == guardian.social_url
     with sqlite3.connect(store.path) as db:
-        raw_notes = db.execute(
-            "SELECT notes_secret FROM crm_students WHERE id='sofya'"
-        ).fetchone()[0]
+        raw_notes = db.execute("SELECT notes_secret FROM crm_students WHERE id='sofya'").fetchone()[0]
         raw_phone = db.execute("SELECT phone_secret FROM crm_guardians").fetchone()[0]
     assert profile.notes not in raw_notes
     assert guardian.phone not in raw_phone
@@ -128,9 +126,7 @@ def test_materialized_occurrence_can_be_linked_to_recording(store: CrmStore) -> 
 
 
 def test_overlapping_weekly_rules_are_rejected(store: CrmStore) -> None:
-    store.sync_students(
-        [Student(id="first", full_name="Первый"), Student(id="second", full_name="Второй")]
-    )
+    store.sync_students([Student(id="first", full_name="Первый"), Student(id="second", full_name="Второй")])
     store.save_schedule_rule(
         ScheduleRule(
             student_id="first",

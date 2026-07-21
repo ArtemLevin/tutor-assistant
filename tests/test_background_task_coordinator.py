@@ -62,9 +62,7 @@ def test_success_releases_lease_and_removes_worker(
     wait_until(application, lambda: coordinator.running_count() == 0)
 
     assert results[0].payload == "done"
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.COMPLETED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.COMPLETED)
     assert service.active_activities() == []
     assert registry == []
 
@@ -92,9 +90,7 @@ def test_real_exception_uses_failure_channel_and_releases_lease(
     wait_until(application, lambda: coordinator.running_count() == 0)
 
     assert failures and "network exploded" in failures[0]
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.FAILED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.FAILED)
     assert service.active_activities() == []
 
 
@@ -168,9 +164,7 @@ def test_local_blocker_completion_retries_deferred_task_once(
     assert calls == ["run"]
     assert BackgroundTaskPhase.DEFERRED.value in phases
     assert phases.count(BackgroundTaskPhase.RUNNING.value) == 1
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.COMPLETED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.COMPLETED)
 
 
 def test_external_blocker_waits_for_next_submit_instead_of_tight_loop(
@@ -196,9 +190,7 @@ def test_external_blocker_waits_for_next_submit_instead_of_tight_loop(
     time.sleep(0.05)
     application.processEvents()
     assert calls == []
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.DEFERRED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.DEFERRED)
 
     blocker.release()
     assert coordinator.submit(spec)
@@ -263,6 +255,7 @@ def test_parallel_content_tasks_preserve_existing_request_model(
             operation=operation,
             allow_parallel=True,
         )
+
     assert coordinator.submit(spec())
     assert coordinator.submit(spec())
     started.wait(timeout=3)
@@ -297,9 +290,7 @@ def test_content_busy_raised_inside_operation_uses_busy_policy(
 
     assert busy and "content-delete" in (busy[0].reason or "")
     assert failures == []
-    assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == (
-        BackgroundTaskPhase.SKIPPED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == (BackgroundTaskPhase.SKIPPED)
 
 
 def test_manual_request_upgrades_existing_deferred_task(

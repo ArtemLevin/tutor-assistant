@@ -100,8 +100,7 @@ def _atomic_json(path: Path, payload: dict) -> None:
                     sleep(_ATOMIC_WRITE_RETRY_SECONDS * (2**attempt))
 
         logging.warning(
-            "Не удалось атомарно заменить %s после %s попыток (%s); "
-            "использую прямую запись",
+            "Не удалось атомарно заменить %s после %s попыток (%s); использую прямую запись",
             path,
             _ATOMIC_WRITE_ATTEMPTS,
             last_error,

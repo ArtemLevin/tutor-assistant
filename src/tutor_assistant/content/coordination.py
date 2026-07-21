@@ -42,8 +42,7 @@ class ContentBusyError(RuntimeError):
     ) -> ContentBusyError:
         description = (
             ", ".join(
-                f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}"
-                for item in blockers
+                f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}" for item in blockers
             )
             or "неизвестная операция"
         )
@@ -130,13 +129,10 @@ class ActivityLeaseStore:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM activity_leases WHERE expires_at <= ?", (now.isoformat(),))
             if exclusive:
-                rows = db.execute(
-                    "SELECT * FROM activity_leases ORDER BY acquired_at, lease_id"
-                ).fetchall()
+                rows = db.execute("SELECT * FROM activity_leases ORDER BY acquired_at, lease_id").fetchall()
             else:
                 rows = db.execute(
-                    "SELECT * FROM activity_leases WHERE exclusive=1 "
-                    "ORDER BY acquired_at, lease_id"
+                    "SELECT * FROM activity_leases WHERE exclusive=1 ORDER BY acquired_at, lease_id"
                 ).fetchall()
             blockers = tuple(self._from_row(row) for row in rows)
             if blockers:

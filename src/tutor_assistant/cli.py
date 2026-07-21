@@ -38,6 +38,9 @@ def parser() -> argparse.ArgumentParser:
     content_doctor.add_argument("--import-legacy", action="store_true")
     content_doctor.add_argument("--purge-expired", action="store_true")
     content_doctor.add_argument("--strict", action="store_true")
+    content_doctor.add_argument("--mode", choices=("quick", "full"), default="full")
+    content_doctor.add_argument("--max-lessons", type=int)
+    content_doctor.add_argument("--max-seconds", type=int)
     content_backup = commands.add_parser(
         "content-backup",
         help="Создать, проверить или восстановить резервную копию SQLite",
@@ -117,8 +120,9 @@ def main() -> None:
         print(report.model_dump_json(indent=2))
         raise SystemExit(1 if report.errors else 0)
     if args.command == "content-doctor":
-        from .content import StudentContentService
+        from .content import IntegrityCheckMode, StudentContentService
 
+        mode = IntegrityCheckMode(args.mode)
         service = StudentContentService(
             config.workspace,
             trash_retention_days=config.content.trash_retention_days,
@@ -131,10 +135,14 @@ def main() -> None:
                 purge_expired=args.purge_expired,
                 cleanup_temporary=args.cleanup_temp,
                 temporary_retention=timedelta(hours=config.content.temporary_retention_hours),
+                mode=mode,
+                max_lessons=args.max_lessons or config.content.maintenance_max_lessons_per_cycle,
+                max_seconds=args.max_seconds or config.content.maintenance_max_seconds,
+                apply_max_seconds=config.content.maintenance_apply_max_seconds,
             )
         cleanup = maintenance.temporary_cleanup if maintenance and args.cleanup_temp else None
         rebuilt = service.coordinated_rebuild_search_index() if args.rebuild_search else None
-        report = service.inspect_content_integrity()
+        report = service.inspect_content_integrity(mode=mode)
         if args.json:
             payload = report.model_dump(mode="json")
             payload.update(

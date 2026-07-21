@@ -252,6 +252,14 @@ def _content_write_consistency(db: sqlite3.Connection) -> None:
     )
 
 
+def _asset_verification_cache(db: sqlite3.Connection) -> None:
+    _add_column(db, "lesson_assets", "file_mtime_ns INTEGER")
+    _add_column(db, "lesson_assets", "last_verified_at TEXT")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS lesson_assets_verification ON lesson_assets(last_verified_at, deleted_at)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
@@ -259,6 +267,7 @@ MIGRATIONS = (
     Migration(4, "student_content_trash", _content_trash),
     Migration(5, "student_content_hardening", _content_hardening),
     Migration(6, "content_write_consistency", _content_write_consistency),
+    Migration(7, "asset_verification_cache", _asset_verification_cache),
 )
 
 

@@ -93,6 +93,10 @@ class ContentConfig(BaseModel):
     backup_enabled: bool = True
     backup_interval_hours: int = Field(default=24, ge=1, le=8760)
     backup_retention_count: int = Field(default=14, ge=1, le=365)
+    maintenance_max_lessons_per_cycle: int = Field(default=50, ge=1, le=10_000)
+    maintenance_max_seconds: int = Field(default=120, ge=10, le=3600)
+    maintenance_apply_max_seconds: int = Field(default=30, ge=5, le=600)
+    maintenance_full_scan_interval_hours: int = Field(default=168, ge=1, le=8760)
 
 
 class AppConfig(BaseModel):
