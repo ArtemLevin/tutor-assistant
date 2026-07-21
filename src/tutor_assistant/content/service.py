@@ -7,6 +7,7 @@ import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from difflib import unified_diff
 from pathlib import Path, PureWindowsPath
@@ -87,6 +88,16 @@ class ContentPathError(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class ActivityAcquireResult:
+    lease: ActivityLease | None
+    blockers: tuple[ActivityLeaseInfo, ...] = ()
+
+    @property
+    def acquired(self) -> bool:
+        return self.lease is not None
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -135,6 +146,30 @@ class StudentContentService:
         except ContentBusyError:
             logging.info("Startup recovery skipped because another process owns the workspace")
 
+    def try_acquire_activity(
+        self,
+        activity: str,
+        *,
+        lesson_id: str | None = None,
+        exclusive: bool = False,
+        ttl: timedelta = timedelta(minutes=2),
+    ) -> ActivityAcquireResult:
+        result = self.lease_store.try_acquire(
+            owner_id=self.owner_id,
+            activity=activity,
+            lesson_id=lesson_id,
+            exclusive=exclusive,
+            ttl=ttl,
+        )
+        if result.lease_info is None:
+            return ActivityAcquireResult(
+                lease=None,
+                blockers=result.blockers,
+            )
+        return ActivityAcquireResult(
+            lease=ActivityLease(self.lease_store, result.lease_info, ttl),
+        )
+
     def acquire_activity(
         self,
         activity: str,
@@ -143,23 +178,15 @@ class StudentContentService:
         exclusive: bool = False,
         ttl: timedelta = timedelta(minutes=2),
     ) -> ActivityLease:
-        info = self.lease_store.acquire(
-            owner_id=self.owner_id,
-            activity=activity,
+        result = self.try_acquire_activity(
+            activity,
             lesson_id=lesson_id,
             exclusive=exclusive,
             ttl=ttl,
         )
-        if info is None:
-            active = self.lease_store.active()
-            description = (
-                ", ".join(
-                    f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}" for item in active
-                )
-                or "неизвестная операция"
-            )
-            raise ContentBusyError(f"Хранилище занято: {description}")
-        return ActivityLease(self.lease_store, info, ttl)
+        if result.lease is None:
+            raise ContentBusyError.from_blockers(result.blockers)
+        return result.lease
 
     @contextmanager
     def activity(
@@ -799,8 +826,59 @@ class StudentContentService:
         backup_interval: timedelta = timedelta(hours=24),
         backup_retention_count: int = 14,
     ) -> ContentMaintenanceResult:
-        """Run one non-overlapping, failure-isolated archive maintenance cycle."""
+        """Run one coordinated, failure-isolated archive maintenance cycle."""
 
+        return self._run_maintenance_cycle(
+            now=now,
+            auto_repair=auto_repair,
+            purge_expired=purge_expired,
+            cleanup_temporary=cleanup_temporary,
+            temporary_retention=temporary_retention,
+            backup_enabled=backup_enabled,
+            backup_interval=backup_interval,
+            backup_retention_count=backup_retention_count,
+            acquire_lease=True,
+        )
+
+    def run_maintenance_uncoordinated(
+        self,
+        *,
+        now: datetime | None = None,
+        auto_repair: bool = True,
+        purge_expired: bool = True,
+        cleanup_temporary: bool = True,
+        temporary_retention: timedelta = timedelta(hours=24),
+        backup_enabled: bool = False,
+        backup_interval: timedelta = timedelta(hours=24),
+        backup_retention_count: int = 14,
+    ) -> ContentMaintenanceResult:
+        """Run maintenance under a lease already owned by an external coordinator."""
+
+        return self._run_maintenance_cycle(
+            now=now,
+            auto_repair=auto_repair,
+            purge_expired=purge_expired,
+            cleanup_temporary=cleanup_temporary,
+            temporary_retention=temporary_retention,
+            backup_enabled=backup_enabled,
+            backup_interval=backup_interval,
+            backup_retention_count=backup_retention_count,
+            acquire_lease=False,
+        )
+
+    def _run_maintenance_cycle(
+        self,
+        *,
+        now: datetime | None,
+        auto_repair: bool,
+        purge_expired: bool,
+        cleanup_temporary: bool,
+        temporary_retention: timedelta,
+        backup_enabled: bool,
+        backup_interval: timedelta,
+        backup_retention_count: int,
+        acquire_lease: bool,
+    ) -> ContentMaintenanceResult:
         started_at = now or datetime.now(UTC)
         result = ContentMaintenanceResult(started_at=started_at)
         if not self._maintenance_lock.acquire(blocking=False):
@@ -810,17 +888,18 @@ class StudentContentService:
             return result
         maintenance_lease: ActivityLease | None = None
         try:
-            try:
-                maintenance_lease = self.acquire_activity(
+            if acquire_lease:
+                acquisition = self.try_acquire_activity(
                     "content-maintenance",
                     exclusive=True,
                     ttl=timedelta(minutes=5),
                 )
-                self._maintenance_thread_id = get_ident()
-            except ContentBusyError as exc:
-                result.skipped = True
-                result.skip_reason = str(exc)
-                return result
+                if acquisition.lease is None:
+                    result.skipped = True
+                    result.skip_reason = str(ContentBusyError.from_blockers(acquisition.blockers))
+                    return result
+                maintenance_lease = acquisition.lease
+            self._maintenance_thread_id = get_ident()
 
             if backup_enabled:
                 try:
