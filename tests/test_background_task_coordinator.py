@@ -15,6 +15,7 @@ from tutor_assistant.ui.background import (  # noqa: E402
     BackgroundTaskPhase,
     BackgroundTaskPurpose,
     BackgroundTaskSpec,
+    BackgroundTaskState,
     BusyPolicy,
 )
 from tutor_assistant.ui.background_tasks import BackgroundTaskCoordinator  # noqa: E402
@@ -62,9 +63,7 @@ def test_success_releases_lease_and_removes_worker(
     wait_until(application, lambda: coordinator.running_count() == 0)
 
     assert results[0].payload == "done"
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.COMPLETED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.COMPLETED)
     assert service.active_activities() == []
     assert registry == []
 
@@ -92,9 +91,7 @@ def test_real_exception_uses_failure_channel_and_releases_lease(
     wait_until(application, lambda: coordinator.running_count() == 0)
 
     assert failures and "network exploded" in failures[0]
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.FAILED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.FAILED)
     assert service.active_activities() == []
 
 
@@ -168,9 +165,7 @@ def test_local_blocker_completion_retries_deferred_task_once(
     assert calls == ["run"]
     assert BackgroundTaskPhase.DEFERRED.value in phases
     assert phases.count(BackgroundTaskPhase.RUNNING.value) == 1
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.COMPLETED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.COMPLETED)
 
 
 def test_external_blocker_waits_for_next_submit_instead_of_tight_loop(
@@ -196,9 +191,7 @@ def test_external_blocker_waits_for_next_submit_instead_of_tight_loop(
     time.sleep(0.05)
     application.processEvents()
     assert calls == []
-    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (
-        BackgroundTaskPhase.DEFERRED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.DEFERRED)
 
     blocker.release()
     assert coordinator.submit(spec)
@@ -263,6 +256,7 @@ def test_parallel_content_tasks_preserve_existing_request_model(
             operation=operation,
             allow_parallel=True,
         )
+
     assert coordinator.submit(spec())
     assert coordinator.submit(spec())
     started.wait(timeout=3)
@@ -297,9 +291,7 @@ def test_content_busy_raised_inside_operation_uses_busy_policy(
 
     assert busy and "content-delete" in (busy[0].reason or "")
     assert failures == []
-    assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == (
-        BackgroundTaskPhase.SKIPPED
-    )
+    assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == (BackgroundTaskPhase.SKIPPED)
 
 
 def test_manual_request_upgrades_existing_deferred_task(
@@ -360,3 +352,64 @@ def test_shutdown_cancels_deferred_and_rejects_new_tasks(tmp_path: Path) -> None
         )
     finally:
         blocker.release()
+
+
+def test_handled_domain_error_uses_non_failure_channel(
+    tmp_path: Path,
+    application: QApplication,
+) -> None:
+    service = StudentContentService(tmp_path / "handled" / "data")
+    coordinator = BackgroundTaskCoordinator(service)
+    handled = []
+    failures: list[str] = []
+
+    def reject() -> None:
+        raise ValueError("Нельзя удалить активное занятие")
+
+    assert coordinator.submit(
+        BackgroundTaskSpec(
+            purpose=BackgroundTaskPurpose.CONTENT_BROWSER,
+            operation=reject,
+            handled_exceptions=(ValueError,),
+        ),
+        on_handled=handled.append,
+        on_failure=failures.append,
+    )
+    wait_until(application, lambda: coordinator.running_count() == 0)
+
+    assert handled and handled[0].state == BackgroundTaskState.REJECTED
+    assert "Нельзя удалить" in (handled[0].reason or "")
+    assert failures == []
+    assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == (BackgroundTaskPhase.SKIPPED)
+
+
+def test_retryable_handled_error_is_deferred_without_failure_traceback(
+    tmp_path: Path,
+    application: QApplication,
+) -> None:
+    service = StudentContentService(tmp_path / "retryable" / "data")
+    coordinator = BackgroundTaskCoordinator(service)
+    handled = []
+    failures: list[str] = []
+
+    def unavailable() -> None:
+        raise ConnectionError("GitHub временно недоступен")
+
+    assert coordinator.submit(
+        BackgroundTaskSpec(
+            purpose=BackgroundTaskPurpose.LATEX_MONITOR,
+            operation=unavailable,
+            busy_policy=BusyPolicy.DEFER,
+            handled_exceptions=(ConnectionError,),
+            handled_exception_retryable=True,
+        ),
+        on_handled=handled.append,
+        on_failure=failures.append,
+    )
+    wait_until(application, lambda: coordinator.running_count() == 0)
+
+    assert handled and handled[0].state == BackgroundTaskState.RETRYABLE_FAILURE
+    assert failures == []
+    assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.DEFERRED)
+    assert coordinator.has_pending()
+    coordinator.begin_shutdown()

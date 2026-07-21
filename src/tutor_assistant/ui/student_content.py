@@ -570,6 +570,11 @@ class StudentContentPage(QWidget):
         if content is None:
             return
         lesson = content.lesson
+        if lesson.status in {JobStatus.RECORDING, JobStatus.TRANSCRIBING}:
+            message = "Нельзя удалить занятие во время записи или транскрибации"
+            self.status_changed.emit(message, "warning")
+            QMessageBox.warning(self, "Удаление недоступно", message)
+            return
         answer = QMessageBox.question(
             self,
             "Переместить занятие в корзину",
@@ -599,8 +604,13 @@ class StudentContentPage(QWidget):
     def _lesson_delete_failed(self, details: str) -> None:
         self.delete_lesson_button.setEnabled(self._current_content is not None)
         message = self._operation_message(details, "Не удалось переместить занятие в корзину")
-        self.status_changed.emit(message, "error")
-        QMessageBox.warning(self, "Корзина", message)
+        expected = message.startswith("Нельзя удалить")
+        self.status_changed.emit(message, "warning" if expected else "error")
+        QMessageBox.warning(
+            self,
+            "Удаление недоступно" if expected else "Корзина",
+            message,
+        )
 
     def open_trash(self) -> None:
         if self.trash_dialog is not None:

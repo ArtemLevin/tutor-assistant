@@ -19,6 +19,8 @@ class BackgroundTaskState(StrEnum):
     COMPLETED = "completed"
     NO_CHANGES = "no_changes"
     SKIPPED_BUSY = "skipped_busy"
+    REJECTED = "rejected"
+    RETRYABLE_FAILURE = "retryable_failure"
 
 
 class BackgroundTaskPurpose(StrEnum):
@@ -59,6 +61,9 @@ class BackgroundTaskSpec(Generic[T]):
     allow_parallel: bool = False
     none_is_no_changes: bool = False
     retry_allowed: Callable[[], bool] | None = None
+    handled_exceptions: tuple[type[Exception], ...] = ()
+    handled_exception_retryable: bool = False
+    handled_exception_message: Callable[[Exception], str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +115,20 @@ class BackgroundTaskResult(Generic[T]):
             reason=reason,
             blockers=blockers,
             blocking_activity=blocking_activity,
+            manually_requested=manually_requested,
+        )
+
+    @classmethod
+    def handled_failure(
+        cls,
+        reason: str,
+        *,
+        retryable: bool = False,
+        manually_requested: bool = False,
+    ) -> BackgroundTaskResult[T]:
+        return cls(
+            state=(BackgroundTaskState.RETRYABLE_FAILURE if retryable else BackgroundTaskState.REJECTED),
+            reason=reason,
             manually_requested=manually_requested,
         )
 

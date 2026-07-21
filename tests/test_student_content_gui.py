@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from tutor_assistant.content import StudentContentService  # noqa: E402
-from tutor_assistant.domain import Lesson, Student  # noqa: E402
+from tutor_assistant.domain import JobStatus, Lesson, Student  # noqa: E402
 from tutor_assistant.playback import PlaybackController  # noqa: E402
 from tutor_assistant.ui.student_content import StudentContentPage  # noqa: E402
 
@@ -169,4 +169,44 @@ def test_storage_diagnostics_dialog_is_keyboard_and_screen_reader_ready(
         asset.relative_path.endswith("result.pdf") for asset in service.get_lesson("gui-lesson").assets
     )
     dialog.close()
+    page.close()
+
+
+def test_active_lesson_delete_is_a_warning_without_background_failure(
+    tmp_path: Path,
+    application: QApplication,
+    monkeypatch,
+) -> None:
+    page, service = make_page(tmp_path)
+    content = service.get_lesson("gui-lesson")
+    lesson = content.lesson
+    lesson.transition(JobStatus.RECORDING, force=True)
+    service.repository.upsert_lesson(lesson)
+    page.refresh()
+    page.table.selectRow(0)
+    application.processEvents()
+
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message, *_args, **_kwargs: warnings.append((title, message)),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("confirmation must not open for active lesson")
+        ),
+    )
+
+    page.delete_selected_lesson()
+
+    assert warnings == [
+        (
+            "Удаление недоступно",
+            "Нельзя удалить занятие во время записи или транскрибации",
+        )
+    ]
+    assert service.list_lessons().total == 1
     page.close()

@@ -5,6 +5,7 @@ from .remote import (
     LatexCompilationReservation,
     RemoteCompilationResult,
     RemoteLatexService,
+    RemoteRepositoryUnavailable,
     RemoteTexProbe,
 )
 from .validator import validate_tex
@@ -16,6 +17,7 @@ __all__ = [
     "LatexCompiler",
     "RemoteCompilationResult",
     "RemoteLatexService",
+    "RemoteRepositoryUnavailable",
     "RemoteTexProbe",
     "inspect_latex_environment",
     "validate_tex",

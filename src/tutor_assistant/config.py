@@ -63,6 +63,8 @@ class LatexConfig(BaseModel):
     preview_dpi: int = 120
     poll_seconds: int = 60
     reservation_timeout_minutes: int = Field(default=30, ge=5, le=1440)
+    remote_fetch_attempts: int = Field(default=3, ge=1, le=10)
+    remote_fetch_backoff_seconds: float = Field(default=0.5, ge=0, le=30)
 
 
 class LaunchProfile(BaseModel):
