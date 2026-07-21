@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QTimer, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QMessageBox, QPushButton
 
 from ..domain import JobStatus, Lesson
