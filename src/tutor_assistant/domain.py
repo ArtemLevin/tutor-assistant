@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
@@ -75,10 +75,18 @@ class Student(BaseModel):
     def validate_repository_folder(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        path = Path(value)
-        if path.is_absolute() or ".." in path.parts or not value.strip():
+        normalized = value.strip().replace("\\", "/")
+        posix_path = PurePosixPath(normalized)
+        windows_path = PureWindowsPath(value)
+        if (
+            not normalized
+            or posix_path.is_absolute()
+            or windows_path.is_absolute()
+            or windows_path.drive
+            or ".." in posix_path.parts
+        ):
             raise ValueError("repository_folder must be a safe relative path")
-        return path.as_posix().strip("/")
+        return posix_path.as_posix().strip("/")
 
     @property
     def folder(self) -> str:
