@@ -716,7 +716,9 @@ class SchedulePage(QWidget):
                         subject=value.subject,
                         topic=value.topic,
                         meeting_url=value.meeting_url,
-                        valid_from=existing_rule.valid_from if existing_rule else value.starts_at.date(),
+                        valid_from=existing_rule.valid_from
+                        if existing_rule
+                        else value.starts_at.date(),
                         valid_until=existing_rule.valid_until if existing_rule else None,
                         rate_cents=value.rate_cents,
                     )

@@ -171,7 +171,9 @@ class MainWindow(QMainWindow):
             lambda: self._parallel_policy().audio_playback_allowed,
             self._playback_error,
         )
-        self.playback_backend.error_occurred.connect(self.playback_controller.report_backend_error)
+        self.playback_backend.error_occurred.connect(
+            self.playback_controller.report_backend_error
+        )
         self.quick_countdown_timer = QTimer(self)
         self.quick_countdown_timer.setInterval(1000)
         self.quick_countdown_timer.timeout.connect(self._quick_countdown_tick)
@@ -226,7 +228,9 @@ class MainWindow(QMainWindow):
         self.header_eyebrow.setObjectName("eyebrow")
         self.header_title = QLabel("Tutor Assistant")
         self.header_title.setObjectName("appTitle")
-        self.header_subtitle = QLabel("Запись занятия, проверка транскрипта и выпуск материалов в одном окне")
+        self.header_subtitle = QLabel(
+            "Запись занятия, проверка транскрипта и выпуск материалов в одном окне"
+        )
         self.header_subtitle.setObjectName("subtitle")
         brand.addWidget(self.header_eyebrow)
         brand.addWidget(self.header_title)
@@ -283,7 +287,9 @@ class MainWindow(QMainWindow):
         self.student_content_page.lesson_trashed.connect(self._forget_trashed_lesson)
         self.student_content_page.lesson_purged.connect(self._forget_trashed_lesson)
         self.student_content_page.trash_retention_changed.connect(self._save_trash_retention)
-        self.materials_tab_index = self.tabs.addTab(self.student_content_page, "08  Материалы")
+        self.materials_tab_index = self.tabs.addTab(
+            self.student_content_page, "08  Материалы"
+        )
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -384,7 +390,10 @@ class MainWindow(QMainWindow):
             not self.config.content.maintenance_enabled
             or self._shutdown_requested
             or (self.recorder and self.recorder.active)
-            or any(getattr(worker, "purpose", "") == "content-maintenance" for worker in self.workers)
+            or any(
+                getattr(worker, "purpose", "") == "content-maintenance"
+                for worker in self.workers
+            )
         ):
             return
 
@@ -393,9 +402,13 @@ class MainWindow(QMainWindow):
                 auto_repair=self.config.content.auto_repair,
                 purge_expired=self.config.content.auto_purge_trash,
                 cleanup_temporary=self.config.content.auto_cleanup_temporary,
-                temporary_retention=timedelta(hours=self.config.content.temporary_retention_hours),
+                temporary_retention=timedelta(
+                    hours=self.config.content.temporary_retention_hours
+                ),
                 backup_enabled=self.config.content.backup_enabled,
-                backup_interval=timedelta(hours=self.config.content.backup_interval_hours),
+                backup_interval=timedelta(
+                    hours=self.config.content.backup_interval_hours
+                ),
                 backup_retention_count=self.config.content.backup_retention_count,
             )
 
@@ -837,7 +850,9 @@ class MainWindow(QMainWindow):
         )
         self.quick_readiness_button.setText("✓" if readiness.ready else "!")
         self.quick_readiness_button.setProperty("tone", "ready" if readiness.ready else "blocked")
-        lines = [f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items]
+        lines = [
+            f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items
+        ]
         lines.append("")
         lines.append("Нажмите, чтобы открыть подробную проверку")
         self.quick_readiness_button.setToolTip("\n".join(lines))
@@ -1788,7 +1803,9 @@ class MainWindow(QMainWindow):
         self.processing_summary.setText(f"В обработке: {unfinished} · готовы к проверке: {ready}")
         self.quick_queue_button.setText(f"≡ {unfinished + ready}")
         self.quick_queue_button.setToolTip(
-            f"В обработке: {unfinished}\nГотовы к проверке: {ready}\nНажмите, чтобы открыть очередь"
+            f"В обработке: {unfinished}\n"
+            f"Готовы к проверке: {ready}\n"
+            "Нажмите, чтобы открыть очередь"
         )
 
     def _show_processing_queue(self) -> None:
@@ -2044,7 +2061,6 @@ class MainWindow(QMainWindow):
         self.compilation_log.setPlainText("Компиляция запущена…")
         self._set_status("Компилирую PDF…", "working")
         logging.info("Локальная компиляция LaTeX начата: %s", path)
-
         def compile_tex():
             with self.content_service.activity("latex-compilation"):
                 return LatexCompiler(self.config.latex).compile(path)

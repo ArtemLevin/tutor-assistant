@@ -42,10 +42,14 @@ def test_publisher_creates_structured_job_status(tmp_path: Path) -> None:
         "index": "pending",
     }
     assert datetime.fromisoformat(payload["updated_at"]).tzinfo is not None
-    assert not list(Draft202012Validator(_schema(), format_checker=FormatChecker()).iter_errors(payload))
+    assert not list(
+        Draft202012Validator(_schema(), format_checker=FormatChecker()).iter_errors(payload)
+    )
 
 
 def test_job_status_schema_accepts_legacy_marker() -> None:
     legacy = {"status": "ready_for_generation"}
 
-    assert not list(Draft202012Validator(_schema(), format_checker=FormatChecker()).iter_errors(legacy))
+    assert not list(
+        Draft202012Validator(_schema(), format_checker=FormatChecker()).iter_errors(legacy)
+    )

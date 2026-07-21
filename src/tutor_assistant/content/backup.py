@@ -45,7 +45,9 @@ class DatabaseBackupStore:
         errors: list[str] = []
         try:
             uri = f"{path.resolve().as_uri()}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=10, factory=ClosingConnection) as db:
+            with sqlite3.connect(
+                uri, uri=True, timeout=10, factory=ClosingConnection
+            ) as db:
                 quick_check = db.execute("PRAGMA quick_check").fetchall()
                 messages = [str(row[0]) for row in quick_check]
                 if messages != ["ok"]:
@@ -73,8 +75,12 @@ class DatabaseBackupStore:
         final_path = self.directory / filename
         temporary_path = self.directory / f".{filename}.tmp"
         try:
-            with sqlite3.connect(self.database_path, timeout=10, factory=ClosingConnection) as source:
-                with sqlite3.connect(temporary_path, timeout=10, factory=ClosingConnection) as destination:
+            with sqlite3.connect(
+                self.database_path, timeout=10, factory=ClosingConnection
+            ) as source:
+                with sqlite3.connect(
+                    temporary_path, timeout=10, factory=ClosingConnection
+                ) as destination:
                     source.backup(destination)
             errors = self._sqlite_check(temporary_path)
             if errors:
@@ -175,7 +181,9 @@ class DatabaseBackupStore:
         if not verification.valid:
             raise DatabaseBackupError("Резервная копия не прошла проверку: " + "; ".join(verification.errors))
         try:
-            with sqlite3.connect(path.resolve(), timeout=10, factory=ClosingConnection) as source:
+            with sqlite3.connect(
+                path.resolve(), timeout=10, factory=ClosingConnection
+            ) as source:
                 with sqlite3.connect(
                     self.database_path, timeout=10, factory=ClosingConnection
                 ) as destination:
@@ -192,15 +200,21 @@ class DatabaseBackupStore:
 
         verification = self.verify(path)
         if not verification.valid:
-            raise DatabaseBackupError("Резервная копия не прошла проверку: " + "; ".join(verification.errors))
+            raise DatabaseBackupError(
+                "Резервная копия не прошла проверку: " + "; ".join(verification.errors)
+            )
         recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid4().hex[:8]
         safety_directory = self.directory / f"pre-restore-raw-{recovery_id}"
         temporary_path = self.database_path.with_suffix(".restore.tmp")
         moved: list[tuple[Path, Path]] = []
         try:
             temporary_path.unlink(missing_ok=True)
-            with sqlite3.connect(path.resolve(), timeout=10, factory=ClosingConnection) as source:
-                with sqlite3.connect(temporary_path, timeout=10, factory=ClosingConnection) as destination:
+            with sqlite3.connect(
+                path.resolve(), timeout=10, factory=ClosingConnection
+            ) as source:
+                with sqlite3.connect(
+                    temporary_path, timeout=10, factory=ClosingConnection
+                ) as destination:
                     source.backup(destination)
             errors = self._sqlite_check(temporary_path)
             if errors:

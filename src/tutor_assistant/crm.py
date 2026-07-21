@@ -612,7 +612,9 @@ class CrmStore:
             if existing.status == "cancelled" or existing.occurrence_id == exclude_occurrence_id:
                 continue
             if lesson.starts_at < existing.ends_at and existing.starts_at < lesson.ends_at:
-                raise ScheduleConflict(f"В выбранное время уже назначено занятие с {existing.student_name}")
+                raise ScheduleConflict(
+                    f"В выбранное время уже назначено занятие с {existing.student_name}"
+                )
 
     def update_occurrence_details(self, occurrence_id: int, lesson: ScheduledLesson) -> None:
         self._check_occurrence_conflict(lesson, exclude_occurrence_id=occurrence_id)
@@ -701,7 +703,9 @@ class CrmStore:
         return ScheduledLesson(
             occurrence_id=row["id"],
             rule_id=row["rule_id"],
-            original_date=date.fromisoformat(row["original_date"]) if row["original_date"] else None,
+            original_date=date.fromisoformat(row["original_date"])
+            if row["original_date"]
+            else None,
             student_id=row["student_id"],
             student_name=row["student_name"],
             starts_at=datetime.fromisoformat(row["starts_at"]),
