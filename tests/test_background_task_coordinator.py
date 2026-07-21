@@ -257,11 +257,12 @@ def test_parallel_content_tasks_preserve_existing_request_model(
         release.wait(3)
         return "done"
 
-    spec = lambda: BackgroundTaskSpec(
-        purpose=BackgroundTaskPurpose.CONTENT_BROWSER,
-        operation=operation,
-        allow_parallel=True,
-    )
+    def spec():
+        return BackgroundTaskSpec(
+            purpose=BackgroundTaskPurpose.CONTENT_BROWSER,
+            operation=operation,
+            allow_parallel=True,
+        )
     assert coordinator.submit(spec())
     assert coordinator.submit(spec())
     started.wait(timeout=3)

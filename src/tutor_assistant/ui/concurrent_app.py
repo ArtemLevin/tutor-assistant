@@ -27,6 +27,7 @@ from .parallel_review import (
 )
 from .theme import set_button_kind
 
+
 class MainWindow(base_app.MainWindow):
     """Main window with independent recording and transcript-review contexts."""
 
