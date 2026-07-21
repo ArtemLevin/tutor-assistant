@@ -1,0 +1,36 @@
+name: PR 14 lint fix
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  lint-fix:
+    if: github.head_ref == 'perf/maintenance-critical-section' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Install ruff
+        run: python -m pip install --quiet 'ruff>=0.9,<1'
+      - name: Apply formatting and safe fixes
+        run: |
+          ruff format src tests
+          ruff check src tests --fix --unsafe-fixes || true
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Fix PR 14 lint findings'
+          git push origin HEAD:${{ github.head_ref }}
