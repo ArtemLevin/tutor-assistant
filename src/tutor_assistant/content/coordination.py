@@ -11,11 +11,7 @@ from uuid import uuid4
 from ..sqlite_utils import ClosingConnection
 
 
-class ContentBusyError(RuntimeError):
-    """Raised when an incompatible operation is active in another process."""
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ActivityLeaseInfo:
     lease_id: str
     owner_id: str
@@ -25,6 +21,43 @@ class ActivityLeaseInfo:
     acquired_at: datetime
     heartbeat_at: datetime
     expires_at: datetime
+
+
+class ContentBusyError(RuntimeError):
+    """Raised when an incompatible operation is active in another process."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        blockers: tuple[ActivityLeaseInfo, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.blockers = blockers
+
+    @classmethod
+    def from_blockers(
+        cls,
+        blockers: tuple[ActivityLeaseInfo, ...],
+    ) -> ContentBusyError:
+        description = (
+            ", ".join(
+                f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}"
+                for item in blockers
+            )
+            or "неизвестная операция"
+        )
+        return cls(f"Хранилище занято: {description}", blockers=blockers)
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseAcquireResult:
+    lease_info: ActivityLeaseInfo | None
+    blockers: tuple[ActivityLeaseInfo, ...] = ()
+
+    @property
+    def acquired(self) -> bool:
+        return self.lease_info is not None
 
 
 class ActivityLeaseStore:
@@ -79,7 +112,7 @@ class ActivityLeaseStore:
             expires_at=datetime.fromisoformat(row["expires_at"]),
         )
 
-    def acquire(
+    def try_acquire(
         self,
         *,
         owner_id: str,
@@ -87,7 +120,7 @@ class ActivityLeaseStore:
         lesson_id: str | None = None,
         exclusive: bool = False,
         ttl: timedelta = timedelta(minutes=2),
-    ) -> ActivityLeaseInfo | None:
+    ) -> LeaseAcquireResult:
         if ttl.total_seconds() <= 0:
             raise ValueError("Lease TTL must be positive")
         now = self._now()
@@ -97,14 +130,17 @@ class ActivityLeaseStore:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM activity_leases WHERE expires_at <= ?", (now.isoformat(),))
             if exclusive:
-                conflict = db.execute("SELECT 1 FROM activity_leases LIMIT 1").fetchone()
+                rows = db.execute(
+                    "SELECT * FROM activity_leases ORDER BY acquired_at, lease_id"
+                ).fetchall()
             else:
-                conflict = db.execute(
-                    "SELECT 1 FROM activity_leases WHERE exclusive=1 LIMIT 1"
-                ).fetchone()
-            if conflict:
-                db.rollback()
-                return None
+                rows = db.execute(
+                    "SELECT * FROM activity_leases WHERE exclusive=1 "
+                    "ORDER BY acquired_at, lease_id"
+                ).fetchall()
+            blockers = tuple(self._from_row(row) for row in rows)
+            if blockers:
+                return LeaseAcquireResult(lease_info=None, blockers=blockers)
             db.execute(
                 """
                 INSERT INTO activity_leases (
@@ -123,16 +159,35 @@ class ActivityLeaseStore:
                     expires_at.isoformat(),
                 ),
             )
-        return ActivityLeaseInfo(
-            lease_id=lease_id,
+        return LeaseAcquireResult(
+            lease_info=ActivityLeaseInfo(
+                lease_id=lease_id,
+                owner_id=owner_id,
+                activity=activity,
+                lesson_id=lesson_id,
+                exclusive=exclusive,
+                acquired_at=now,
+                heartbeat_at=now,
+                expires_at=expires_at,
+            )
+        )
+
+    def acquire(
+        self,
+        *,
+        owner_id: str,
+        activity: str,
+        lesson_id: str | None = None,
+        exclusive: bool = False,
+        ttl: timedelta = timedelta(minutes=2),
+    ) -> ActivityLeaseInfo | None:
+        return self.try_acquire(
             owner_id=owner_id,
             activity=activity,
             lesson_id=lesson_id,
             exclusive=exclusive,
-            acquired_at=now,
-            heartbeat_at=now,
-            expires_at=expires_at,
-        )
+            ttl=ttl,
+        ).lease_info
 
     def heartbeat(self, lease_id: str, owner_id: str, ttl: timedelta) -> bool:
         now = self._now()

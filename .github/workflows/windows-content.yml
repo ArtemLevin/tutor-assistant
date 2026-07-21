@@ -9,6 +9,7 @@ on:
       - "src/tutor_assistant/ui/app.py"
       - "src/tutor_assistant/ui/concurrent_app.py"
       - "src/tutor_assistant/ui/background.py"
+      - "src/tutor_assistant/ui/background_tasks.py"
       - "src/tutor_assistant/ui/playback.py"
       - "src/tutor_assistant/latex/**"
       - "tests/test_background*.py"
@@ -29,6 +30,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -38,10 +41,17 @@ jobs:
         run: uv sync --extra desktop --group dev
       - name: Lint
         run: uv run ruff check .
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src/tutor_assistant tests
+      - name: Validate patch whitespace
+        shell: bash
+        run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
       - name: Student-content and background coordination tests
         run: >-
           uv run pytest
+          tests/test_content_coordination.py
           tests/test_background_coordination.py
+          tests/test_background_task_coordinator.py
           tests/test_content_browser.py
           tests/test_content_editing.py
           tests/test_content_hardening.py

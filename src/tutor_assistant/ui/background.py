@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Generic, TypeVar
 
 from ..config import LatexConfig, RepositoryConfig
-from ..content import ContentBusyError, StudentContentService
+from ..content import ActivityLeaseInfo, ContentBusyError, StudentContentService
 from ..domain import Lesson
 from ..latex.remote import RemoteCompilationResult, RemoteLatexService
 
@@ -21,18 +21,59 @@ class BackgroundTaskState(StrEnum):
     SKIPPED_BUSY = "skipped_busy"
 
 
+class BackgroundTaskPurpose(StrEnum):
+    LATEX_MONITOR = "latex-monitor"
+    CONTENT_MAINTENANCE = "content-maintenance"
+    LATEX_COMPILATION = "latex-compilation"
+    CONTENT_BROWSER = "content-browser"
+    DATABASE_BACKUP = "database-backup"
+    CONTENT_DIAGNOSTICS = "content-diagnostics"
+
+
+class BusyPolicy(StrEnum):
+    FAIL = "fail"
+    SKIP = "skip"
+    DEFER = "defer"
+
+
+class BackgroundTaskPhase(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    DEFERRED = "deferred"
+    SKIPPED = "skipped"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTaskSpec(Generic[T]):
+    purpose: BackgroundTaskPurpose
+    operation: Callable[[], T]
+    activity: str | None = None
+    lesson_id: str | None = None
+    exclusive: bool = False
+    ttl: timedelta = timedelta(minutes=2)
+    busy_policy: BusyPolicy = BusyPolicy.FAIL
+    manually_requested: bool = False
+    defer_delay_ms: int = 500
+    allow_parallel: bool = False
+    none_is_no_changes: bool = False
+    retry_allowed: Callable[[], bool] | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class BackgroundTaskResult(Generic[T]):
     state: BackgroundTaskState
     payload: T | None = None
     reason: str | None = None
+    blockers: tuple[ActivityLeaseInfo, ...] = ()
     blocking_activity: str | None = None
     manually_requested: bool = False
 
     @classmethod
     def completed(
         cls,
-        payload: T,
+        payload: T | None,
         *,
         manually_requested: bool = False,
     ) -> BackgroundTaskResult[T]:
@@ -58,15 +99,37 @@ class BackgroundTaskResult(Generic[T]):
         cls,
         reason: str,
         *,
+        blockers: tuple[ActivityLeaseInfo, ...] = (),
         blocking_activity: str | None = None,
         manually_requested: bool = False,
     ) -> BackgroundTaskResult[T]:
+        if blocking_activity is None and blockers:
+            blocking_activity = blockers[0].activity
         return cls(
             state=BackgroundTaskState.SKIPPED_BUSY,
             reason=reason,
+            blockers=blockers,
             blocking_activity=blocking_activity,
             manually_requested=manually_requested,
         )
+
+
+def scan_remote_latex(
+    repository: RepositoryConfig,
+    latex: LatexConfig,
+    lessons: Iterable[Lesson],
+    cache_dir_for: Callable[[Lesson], Path],
+) -> RemoteCompilationResult | None:
+    """Run one pure remote-LaTeX scan without acquiring a workspace lease."""
+
+    service = RemoteLatexService(repository, latex)
+    for lesson in lessons:
+        if service.is_ready(lesson):
+            return service.compile_lesson(
+                lesson,
+                cache_dir=cache_dir_for(lesson),
+            )
+    return None
 
 
 def run_latex_monitor_scan(
@@ -78,40 +141,26 @@ def run_latex_monitor_scan(
     *,
     manually_requested: bool = False,
 ) -> BackgroundTaskResult[RemoteCompilationResult]:
-    """Run one LaTeX monitor iteration and classify expected lease contention."""
+    """Compatibility wrapper for callers that still own their lease lifecycle."""
 
     try:
         with content_service.activity("latex-monitor"):
-            service = RemoteLatexService(repository, latex)
-            for lesson in lessons:
-                if service.is_ready(lesson):
-                    return BackgroundTaskResult.completed(
-                        service.compile_lesson(
-                            lesson,
-                            cache_dir=cache_dir_for(lesson),
-                        ),
-                        manually_requested=manually_requested,
-                    )
+            result = scan_remote_latex(repository, latex, lessons, cache_dir_for)
     except ContentBusyError as exc:
-        blocker = next(
-            (
-                activity.activity
-                for activity in content_service.active_activities()
-                if activity.exclusive
-            ),
-            None,
-        )
-        logging.info(
-            "Проверка LaTeX отложена: blocker=%s details=%s",
-            blocker or "unknown",
-            exc,
+        blockers = exc.blockers or tuple(
+            item for item in content_service.active_activities() if item.exclusive
         )
         return BackgroundTaskResult.skipped_busy(
             str(exc),
-            blocking_activity=blocker,
+            blockers=blockers,
             manually_requested=manually_requested,
         )
 
-    return BackgroundTaskResult.no_changes(
+    if result is None:
+        return BackgroundTaskResult.no_changes(
+            manually_requested=manually_requested,
+        )
+    return BackgroundTaskResult.completed(
+        result,
         manually_requested=manually_requested,
     )
