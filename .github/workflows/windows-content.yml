@@ -7,8 +7,11 @@ on:
       - "src/tutor_assistant/ui/content_*.py"
       - "src/tutor_assistant/ui/student_content.py"
       - "src/tutor_assistant/ui/app.py"
+      - "src/tutor_assistant/ui/concurrent_app.py"
+      - "src/tutor_assistant/ui/background.py"
       - "src/tutor_assistant/ui/playback.py"
       - "src/tutor_assistant/latex/**"
+      - "tests/test_background*.py"
       - "tests/test_content*.py"
       - "tests/test_latex*.py"
       - "tests/test_student_content*.py"
@@ -35,9 +38,10 @@ jobs:
         run: uv sync --extra desktop --group dev
       - name: Lint
         run: uv run ruff check .
-      - name: Student-content tests
+      - name: Student-content and background coordination tests
         run: >-
           uv run pytest
+          tests/test_background_coordination.py
           tests/test_content_browser.py
           tests/test_content_editing.py
           tests/test_content_hardening.py

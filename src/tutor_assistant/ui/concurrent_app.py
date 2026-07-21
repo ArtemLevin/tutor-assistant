@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QMessageBox, QPushButton
 
 from ..domain import JobStatus, Lesson
 from . import app as base_app
+from .background import (
+    BackgroundTaskResult,
+    BackgroundTaskState,
+    run_latex_monitor_scan,
+)
 from .parallel_review import (
     ParallelReviewPolicy,
     ProcessingAction,
@@ -21,6 +26,8 @@ class MainWindow(base_app.MainWindow):
 
     def __init__(self, config_path: Path) -> None:
         super().__init__(config_path)
+        self._latex_monitor_deferred = False
+        self._latex_monitor_deferred_manual = False
         self.parallel_context_label = QLabel()
         self.parallel_context_label.setObjectName("muted")
         self.parallel_context_label.setWordWrap(True)
@@ -38,6 +45,115 @@ class MainWindow(base_app.MainWindow):
         self.header_stop_button.setVisible(False)
         self.header_layout.addWidget(self.header_stop_button, 0, Qt.AlignVCenter)
         self._sync_parallel_review_ui()
+
+    def scan_remote_latex(
+        self,
+        _checked: bool = False,
+        *,
+        manually_requested: bool | None = None,
+    ) -> None:
+        if manually_requested is None:
+            manually_requested = isinstance(self.sender(), QPushButton)
+        if any(
+            getattr(worker, "purpose", "") == "latex-monitor"
+            for worker in self.workers
+        ):
+            if manually_requested:
+                self._set_status("Проверка LaTeX уже выполняется", "warning")
+            return
+        self.latex_monitor_status.setText("Проверяю удалённые ветки…")
+        self._set_status("Проверяю ветки занятий…", "working")
+
+        def scan():
+            return run_latex_monitor_scan(
+                self.content_service,
+                self.config.repository,
+                self.config.latex,
+                self.pipeline.store.list(),
+                lambda lesson: self.pipeline.lesson_dir(lesson) / "latex-cache",
+                manually_requested=manually_requested,
+            )
+
+        worker = base_app.Worker(scan)
+        worker.purpose = "latex-monitor"
+        worker.succeeded.connect(self._remote_compilation_ready)
+        worker.failed.connect(
+            lambda details: self._operation_failed("latex-monitor", details)
+        )
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _remote_compilation_ready(self, monitor_result: object) -> None:
+        if not isinstance(monitor_result, BackgroundTaskResult):
+            self._operation_failed(
+                "latex-monitor",
+                "Некорректный результат фоновой проверки LaTeX",
+            )
+            return
+
+        if monitor_result.state == BackgroundTaskState.SKIPPED_BUSY:
+            self._latex_monitor_deferred = True
+            self._latex_monitor_deferred_manual = monitor_result.manually_requested
+            blocker = monitor_result.blocking_activity
+            if blocker == "content-maintenance":
+                description = "обслуживается архив"
+            elif blocker:
+                description = f"хранилище занято: {blocker}"
+            else:
+                description = "хранилище временно занято"
+            self.latex_monitor_status.setText(
+                f"Проверка отложена: {description}"
+            )
+            self._set_status(
+                "Проверка LaTeX будет повторена после освобождения архива",
+                "warning",
+            )
+            return
+
+        self._latex_monitor_deferred = False
+        self._latex_monitor_deferred_manual = False
+        if monitor_result.state == BackgroundTaskState.NO_CHANGES:
+            self.latex_monitor_status.setText("Новых TEX-файлов нет")
+            self._set_status("Новых TEX-файлов нет")
+            return
+
+        remote_result = monitor_result.payload
+        if remote_result is None:
+            self._operation_failed(
+                "latex-monitor",
+                "Фоновая проверка LaTeX завершилась без результата компиляции",
+            )
+            return
+        super()._remote_compilation_ready(remote_result)
+
+    def _content_maintenance_ready(self, result: object) -> None:
+        super()._content_maintenance_ready(result)
+        self._resume_deferred_latex_monitor()
+
+    def _content_maintenance_failed(self, details: str) -> None:
+        super()._content_maintenance_failed(details)
+        self._resume_deferred_latex_monitor()
+
+    def _resume_deferred_latex_monitor(self) -> None:
+        if not self._latex_monitor_deferred or self._shutdown_requested:
+            return
+        manually_requested = self._latex_monitor_deferred_manual
+        if not manually_requested and not self.auto_latex.isChecked():
+            return
+        if any(
+            getattr(worker, "purpose", "") == "latex-monitor"
+            for worker in self.workers
+        ):
+            return
+        self._latex_monitor_deferred = False
+        self._latex_monitor_deferred_manual = False
+        QTimer.singleShot(
+            500,
+            lambda: self.scan_remote_latex(
+                manually_requested=manually_requested,
+            ),
+        )
 
     @property
     def review_lesson(self) -> Lesson | None:
