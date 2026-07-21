@@ -1,0 +1,137 @@
+name: PR 14 contract fix
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  contract-fix:
+    if: github.head_ref == 'perf/maintenance-critical-section' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+      - name: Apply targeted contract fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected one match, found {text.count(old)}')
+              target.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/tutor_assistant/content/repository.py',
+              '                    "sha256, created_at, updated_at, deleted_at "\n'
+              '                    "FROM lesson_assets WHERE lesson_id=?"\n',
+              '                    "sha256, created_at, updated_at, deleted_at, "\n'
+              '                    "file_mtime_ns, last_verified_at "\n'
+              '                    "FROM lesson_assets WHERE lesson_id=?"\n',
+          )
+
+          replace_once(
+              'src/tutor_assistant/content/service.py',
+              '        try:\n'
+              '            snapshot_timer = perf_counter()\n',
+              '        try:\n'
+              '            foreign_activities = tuple(\n'
+              '                item for item in self.active_activities() if item.owner_id != self.owner_id\n'
+              '            )\n'
+              '            if foreign_activities:\n'
+              '                result.skipped = True\n'
+              '                result.skip_reason = str(ContentBusyError.from_blockers(foreign_activities))\n'
+              '                return result\n'
+              '            snapshot_timer = perf_counter()\n',
+          )
+
+          replace_once(
+              'src/tutor_assistant/content/service.py',
+              '            staged: list[tuple[str, Path, TrashActionResult]] = []\n'
+              '            apply_timer = perf_counter()\n',
+              '            apply_timer = perf_counter()\n',
+          )
+
+          replace_once(
+              'src/tutor_assistant/content/service.py',
+              '                for lesson_id in expired:\n'
+              '                    if perf_counter() >= apply_deadline:\n'
+              '                        result.truncated = True\n'
+              '                        result.deferred_actions += 1\n'
+              '                        continue\n'
+              '                    try:\n'
+              '                        purge_result, operation_id, staging = self.stage_lesson_purge(lesson_id)\n'
+              '                        staged.append((operation_id, staging, purge_result))\n'
+              '                        result.purged_lessons.append(lesson_id)\n'
+              '                    except Exception as exc:\n'
+              '                        result.errors.append(f"purge {lesson_id}: {exc}")\n'
+              '                        logging.exception("Не удалось подготовить очистку корзины: %s", lesson_id)\n'
+              '            result.exclusive_duration_ms = int((perf_counter() - exclusive_timer) * 1000)\n'
+              '            self._maintenance_thread_id = None\n\n'
+              '            for operation_id, staging, _purge_result in staged:\n'
+              '                try:\n'
+              '                    self.finalize_staged_purge(operation_id, staging)\n'
+              '                except Exception as exc:\n'
+              '                    result.errors.append(f"purge cleanup {operation_id}: {exc}")\n'
+              '                    logging.exception("Не удалось физически удалить staging очистки: %s", operation_id)\n',
+              '            result.exclusive_duration_ms = int((perf_counter() - exclusive_timer) * 1000)\n'
+              '            self._maintenance_thread_id = None\n\n'
+              '            for lesson_id in expired:\n'
+              '                try:\n'
+              '                    self.permanently_delete_lesson(lesson_id)\n'
+              '                    result.purged_lessons.append(lesson_id)\n'
+              '                except Exception as exc:\n'
+              '                    result.errors.append(f"purge {lesson_id}: {exc}")\n'
+              '                    logging.exception("Не удалось автоматически очистить корзину: %s", lesson_id)\n',
+          )
+
+          replace_once(
+              'src/tutor_assistant/latex/remote.py',
+              '            candidate = lesson.model_copy(deep=True)\n'
+              '            candidate.latex.tex_path = probe.path\n',
+              '            candidate = lesson.model_copy(deep=True)\n'
+              '            candidate.latex.tex_path = probe.path\n'
+              '            candidate.latex.tex_blob_sha = probe.blob_sha\n',
+          )
+
+          replace_once(
+              'tests/test_student_content.py',
+              '        (6, "content_write_consistency"),\n'
+              '    ]\n',
+              '        (6, "content_write_consistency"),\n'
+              '        (7, "asset_verification_cache"),\n'
+              '    ]\n',
+          )
+          replace_once(
+              'tests/test_student_content.py',
+              '    assert len(repository.applied_migrations()) == 6\n'
+              '    with repository.connect() as db:\n'
+              '        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 6\n',
+              '    assert len(repository.applied_migrations()) == 7\n'
+              '    with repository.connect() as db:\n'
+              '        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 7\n',
+          )
+          PY
+      - name: Format and verify lint
+        run: |
+          python -m pip install --quiet 'ruff>=0.9,<1'
+          ruff format src tests
+          ruff check .
+          python -m compileall -q src tests
+      - name: Commit fixes
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src tests
+          git commit -m 'Preserve PR 14 maintenance and migration contracts'
+          git push origin HEAD:${{ github.head_ref }}
