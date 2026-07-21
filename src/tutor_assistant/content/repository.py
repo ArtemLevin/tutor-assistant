@@ -1038,7 +1038,8 @@ class StudentContentRepository:
             with self.connect() as db:
                 sql = (
                     "SELECT a.id, a.lesson_id, a.kind, a.relative_path, a.media_type, "
-                    "a.size_bytes, a.sha256, a.created_at, a.updated_at, a.deleted_at, a.file_mtime_ns, a.last_verified_at "
+                    "a.size_bytes, a.sha256, a.created_at, a.updated_at, "
+                    "a.deleted_at, a.file_mtime_ns, a.last_verified_at "
                     "FROM lesson_assets a "
                     "JOIN lessons l ON l.lesson_id=a.lesson_id "
                     "WHERE a.sha256=? AND a.deleted_at IS NULL AND l.deleted_at IS NULL"
