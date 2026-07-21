@@ -194,6 +194,7 @@ class RemoteLatexService:
             preview_dir = lesson_root / "preview" / "pdf"
             candidate = lesson.model_copy(deep=True)
             candidate.latex.tex_path = probe.path
+            candidate.latex.tex_blob_sha = probe.blob_sha
             compilation = LatexCompiler(self.latex).compile(
                 tex_file,
                 attempt=candidate.latex.attempt,

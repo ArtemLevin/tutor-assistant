@@ -1233,7 +1233,8 @@ class StudentContentRepository:
             with self.connect() as db:
                 sql = (
                     "SELECT id, lesson_id, kind, relative_path, media_type, size_bytes, "
-                    "sha256, created_at, updated_at, deleted_at "
+                    "sha256, created_at, updated_at, deleted_at, "
+                    "file_mtime_ns, last_verified_at "
                     "FROM lesson_assets WHERE lesson_id=?"
                 )
                 if not include_deleted:

@@ -923,6 +923,13 @@ class StudentContentService:
             result.completed_at = datetime.now(UTC)
             return result
         try:
+            foreign_activities = tuple(
+                item for item in self.active_activities() if item.owner_id != self.owner_id
+            )
+            if foreign_activities:
+                result.skipped = True
+                result.skip_reason = str(ContentBusyError.from_blockers(foreign_activities))
+                return result
             snapshot_timer = perf_counter()
             row_versions = {
                 lesson_id: self.repository.lesson_row_version(lesson_id)
@@ -998,7 +1005,6 @@ class StudentContentService:
                 result.report = before
                 return result
 
-            staged: list[tuple[str, Path, TrashActionResult]] = []
             apply_timer = perf_counter()
             exclusive_timer = perf_counter()
             with self.activity(
@@ -1041,27 +1047,16 @@ class StudentContentService:
                     except Exception as exc:
                         result.errors.append(f"search index: {exc}")
                         logging.exception("Не удалось перестроить FTS во время обслуживания")
-                for lesson_id in expired:
-                    if perf_counter() >= apply_deadline:
-                        result.truncated = True
-                        result.deferred_actions += 1
-                        continue
-                    try:
-                        purge_result, operation_id, staging = self.stage_lesson_purge(lesson_id)
-                        staged.append((operation_id, staging, purge_result))
-                        result.purged_lessons.append(lesson_id)
-                    except Exception as exc:
-                        result.errors.append(f"purge {lesson_id}: {exc}")
-                        logging.exception("Не удалось подготовить очистку корзины: %s", lesson_id)
             result.exclusive_duration_ms = int((perf_counter() - exclusive_timer) * 1000)
             self._maintenance_thread_id = None
 
-            for operation_id, staging, _purge_result in staged:
+            for lesson_id in expired:
                 try:
-                    self.finalize_staged_purge(operation_id, staging)
+                    self.permanently_delete_lesson(lesson_id)
+                    result.purged_lessons.append(lesson_id)
                 except Exception as exc:
-                    result.errors.append(f"purge cleanup {operation_id}: {exc}")
-                    logging.exception("Не удалось физически удалить staging очистки: %s", operation_id)
+                    result.errors.append(f"purge {lesson_id}: {exc}")
+                    logging.exception("Не удалось автоматически очистить корзину: %s", lesson_id)
 
             if temporary:
                 result.temporary_cleanup = self.cleanup_temporary_files(
