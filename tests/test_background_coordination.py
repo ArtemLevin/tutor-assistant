@@ -90,13 +90,13 @@ def test_latex_monitor_does_not_hide_real_git_errors(
 
 
 def test_worker_emits_succeeded_not_failed_for_deferred_result() -> None:
-    pytest.importorskip("PySide6.QtCore", exc_type=ImportError)
+    pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
 
     from tutor_assistant.ui.app import Worker
 
-    application = QCoreApplication.instance() or QCoreApplication([])
+    application = QApplication.instance() or QApplication([])
     result = BackgroundTaskResult[object].skipped_busy(
         "Хранилище занято: content-maintenance",
         blocking_activity="content-maintenance",
