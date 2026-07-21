@@ -30,6 +30,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -43,7 +45,7 @@ jobs:
         run: uv run python -m compileall -q src/tutor_assistant tests
       - name: Validate patch whitespace
         shell: bash
-        run: git diff --check origin/${{ github.base_ref }}...HEAD
+        run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
       - name: Student-content and background coordination tests
         run: >-
           uv run pytest
