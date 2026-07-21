@@ -38,7 +38,7 @@ jobs:
         run: uv sync --extra desktop --group dev
       - name: Lint
         run: uv run ruff check .
-      - name: Student-content tests
+      - name: Student-content and background coordination tests
         run: >-
           uv run pytest
           tests/test_background_coordination.py
