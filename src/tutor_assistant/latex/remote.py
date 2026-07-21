@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from time import sleep
 
 from ..config import LatexConfig, RepositoryConfig
 from ..domain import JobStatus, Lesson
@@ -53,6 +55,33 @@ LATEX_MONITOR_STATUSES = {
 }
 
 
+class RemoteRepositoryUnavailable(GitError):
+    """A transient Git transport failure that can be retried safely."""
+
+
+_TRANSIENT_GIT_MARKERS = (
+    "empty reply from server",
+    "could not resolve host",
+    "failed to connect",
+    "connection timed out",
+    "operation timed out",
+    "connection reset",
+    "recv failure",
+    "send failure",
+    "remote end hung up unexpectedly",
+    "http/2 stream",
+    "http2 framing layer",
+    "network is unreachable",
+    "proxy connect aborted",
+    "tls connection was non-properly terminated",
+)
+
+
+def _is_transient_git_error(error: GitError) -> bool:
+    message = str(error).casefold()
+    return any(marker in message for marker in _TRANSIENT_GIT_MARKERS)
+
+
 def _is_missing_remote_ref(error: GitError) -> bool:
     message = str(error).casefold()
     return any(
@@ -72,6 +101,34 @@ class RemoteLatexService:
         self.latex = latex
         self.repo = repository.students_repo.resolve()
 
+    def _fetch_remote_branch(self, branch: str) -> bool:
+        attempts = self.latex.remote_fetch_attempts
+        for attempt in range(1, attempts + 1):
+            try:
+                run_git(self.repo, "fetch", self.repository.remote, branch)
+                return True
+            except GitError as exc:
+                if _is_missing_remote_ref(exc):
+                    return False
+                if not _is_transient_git_error(exc):
+                    raise
+                if attempt >= attempts:
+                    raise RemoteRepositoryUnavailable(
+                        "GitHub временно не отвечает; проверка LaTeX будет повторена автоматически"
+                    ) from exc
+                delay = self.latex.remote_fetch_backoff_seconds * (2 ** (attempt - 1))
+                logging.warning(
+                    "event=remote_latex_fetch_retry branch=%s attempt=%s/%s delay=%.2f details=%s",
+                    branch,
+                    attempt,
+                    attempts,
+                    delay,
+                    str(exc),
+                )
+                if delay:
+                    sleep(delay)
+        raise RuntimeError("unreachable")
+
     def is_candidate(self, lesson: Lesson, *, force: bool = False) -> bool:
         if not self.latex.enabled or not lesson.pipeline.compile_pdf:
             return False
@@ -88,12 +145,8 @@ class RemoteLatexService:
             return None
         branch = lesson.publication.branch
         remote_ref = f"{self.repository.remote}/{branch}"
-        try:
-            run_git(self.repo, "fetch", self.repository.remote, branch)
-        except GitError as exc:
-            if _is_missing_remote_ref(exc):
-                return None
-            raise
+        if not self._fetch_remote_branch(branch):
+            return None
         remote_head = run_git(self.repo, "rev-parse", remote_ref)
         handbook = f"{lesson.publication.repository_path}/handbook"
         names = run_git(

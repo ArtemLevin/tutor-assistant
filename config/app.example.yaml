@@ -62,6 +62,9 @@ latex:
   render_preview: true
   preview_dpi: 120
   poll_seconds: 60
+  reservation_timeout_minutes: 30
+  remote_fetch_attempts: 3
+  remote_fetch_backoff_seconds: 0.5
 
 quick_start:
   start_in_quick_mode: true

@@ -39,6 +39,7 @@ class _TaskWorker(QThread):
 class _TaskCallbacks:
     on_success: Callable[[BackgroundTaskResult[Any]], None] | None = None
     on_busy: Callable[[BackgroundTaskResult[Any]], None] | None = None
+    on_handled: Callable[[BackgroundTaskResult[Any]], None] | None = None
     on_failure: Callable[[str], None] | None = None
     on_finished: Callable[[], None] | None = None
 
@@ -99,10 +100,17 @@ class BackgroundTaskCoordinator(QObject):
         *,
         on_success: Callable[[BackgroundTaskResult[Any]], None] | None = None,
         on_busy: Callable[[BackgroundTaskResult[Any]], None] | None = None,
+        on_handled: Callable[[BackgroundTaskResult[Any]], None] | None = None,
         on_failure: Callable[[str], None] | None = None,
         on_finished: Callable[[], None] | None = None,
     ) -> bool:
-        callbacks = _TaskCallbacks(on_success, on_busy, on_failure, on_finished)
+        callbacks = _TaskCallbacks(
+            on_success=on_success,
+            on_busy=on_busy,
+            on_handled=on_handled,
+            on_failure=on_failure,
+            on_finished=on_finished,
+        )
         if self._shutdown:
             logging.info(
                 "event=background_task_rejected purpose=%s reason=shutdown",
@@ -151,11 +159,7 @@ class BackgroundTaskCoordinator(QObject):
                 return False
             lease = acquisition.lease
 
-        key = (
-            f"{spec.purpose.value}:{next(self._sequence)}"
-            if spec.allow_parallel
-            else spec.purpose.value
-        )
+        key = f"{spec.purpose.value}:{next(self._sequence)}" if spec.allow_parallel else spec.purpose.value
 
         def execute() -> BackgroundTaskResult[Any]:
             try:
@@ -166,6 +170,20 @@ class BackgroundTaskCoordinator(QObject):
                     return BackgroundTaskResult[Any].skipped_busy(
                         str(exc),
                         blockers=blockers,
+                        manually_requested=spec.manually_requested,
+                    )
+                except Exception as exc:
+                    if not spec.handled_exceptions or not isinstance(
+                        exc,
+                        spec.handled_exceptions,
+                    ):
+                        raise
+                    reason = (
+                        spec.handled_exception_message(exc) if spec.handled_exception_message else str(exc)
+                    )
+                    return BackgroundTaskResult[Any].handled_failure(
+                        reason or exc.__class__.__name__,
+                        retryable=spec.handled_exception_retryable,
                         manually_requested=spec.manually_requested,
                     )
                 if isinstance(payload, BackgroundTaskResult):
@@ -255,6 +273,12 @@ class BackgroundTaskCoordinator(QObject):
         if result.state == BackgroundTaskState.SKIPPED_BUSY:
             self._apply_busy(task.spec, task.callbacks, result)
             return
+        if result.state in {
+            BackgroundTaskState.REJECTED,
+            BackgroundTaskState.RETRYABLE_FAILURE,
+        }:
+            self._apply_handled(task.spec, task.callbacks, result)
+            return
         self._set_phase(task.spec.purpose, BackgroundTaskPhase.COMPLETED)
         logging.info(
             "event=background_task_completed purpose=%s state=%s",
@@ -291,6 +315,31 @@ class BackgroundTaskCoordinator(QObject):
                 )
         if task.spec.activity:
             self.resume_deferred(released_activity=task.spec.activity)
+
+    def _apply_handled(
+        self,
+        spec: BackgroundTaskSpec[Any],
+        callbacks: _TaskCallbacks,
+        result: BackgroundTaskResult[Any],
+    ) -> None:
+        retryable = result.state == BackgroundTaskState.RETRYABLE_FAILURE
+        if retryable and spec.busy_policy == BusyPolicy.DEFER:
+            current = self._deferred.get(spec.purpose)
+            if current and current.spec.manually_requested and not spec.manually_requested:
+                spec = current.spec
+                callbacks = current.callbacks
+                result = replace(result, manually_requested=True)
+            self._deferred[spec.purpose] = _DeferredTask(spec, callbacks, result)
+            self._set_phase(spec.purpose, BackgroundTaskPhase.DEFERRED)
+        else:
+            self._set_phase(spec.purpose, BackgroundTaskPhase.SKIPPED)
+        logging.warning(
+            "event=background_task_handled purpose=%s retryable=%s reason=%s",
+            spec.purpose.value,
+            retryable,
+            result.reason or "unknown",
+        )
+        self._safe_callback(callbacks.on_handled, result, callbacks.on_failure)
 
     def _apply_busy(
         self,
@@ -340,6 +389,7 @@ class BackgroundTaskCoordinator(QObject):
                 deferred.spec,
                 on_success=deferred.callbacks.on_success,
                 on_busy=deferred.callbacks.on_busy,
+                on_handled=deferred.callbacks.on_handled,
                 on_failure=deferred.callbacks.on_failure,
                 on_finished=deferred.callbacks.on_finished,
             )

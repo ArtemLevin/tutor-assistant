@@ -8,7 +8,9 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QMessageBox, QPushButton
 
+from ..content import ContentConflictError, ContentNotFoundError
 from ..domain import JobStatus, Lesson
+from ..latex import RemoteRepositoryUnavailable
 from . import app as base_app
 from .background import (
     BackgroundTaskPurpose,
@@ -60,9 +62,11 @@ class MainWindow(base_app.MainWindow):
                 operation=callable_,
                 busy_policy=BusyPolicy.FAIL,
                 allow_parallel=True,
+                handled_exceptions=(ContentConflictError, ContentNotFoundError),
             ),
             on_success=lambda result: succeeded(result.payload),
             on_busy=lambda result: failed(result.reason or "Хранилище временно занято"),
+            on_handled=lambda result: failed(result.reason or "Операция недоступна"),
             on_failure=failed,
             on_finished=self._maybe_finish_shutdown,
         )
@@ -166,9 +170,12 @@ class MainWindow(base_app.MainWindow):
                 manually_requested=manually_requested,
                 none_is_no_changes=True,
                 retry_allowed=lambda: bool(manually_requested or self.auto_latex.isChecked()),
+                handled_exceptions=(RemoteRepositoryUnavailable,),
+                handled_exception_retryable=True,
             ),
             on_success=self._remote_monitor_ready,
             on_busy=self._remote_monitor_busy,
+            on_handled=self._remote_monitor_unavailable,
             on_failure=lambda details: self._operation_failed("latex-monitor", details),
             on_finished=self._maybe_finish_shutdown,
         )
@@ -188,6 +195,19 @@ class MainWindow(base_app.MainWindow):
             )
             return
         super()._remote_compilation_ready(result.payload)
+
+    def _remote_monitor_unavailable(
+        self,
+        result: BackgroundTaskResult[object],
+    ) -> None:
+        message = result.reason or "GitHub временно недоступен"
+        self.latex_monitor_status.setText("GitHub временно недоступен; повторю проверку автоматически")
+        self._set_status(
+            "Проверка LaTeX отложена из-за временной сетевой ошибки",
+            "warning",
+        )
+        if result.manually_requested:
+            QMessageBox.warning(self, "Проверка LaTeX", message)
 
     def _remote_monitor_busy(
         self,
