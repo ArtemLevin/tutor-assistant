@@ -1,5 +1,10 @@
 from .backup import DatabaseBackupError
-from .coordination import ActivityLease, ActivityLeaseInfo, ContentBusyError
+from .coordination import (
+    ActivityLease,
+    ActivityLeaseInfo,
+    ContentBusyError,
+    LeaseAcquireResult,
+)
 from .importing import (
     DuplicateImportError,
     ImportCancellationToken,
@@ -45,23 +50,24 @@ from .repository import (
     StudentContentRepository,
     TranscriptEditConflictError,
 )
-from .service import ContentPathError, StudentContentService
+from .service import ActivityAcquireResult, ContentPathError, StudentContentService
 
 __all__ = [
     "ActiveLessonError",
+    "ActivityAcquireResult",
+    "ActivityLease",
+    "ActivityLeaseInfo",
     "AssetKind",
-    "ContentOperation",
-    "ContentOperationKind",
-    "ContentOperationStatus",
+    "ContentBusyError",
+    "ContentConflictError",
     "ContentIntegrityIssue",
     "ContentIntegrityReport",
     "ContentMaintenanceResult",
-    "ContentConflictError",
     "ContentNotFoundError",
+    "ContentOperation",
+    "ContentOperationKind",
+    "ContentOperationStatus",
     "ContentPathError",
-    "ContentBusyError",
-    "ActivityLease",
-    "ActivityLeaseInfo",
     "DatabaseBackupError",
     "DatabaseBackupInfo",
     "DatabaseBackupManifest",
@@ -74,15 +80,18 @@ __all__ = [
     "ImportValidationError",
     "IndexReport",
     "IntegritySeverity",
+    "LeaseAcquireResult",
     "LessonAsset",
     "LessonContent",
+    "LessonEditConflictError",
     "LessonFilters",
     "LessonImportRequest",
     "LessonImportResult",
     "LessonPage",
-    "LessonEditConflictError",
+    "StorageUsage",
     "StudentContentRepository",
     "StudentContentService",
+    "TemporaryCleanupResult",
     "TranscriptDraft",
     "TranscriptEditConflictError",
     "TranscriptRevision",
@@ -91,6 +100,4 @@ __all__ = [
     "TrashItem",
     "TrashState",
     "TrashSummary",
-    "StorageUsage",
-    "TemporaryCleanupResult",
 ]
