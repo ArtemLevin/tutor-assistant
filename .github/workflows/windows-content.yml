@@ -53,6 +53,7 @@ jobs:
       - name: Student-content and background coordination tests
         run: >-
           uv run pytest
+          --junitxml=pytest-report.xml
           tests/test_content_coordination.py
           tests/test_content_integrity_cache.py
           tests/test_content_maintenance_phases.py
@@ -72,3 +73,10 @@ jobs:
           tests/test_playback.py
           tests/test_student_content.py
           tests/test_student_content_gui.py
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-content-pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore
