@@ -20,6 +20,22 @@ class RemoteTexInfo:
     blob_sha: str
 
 
+@dataclass(frozen=True)
+class RemoteTexProbe:
+    branch: str
+    remote_head: str
+    path: str
+    blob_sha: str
+
+
+@dataclass(frozen=True)
+class LatexCompilationReservation:
+    operation_id: str
+    lesson: Lesson
+    row_version: int
+    probe: RemoteTexProbe
+
+
 @dataclass
 class RemoteCompilationResult:
     lesson: Lesson
@@ -56,7 +72,18 @@ class RemoteLatexService:
         self.latex = latex
         self.repo = repository.students_repo.resolve()
 
-    def find_tex(self, lesson: Lesson) -> RemoteTexInfo | None:
+    def is_candidate(self, lesson: Lesson, *, force: bool = False) -> bool:
+        if not self.latex.enabled or not lesson.pipeline.compile_pdf:
+            return False
+        if lesson.status not in LATEX_MONITOR_STATUSES:
+            return False
+        if not lesson.publication:
+            return False
+        if not force and lesson.latex.attempt >= self.latex.max_attempts:
+            return False
+        return True
+
+    def probe_lesson(self, lesson: Lesson) -> RemoteTexProbe | None:
         if not lesson.publication:
             return None
         branch = lesson.publication.branch
@@ -67,26 +94,41 @@ class RemoteLatexService:
             if _is_missing_remote_ref(exc):
                 return None
             raise
+        remote_head = run_git(self.repo, "rev-parse", remote_ref)
         handbook = f"{lesson.publication.repository_path}/handbook"
-        names = run_git(self.repo, "ls-tree", "-r", "--name-only", remote_ref, handbook).splitlines()
+        names = run_git(
+            self.repo,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            remote_head,
+            handbook,
+        ).splitlines()
         candidates = sorted(name for name in names if name.lower().endswith(".tex"))
         if not candidates:
             return None
         path = candidates[-1]
-        blob_sha = run_git(self.repo, "rev-parse", f"{remote_ref}:{path}")
-        return RemoteTexInfo(path, blob_sha)
+        blob_sha = run_git(self.repo, "rev-parse", f"{remote_head}:{path}")
+        return RemoteTexProbe(
+            branch=branch,
+            remote_head=remote_head,
+            path=path,
+            blob_sha=blob_sha,
+        )
+
+    def find_tex(self, lesson: Lesson) -> RemoteTexInfo | None:
+        probe = self.probe_lesson(lesson)
+        if probe is None:
+            return None
+        return RemoteTexInfo(probe.path, probe.blob_sha)
 
     def is_ready(self, lesson: Lesson) -> bool:
-        if not self.latex.enabled or not lesson.pipeline.compile_pdf:
+        if not self.is_candidate(lesson):
             return False
-        if lesson.status not in LATEX_MONITOR_STATUSES:
+        probe = self.probe_lesson(lesson)
+        if probe is None:
             return False
-        if not lesson.publication or lesson.latex.attempt >= self.latex.max_attempts:
-            return False
-        info = self.find_tex(lesson)
-        if not info:
-            return False
-        if info.blob_sha == lesson.latex.tex_blob_sha and lesson.status in {
+        if probe.blob_sha == lesson.latex.tex_blob_sha and lesson.status in {
             JobStatus.COMPILE_FAILED,
             JobStatus.PDF_REVIEW_REQUIRED,
         }:
@@ -94,40 +136,64 @@ class RemoteLatexService:
         return True
 
     def compile_lesson(
-        self, lesson: Lesson, *, force: bool = False, cache_dir: Path | None = None
+        self,
+        lesson: Lesson,
+        *,
+        force: bool = False,
+        cache_dir: Path | None = None,
+    ) -> RemoteCompilationResult:
+        if not self.is_candidate(lesson, force=force):
+            raise RuntimeError("Занятие не готово к LaTeX-компиляции")
+        probe = self.probe_lesson(lesson)
+        if probe is None:
+            raise FileNotFoundError("В ветке занятия отсутствует handbook/*.tex")
+        if not force and probe.blob_sha == lesson.latex.tex_blob_sha:
+            raise RuntimeError("Эта версия LaTeX уже компилировалась")
+        candidate = lesson.model_copy(deep=True)
+        if candidate.status in {JobStatus.PUBLISHED, JobStatus.COMPILE_FAILED}:
+            candidate.transition(JobStatus.GENERATED_TEX)
+        elif candidate.status not in {JobStatus.GENERATED_TEX, JobStatus.COMPILING_PDF}:
+            candidate.transition(JobStatus.GENERATED_TEX, force=True)
+        if candidate.status != JobStatus.COMPILING_PDF:
+            candidate.transition(JobStatus.COMPILING_PDF)
+        candidate.latex.attempt += 1
+        return self._compile_with_probe(candidate, probe, cache_dir=cache_dir)
+
+    def compile_reserved(
+        self,
+        reservation: LatexCompilationReservation,
+        *,
+        cache_dir: Path | None = None,
+    ) -> RemoteCompilationResult:
+        if reservation.lesson.status != JobStatus.COMPILING_PDF:
+            raise RuntimeError("LaTeX reservation не находится в состоянии compiling_pdf")
+        return self._compile_with_probe(
+            reservation.lesson,
+            reservation.probe,
+            cache_dir=cache_dir,
+        )
+
+    def _compile_with_probe(
+        self,
+        lesson: Lesson,
+        probe: RemoteTexProbe,
+        *,
+        cache_dir: Path | None,
     ) -> RemoteCompilationResult:
         if not lesson.publication:
             raise RuntimeError("В lesson.json отсутствуют сведения о Git-публикации")
-        info = self.find_tex(lesson)
-        if not info:
-            raise FileNotFoundError("В ветке занятия отсутствует handbook/*.tex")
-        if not force and info.blob_sha == lesson.latex.tex_blob_sha:
-            raise RuntimeError("Эта версия LaTeX уже компилировалась")
-        if not force and lesson.latex.attempt >= self.latex.max_attempts:
-            raise RuntimeError("Исчерпано максимальное количество попыток компиляции")
-
-        branch = lesson.publication.branch
-        remote_ref = f"{self.repository.remote}/{branch}"
         root = self.repo.parent / ".tutor-assistant-worktrees"
         root.mkdir(parents=True, exist_ok=True)
         worktree = Path(tempfile.mkdtemp(prefix="latex-", dir=root))
         worktree.rmdir()
         try:
-            run_git(self.repo, "worktree", "add", "--detach", str(worktree), remote_ref)
-            tex_file = worktree / info.path
+            run_git(self.repo, "worktree", "add", "--detach", str(worktree), probe.remote_head)
+            tex_file = worktree / probe.path
             lesson_root = worktree / lesson.publication.repository_path
             report_dir = lesson_root / "reports" / "latex"
             preview_dir = lesson_root / "preview" / "pdf"
             candidate = lesson.model_copy(deep=True)
-            if candidate.status in {JobStatus.PUBLISHED, JobStatus.COMPILE_FAILED}:
-                candidate.transition(JobStatus.GENERATED_TEX)
-            elif candidate.status not in {JobStatus.GENERATED_TEX, JobStatus.COMPILING_PDF}:
-                candidate.transition(JobStatus.GENERATED_TEX, force=True)
-            if candidate.status != JobStatus.COMPILING_PDF:
-                candidate.transition(JobStatus.COMPILING_PDF)
-            candidate.latex.attempt += 1
-            candidate.latex.tex_path = info.path
-            candidate.latex.tex_blob_sha = info.blob_sha
+            candidate.latex.tex_path = probe.path
             compilation = LatexCompiler(self.latex).compile(
                 tex_file,
                 attempt=candidate.latex.attempt,
@@ -140,13 +206,19 @@ class RemoteLatexService:
             ]
             if compilation.success and compilation.pdf_file:
                 candidate.latex.pdf_path = str(compilation.pdf_file.relative_to(worktree).as_posix())
-                candidate.transition(JobStatus.PDF_REVIEW_REQUIRED)
+                candidate.transition(JobStatus.PDF_REVIEW_REQUIRED, force=True)
             else:
-                candidate.transition(JobStatus.COMPILE_FAILED)
+                candidate.transition(JobStatus.COMPILE_FAILED, force=True)
 
             self._rewrite_report_paths(compilation.report_file, worktree)
-            candidate.write_json(lesson_root / "lesson.json")
-            self._write_job_status(lesson_root, candidate, compilation)
+            published_candidate = candidate.model_copy(deep=True)
+            published_candidate.latex.active_operation_id = None
+            published_candidate.latex.active_tex_blob_sha = None
+            published_candidate.latex.active_source_commit = None
+            published_candidate.latex.active_branch = None
+            published_candidate.latex.active_started_at = None
+            published_candidate.write_json(lesson_root / "lesson.json")
+            self._write_job_status(lesson_root, published_candidate, compilation)
             run_git(worktree, "add", str(lesson_root.relative_to(worktree)))
             status = "success" if compilation.success else "failed"
             run_git(
@@ -156,13 +228,19 @@ class RemoteLatexService:
                 f"Compile lesson PDF ({status}, attempt {candidate.latex.attempt})",
             )
             commit = run_git(worktree, "rev-parse", "HEAD")
-            run_git(worktree, "push", self.repository.remote, f"HEAD:refs/heads/{branch}")
+            # No force: if the remote branch advanced after the probe, Git rejects the push.
+            run_git(
+                worktree,
+                "push",
+                self.repository.remote,
+                f"HEAD:refs/heads/{probe.branch}",
+            )
             if cache_dir:
                 try:
                     self._cache_result(compilation, cache_dir)
                 except OSError as exc:
                     compilation.warnings.append(f"Не удалось создать локальный кэш предпросмотра: {exc}")
-            return RemoteCompilationResult(candidate, compilation, branch, commit)
+            return RemoteCompilationResult(candidate, compilation, probe.branch, commit)
         finally:
             if worktree.exists():
                 try:

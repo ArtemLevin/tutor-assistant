@@ -143,7 +143,12 @@ class ContentHealthDialog(QDialog):
             f"ошибок: {report.errors} · предупреждений: {report.warnings} · "
             f"SQLite: {report.database_message} · "
             f"поиск: {'FTS5' if report.fts_enabled else 'fallback'} "
-            f"({report.fts_documents} документов)"
+            f"({report.fts_documents} документов) · "
+            f"режим: {report.scan.mode.value} · "
+            f"проверено занятий: {report.scan.lessons_examined} · "
+            f"SHA-256: {report.scan.assets_hashed} · "
+            f"cache hits: {report.scan.asset_cache_hits} · "
+            f"{report.scan.duration_ms} мс"
         )
         usage = report.storage
         self.storage.setText(

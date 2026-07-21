@@ -62,6 +62,7 @@ class LatexConfig(BaseModel):
     render_preview: bool = True
     preview_dpi: int = 120
     poll_seconds: int = 60
+    reservation_timeout_minutes: int = Field(default=30, ge=5, le=1440)
 
 
 class LaunchProfile(BaseModel):

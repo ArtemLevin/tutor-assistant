@@ -120,6 +120,11 @@ class LatexState(BaseModel):
     report_path: str | None = None
     preview_paths: list[str] = Field(default_factory=list)
     tex_blob_sha: str | None = None
+    active_operation_id: str | None = None
+    active_tex_blob_sha: str | None = None
+    active_source_commit: str | None = None
+    active_branch: str | None = None
+    active_started_at: datetime | None = None
 
 
 class Lesson(BaseModel):

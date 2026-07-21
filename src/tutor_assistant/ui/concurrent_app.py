@@ -16,7 +16,6 @@ from .background import (
     BackgroundTaskSpec,
     BackgroundTaskState,
     BusyPolicy,
-    scan_remote_latex,
 )
 from .background_tasks import BackgroundTaskCoordinator
 from .parallel_review import (
@@ -162,13 +161,7 @@ class MainWindow(base_app.MainWindow):
         self.background_tasks.submit(
             BackgroundTaskSpec(
                 purpose=BackgroundTaskPurpose.LATEX_MONITOR,
-                operation=lambda: scan_remote_latex(
-                    self.config.repository,
-                    self.config.latex,
-                    self.pipeline.store.list(),
-                    lambda lesson: self.pipeline.lesson_dir(lesson) / "latex-cache",
-                ),
-                activity="latex-monitor",
+                operation=self.pipeline.scan_remote_latex,
                 busy_policy=BusyPolicy.DEFER,
                 manually_requested=manually_requested,
                 none_is_no_changes=True,

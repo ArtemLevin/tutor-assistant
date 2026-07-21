@@ -262,18 +262,10 @@ def main() -> None:
         from .latex import RemoteLatexService
 
         lesson = Lesson.read_json(args.lesson_json)
-        with pipeline.content_service.activity("latex-compilation", lesson_id=lesson.lesson_id):
-            result = RemoteLatexService(config.repository, config.latex).compile_lesson(
-                lesson,
-                force=args.force,
-                cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
-            )
-        pipeline.save_state(
-            result.lesson,
-            "latex",
-            "status",
-            "error",
-            force_status=True,
+        result = pipeline.compile_remote_latex(
+            lesson,
+            force=args.force,
+            cache_dir=pipeline.lesson_dir(lesson) / "latex-cache",
         )
         print(
             json.dumps(
