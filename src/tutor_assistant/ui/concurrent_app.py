@@ -16,7 +16,6 @@ from .background import (
     BackgroundTaskSpec,
     BackgroundTaskState,
     BusyPolicy,
-    scan_remote_latex,
 )
 from .background_tasks import BackgroundTaskCoordinator
 from .parallel_review import (
@@ -44,13 +43,8 @@ class MainWindow(base_app.MainWindow):
         self.parallel_context_label.setVisible(False)
         self.header_layout.addWidget(self.parallel_context_label, 0, Qt.AlignVCenter)
 
-        self.header_stop_button = set_button_kind(
-            QPushButton("■ Завершить запись"), "danger"
-        )
-        self.header_stop_button.setToolTip(
-            "Завершить текущую запись, "
-            "не закрывая проверяемый транскрипт"
-        )
+        self.header_stop_button = set_button_kind(QPushButton("■ Завершить запись"), "danger")
+        self.header_stop_button.setToolTip("Завершить текущую запись, не закрывая проверяемый транскрипт")
         self.header_stop_button.clicked.connect(self.stop_recording)
         self.header_stop_button.setVisible(False)
         self.header_layout.addWidget(self.header_stop_button, 0, Qt.AlignVCenter)
@@ -85,22 +79,18 @@ class MainWindow(base_app.MainWindow):
         self.background_tasks.submit(
             BackgroundTaskSpec(
                 purpose=BackgroundTaskPurpose.CONTENT_MAINTENANCE,
-                operation=lambda: self.content_service.run_maintenance_uncoordinated(
+                operation=lambda: self.content_service.run_maintenance(
                     auto_repair=self.config.content.auto_repair,
                     purge_expired=self.config.content.auto_purge_trash,
                     cleanup_temporary=self.config.content.auto_cleanup_temporary,
-                    temporary_retention=timedelta(
-                        hours=self.config.content.temporary_retention_hours
-                    ),
+                    temporary_retention=timedelta(hours=self.config.content.temporary_retention_hours),
                     backup_enabled=self.config.content.backup_enabled,
-                    backup_interval=timedelta(
-                        hours=self.config.content.backup_interval_hours
-                    ),
+                    backup_interval=timedelta(hours=self.config.content.backup_interval_hours),
                     backup_retention_count=self.config.content.backup_retention_count,
+                    max_lessons=self.config.content.maintenance_max_lessons_per_cycle,
+                    max_seconds=self.config.content.maintenance_max_seconds,
+                    apply_max_seconds=self.config.content.maintenance_apply_max_seconds,
                 ),
-                activity="content-maintenance",
-                exclusive=True,
-                ttl=timedelta(minutes=5),
                 busy_policy=BusyPolicy.SKIP,
             ),
             on_success=lambda result: self._content_maintenance_ready(result.payload),
@@ -171,19 +161,11 @@ class MainWindow(base_app.MainWindow):
         self.background_tasks.submit(
             BackgroundTaskSpec(
                 purpose=BackgroundTaskPurpose.LATEX_MONITOR,
-                operation=lambda: scan_remote_latex(
-                    self.config.repository,
-                    self.config.latex,
-                    self.pipeline.store.list(),
-                    lambda lesson: self.pipeline.lesson_dir(lesson) / "latex-cache",
-                ),
-                activity="latex-monitor",
+                operation=self.pipeline.scan_remote_latex,
                 busy_policy=BusyPolicy.DEFER,
                 manually_requested=manually_requested,
                 none_is_no_changes=True,
-                retry_allowed=lambda: bool(
-                    manually_requested or self.auto_latex.isChecked()
-                ),
+                retry_allowed=lambda: bool(manually_requested or self.auto_latex.isChecked()),
             ),
             on_success=self._remote_monitor_ready,
             on_busy=self._remote_monitor_busy,
@@ -264,11 +246,7 @@ class MainWindow(base_app.MainWindow):
         self.header_stop_button.setEnabled(
             bool(self.recorder and self.recorder.active) and not self._recording_stop_started
         )
-        stop_text = (
-            "Сохраняю запись…"
-            if self._recording_stop_started
-            else "■ Завершить запись"
-        )
+        stop_text = "Сохраняю запись…" if self._recording_stop_started else "■ Завершить запись"
         self.header_stop_button.setText(stop_text)
         self.play_segment_button.setEnabled(policy.audio_playback_allowed and bool(review))
 
@@ -315,9 +293,7 @@ class MainWindow(base_app.MainWindow):
             JobStatus.COMPILE_FAILED,
             JobStatus.PDF_REVIEW_REQUIRED,
         }:
-            self.latex_monitor_status.setText(
-                f"Восстановлено занятие: {lesson.status.value}"
-            )
+            self.latex_monitor_status.setText(f"Восстановлено занятие: {lesson.status.value}")
         self.open_pr_button.setEnabled(bool(lesson.publication and lesson.publication.pr_url))
 
         if lesson.status == JobStatus.REVIEW_REQUIRED:
@@ -349,16 +325,13 @@ class MainWindow(base_app.MainWindow):
             answer = QMessageBox.question(
                 self,
                 "Ошибка транскрибации",
-                (job.error or "Неизвестная ошибка")
-                + "\n\nПовторить транскрибацию?",
+                (job.error or "Неизвестная ошибка") + "\n\nПовторить транскрибацию?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes,
             )
             if answer == QMessageBox.Yes:
                 if not job.audio.is_file():
-                    QMessageBox.critical(
-                        self, "Ошибка", f"Аудиофайл не найден: {job.audio}"
-                    )
+                    QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {job.audio}")
                     return
                 job.lesson.transition(JobStatus.RECORDED, force=True)
                 self.pipeline.save_state(

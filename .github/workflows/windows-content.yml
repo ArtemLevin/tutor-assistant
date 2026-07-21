@@ -3,6 +3,10 @@ name: Windows student content
 on:
   pull_request:
     paths:
+      - "src/tutor_assistant/config.py"
+      - "src/tutor_assistant/domain.py"
+      - "src/tutor_assistant/pipeline.py"
+      - "src/tutor_assistant/cli.py"
       - "src/tutor_assistant/content/**"
       - "src/tutor_assistant/ui/content_*.py"
       - "src/tutor_assistant/ui/student_content.py"
@@ -25,7 +29,7 @@ on:
 jobs:
   content:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -49,7 +53,10 @@ jobs:
       - name: Student-content and background coordination tests
         run: >-
           uv run pytest
+          --junitxml=pytest-report.xml
           tests/test_content_coordination.py
+          tests/test_content_integrity_cache.py
+          tests/test_content_maintenance_phases.py
           tests/test_background_coordination.py
           tests/test_background_task_coordinator.py
           tests/test_content_browser.py
@@ -61,7 +68,15 @@ jobs:
           tests/test_content_pipeline_projection.py
           tests/test_content_maintenance.py
           tests/test_content_backup.py
+          tests/test_latex_reservation.py
           tests/test_latex_remote.py
           tests/test_playback.py
           tests/test_student_content.py
           tests/test_student_content_gui.py
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-content-pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore

@@ -65,6 +65,11 @@ class IntegritySeverity(StrEnum):
     INFO = "info"
 
 
+class IntegrityCheckMode(StrEnum):
+    QUICK = "quick"
+    FULL = "full"
+
+
 class LessonAsset(BaseModel):
     id: int | None = None
     lesson_id: str
@@ -76,6 +81,8 @@ class LessonAsset(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     deleted_at: datetime | None = None
+    file_mtime_ns: int | None = Field(default=None, ge=0)
+    last_verified_at: datetime | None = None
 
     @field_validator("lesson_id")
     @classmethod
@@ -304,6 +311,21 @@ class DatabaseRestoreResult(BaseModel):
     verified: bool = True
 
 
+class IntegrityScanStats(BaseModel):
+    mode: IntegrityCheckMode = IntegrityCheckMode.FULL
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+    lessons_examined: int = Field(default=0, ge=0)
+    lessons_skipped: int = Field(default=0, ge=0)
+    assets_stat_checked: int = Field(default=0, ge=0)
+    assets_hashed: int = Field(default=0, ge=0)
+    asset_cache_hits: int = Field(default=0, ge=0)
+    asset_cache_misses: int = Field(default=0, ge=0)
+    truncated: bool = False
+    truncated_reason: str | None = None
+    duration_ms: int = Field(default=0, ge=0)
+
+
 class ContentIntegrityReport(BaseModel):
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     database_ok: bool = True
@@ -317,6 +339,7 @@ class ContentIntegrityReport(BaseModel):
     temporary_paths: list[str] = Field(default_factory=list)
     storage: StorageUsage = Field(default_factory=StorageUsage)
     issues: list[ContentIntegrityIssue] = Field(default_factory=list)
+    scan: IntegrityScanStats = Field(default_factory=IntegrityScanStats)
 
     @property
     def errors(self) -> int:
@@ -347,12 +370,23 @@ class ContentMaintenanceResult(BaseModel):
     purged_lessons: list[str] = Field(default_factory=list)
     temporary_cleanup: TemporaryCleanupResult = Field(default_factory=TemporaryCleanupResult)
     backup: DatabaseBackupInfo | None = None
-    backup_retention: DatabaseBackupRetentionResult = Field(
-        default_factory=DatabaseBackupRetentionResult
-    )
+    backup_retention: DatabaseBackupRetentionResult = Field(default_factory=DatabaseBackupRetentionResult)
     skip_reason: str | None = None
     errors: list[str] = Field(default_factory=list)
     report: ContentIntegrityReport | None = None
+    mode: IntegrityCheckMode = IntegrityCheckMode.QUICK
+    mutated: bool = False
+    truncated: bool = False
+    deferred_actions: int = Field(default=0, ge=0)
+    snapshot_duration_ms: int = Field(default=0, ge=0)
+    scan_duration_ms: int = Field(default=0, ge=0)
+    apply_duration_ms: int = Field(default=0, ge=0)
+    verify_duration_ms: int = Field(default=0, ge=0)
+    exclusive_duration_ms: int = Field(default=0, ge=0)
+    planned_repairs: int = Field(default=0, ge=0)
+    planned_purges: int = Field(default=0, ge=0)
+    planned_temp_cleanup: int = Field(default=0, ge=0)
+    stale_actions: list[str] = Field(default_factory=list)
 
     @property
     def healthy(self) -> bool:

@@ -1038,7 +1038,8 @@ class StudentContentRepository:
             with self.connect() as db:
                 sql = (
                     "SELECT a.id, a.lesson_id, a.kind, a.relative_path, a.media_type, "
-                    "a.size_bytes, a.sha256, a.created_at, a.updated_at, a.deleted_at "
+                    "a.size_bytes, a.sha256, a.created_at, a.updated_at, "
+                    "a.deleted_at, a.file_mtime_ns, a.last_verified_at "
                     "FROM lesson_assets a "
                     "JOIN lessons l ON l.lesson_id=a.lesson_id "
                     "WHERE a.sha256=? AND a.deleted_at IS NULL AND l.deleted_at IS NULL"
@@ -1114,8 +1115,9 @@ class StudentContentRepository:
                         """
                         INSERT INTO lesson_assets (
                             lesson_id, kind, relative_path, media_type, size_bytes,
-                            sha256, created_at, updated_at, deleted_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            sha256, created_at, updated_at, deleted_at,
+                            file_mtime_ns, last_verified_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             asset.lesson_id,
@@ -1127,6 +1129,8 @@ class StudentContentRepository:
                             asset.created_at.isoformat(),
                             asset.updated_at.isoformat(),
                             asset.deleted_at.isoformat() if asset.deleted_at else None,
+                            asset.file_mtime_ns,
+                            asset.last_verified_at.isoformat() if asset.last_verified_at else None,
                         ),
                     )
                 if transcript:
@@ -1162,14 +1166,16 @@ class StudentContentRepository:
                     """
                     INSERT INTO lesson_assets (
                         lesson_id, kind, relative_path, media_type, size_bytes, sha256,
-                        created_at, updated_at, deleted_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, deleted_at, file_mtime_ns, last_verified_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(lesson_id, relative_path) DO UPDATE SET
                         kind=excluded.kind,
                         media_type=excluded.media_type,
                         size_bytes=excluded.size_bytes,
                         sha256=excluded.sha256,
                         updated_at=excluded.updated_at,
+                        file_mtime_ns=excluded.file_mtime_ns,
+                        last_verified_at=excluded.last_verified_at,
                         deleted_at=CASE
                             WHEN lesson_assets.deleted_at IS NOT NULL
                              AND lesson_assets.sha256=excluded.sha256
@@ -1188,12 +1194,14 @@ class StudentContentRepository:
                         asset.created_at.isoformat(),
                         now,
                         asset.deleted_at.isoformat() if asset.deleted_at else None,
+                        asset.file_mtime_ns,
+                        asset.last_verified_at.isoformat() if asset.last_verified_at else None,
                     ),
                 )
                 return db.execute(
                     """
                     SELECT id, lesson_id, kind, relative_path, media_type, size_bytes,
-                           sha256, created_at, updated_at, deleted_at
+                           sha256, created_at, updated_at, deleted_at, file_mtime_ns, last_verified_at
                     FROM lesson_assets
                     WHERE lesson_id=? AND relative_path=?
                     """,
@@ -1202,12 +1210,31 @@ class StudentContentRepository:
 
         return self._asset_from_row(self._retry(operation))
 
+    def update_asset_verification(
+        self,
+        asset_id: int,
+        *,
+        file_mtime_ns: int,
+        verified_at: datetime,
+    ) -> None:
+        def operation() -> None:
+            with self.connect() as db:
+                cursor = db.execute(
+                    "UPDATE lesson_assets SET file_mtime_ns=?, last_verified_at=? WHERE id=?",
+                    (file_mtime_ns, verified_at.isoformat(), asset_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ContentNotFoundError(f"Файл занятия не найден: {asset_id}")
+
+        self._retry(operation)
+
     def list_assets(self, lesson_id: str, *, include_deleted: bool = False) -> list[LessonAsset]:
         def operation() -> list[sqlite3.Row]:
             with self.connect() as db:
                 sql = (
                     "SELECT id, lesson_id, kind, relative_path, media_type, size_bytes, "
-                    "sha256, created_at, updated_at, deleted_at "
+                    "sha256, created_at, updated_at, deleted_at, "
+                    "file_mtime_ns, last_verified_at "
                     "FROM lesson_assets WHERE lesson_id=?"
                 )
                 if not include_deleted:
