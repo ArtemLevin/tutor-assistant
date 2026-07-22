@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-route.schema.json",
+  "title": "AgentKit quality-aware route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "task", "original_mode", "effective_mode", "escalated", "approval_required", "scope_kind", "selected_skills", "risk_reasons", "requirements", "rules", "warnings", "source_snapshot", "scoped_candidates"],
+  "properties": {
+    "version": {"const": 1},
+    "task": {"type": "string"},
+    "original_mode": {"enum": ["auto", "fast", "standard", "deep"]},
+    "effective_mode": {"enum": ["auto", "fast", "standard", "deep"]},
+    "escalated": {"type": "boolean"},
+    "approval_required": {"type": "boolean"},
+    "scope_kind": {"enum": ["unknown", "healthy", "local", "systemic"]},
+    "selected_skills": {"type": "array", "items": {"type": "string"}},
+    "risk_reasons": {"type": "array", "items": {"type": "string"}},
+    "requirements": {"type": "array", "items": {"type": "string"}},
+    "rules": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "source_snapshot": {"type": "string"},
+    "scoped_candidates": {"type": "array", "items": {"type": "object"}}
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-gate.schema.json",
+  "title": "AgentKit quality gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "mode", "unavailable_policy", "available", "comparable", "passed", "allowed", "violations", "warnings"],
+  "properties": {
+    "version": {"const": 1},
+    "generated_at": {"type": "string"},
+    "mode": {"enum": ["report", "warn", "enforce"]},
+    "unavailable_policy": {"enum": ["allow", "warn", "stop"]},
+    "available": {"type": "boolean"},
+    "comparable": {"type": "boolean"},
+    "passed": {"type": "boolean"},
+    "allowed": {"type": "boolean"},
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "metric", "threshold", "baseline", "current", "delta", "scope", "message"]
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

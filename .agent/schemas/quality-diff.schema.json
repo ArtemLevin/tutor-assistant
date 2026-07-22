@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-diff.schema.json",
+  "title": "AgentKit quality diff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "provider", "provider_version", "baseline_fingerprint", "current_fingerprint", "comparable", "metrics", "new_hotspots", "resolved_hotspots", "persisting_hotspots", "changed_hotspots", "warnings"],
+  "properties": {
+    "version": {"const": 1},
+    "generated_at": {"type": "string"},
+    "provider": {"type": "string"},
+    "provider_version": {"type": "string"},
+    "baseline_fingerprint": {"type": "string"},
+    "current_fingerprint": {"type": "string"},
+    "comparable": {"type": "boolean"},
+    "metrics": {"type": "object", "additionalProperties": {"type": "object"}},
+    "new_hotspots": {"type": "array", "items": {"type": "object"}},
+    "resolved_hotspots": {"type": "array", "items": {"type": "object"}},
+    "persisting_hotspots": {"type": "array", "items": {"type": "object"}},
+    "changed_hotspots": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

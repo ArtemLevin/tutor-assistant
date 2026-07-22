@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-snapshot.schema.json",
+  "title": "AgentKit quality snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "availability", "provider", "provider_version", "source_fingerprint", "project", "statistics", "hotspots", "warnings", "truncated", "cache_hit", "details"],
+  "properties": {
+    "version": {"const": 1},
+    "generated_at": {"type": "string"},
+    "availability": {"enum": ["available", "unavailable", "unsupported", "failed", "partial"]},
+    "provider": {"type": "string"},
+    "provider_version": {"type": "string"},
+    "source_fingerprint": {"type": "string"},
+    "project": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["score", "refactoring_pressure", "overengineering_pressure", "complexity_density", "status", "language", "loc"],
+      "properties": {
+        "score": {"type": ["number", "null"]},
+        "refactoring_pressure": {"type": ["number", "null"]},
+        "overengineering_pressure": {"type": ["number", "null"]},
+        "complexity_density": {"type": ["number", "null"]},
+        "status": {"type": "string"},
+        "language": {"type": "string"},
+        "loc": {"type": ["integer", "null"]}
+      }
+    },
+    "statistics": {"type": "object", "additionalProperties": {"$ref": "#/$defs/stat"}},
+    "hotspots": {"type": "array", "items": {"$ref": "#/$defs/hotspot"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "truncated": {"type": "boolean"},
+    "cache_hit": {"type": "boolean"},
+    "details": {"type": "boolean"}
+  },
+  "$defs": {
+    "stat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["avg", "min", "max", "p50", "p90"],
+      "properties": {
+        "avg": {"type": ["number", "null"]},
+        "min": {"type": ["number", "null"]},
+        "max": {"type": ["number", "null"]},
+        "p50": {"type": ["number", "null"]},
+        "p90": {"type": ["number", "null"]}
+      }
+    },
+    "hotspot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "file", "class_name", "status", "status_score", "loc", "complexity", "complexity_total", "complexity_density", "refactoring_pressure", "overengineering_pressure", "reasons", "rank_score"],
+      "properties": {
+        "kind": {"enum": ["package", "module", "class", "method", "function"]},
+        "name": {"type": "string"},
+        "file": {"type": "string"},
+        "class_name": {"type": "string"},
+        "status": {"type": "string"},
+        "status_score": {"type": ["number", "null"]},
+        "loc": {"type": ["integer", "null"]},
+        "complexity": {"type": ["number", "null"]},
+        "complexity_total": {"type": ["number", "null"]},
+        "complexity_density": {"type": ["number", "null"]},
+        "refactoring_pressure": {"type": ["number", "null"]},
+        "overengineering_pressure": {"type": ["number", "null"]},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "rank_score": {"type": "number"}
+      }
+    }
+  }
+}

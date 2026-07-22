@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/project-profile.schema.json",
+  "title": "AgentKit project profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version", "project_name", "generated_at", "fingerprint", "languages",
+    "package_managers", "source_roots", "test_roots", "frameworks",
+    "verification_commands", "control_files", "indexed_files", "truncated"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "project_name": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "fingerprint": {"type": "string", "minLength": 64, "maxLength": 64},
+    "languages": {"type": "array", "items": {"type": "string"}},
+    "package_managers": {"type": "array", "items": {"type": "string"}},
+    "source_roots": {"type": "array", "items": {"type": "string"}},
+    "test_roots": {"type": "array", "items": {"type": "string"}},
+    "frameworks": {"type": "array", "items": {"type": "string"}},
+    "verification_commands": {
+      "type": "array",
+      "items": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+    },
+    "control_files": {"type": "array", "items": {"type": "string"}},
+    "indexed_files": {"type": "integer", "minimum": 0},
+    "truncated": {"type": "boolean"}
+  }
+}

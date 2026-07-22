@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/run-state.schema.json",
+  "title": "AgentKit run lifecycle",
+  "type": "object",
+  "required": ["version", "run_id", "status", "phase", "started_at", "updated_at", "mutation_started", "mutation_completed", "mutation_fingerprint", "temporary_worktrees", "message"],
+  "properties": {
+    "version": {"const": 1},
+    "run_id": {"type": "string"},
+    "status": {"enum": ["running", "completed", "failed", "manual_recovery_required"]},
+    "phase": {"type": "string"},
+    "started_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "mutation_started": {"type": "boolean"},
+    "mutation_completed": {"type": "boolean"},
+    "mutation_fingerprint": {"type": "string"},
+    "temporary_worktrees": {"type": "array", "items": {"type": "string"}},
+    "message": {"type": "string"}
+  }
+}

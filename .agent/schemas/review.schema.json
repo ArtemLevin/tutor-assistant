@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/review.schema.json",
+  "x-agentkit-schema-version": 1,
+  "title": "Adversarial review result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "findings", "criteria_checked", "remaining_risks", "confidence"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["approved", "approved_with_non_blocking_findings", "changes_required"]},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "file", "issue", "evidence", "smallest_fix"],
+        "properties": {
+          "severity": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+          "file": {"type": "string"},
+          "issue": {"type": "string"},
+          "evidence": {"type": "string"},
+          "smallest_fix": {"type": "string"}
+        }
+      }
+    },
+    "criteria_checked": {"type": "array", "items": {"type": "string"}},
+    "remaining_risks": {"type": "array", "items": {"type": "string"}, "default": []},
+    "confidence": {"type": "string", "enum": ["low", "medium", "high"]}
+  }
+}

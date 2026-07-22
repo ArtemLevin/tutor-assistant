@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/completion.schema.json",
+  "x-agentkit-schema-version": 1,
+  "title": "Completion gate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "acceptance_criteria_satisfied",
+    "required_checks_passed",
+    "blocking_review_findings",
+    "unrelated_diff",
+    "documentation_updated_if_needed",
+    "unresolved_assumptions",
+    "residual_risks_disclosed"
+  ],
+  "properties": {
+    "acceptance_criteria_satisfied": {"type": "boolean"},
+    "required_checks_passed": {"type": "boolean"},
+    "blocking_review_findings": {"type": "integer", "minimum": 0},
+    "unrelated_diff": {"type": "boolean"},
+    "documentation_updated_if_needed": {"type": "boolean"},
+    "unresolved_assumptions": {"type": "array", "items": {"type": "string"}},
+    "residual_risks_disclosed": {"type": "boolean"},
+    "skipped_checks": {"type": "array", "items": {"type": "string"}, "default": []}
+  }
+}

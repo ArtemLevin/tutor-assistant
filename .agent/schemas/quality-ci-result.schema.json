@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-ci-result.schema.json",
+  "title": "AgentKit quality CI result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "run_id",
+    "status",
+    "base_ref",
+    "merge_base",
+    "gate_allowed",
+    "exit_code",
+    "run_directory",
+    "artifact_directory",
+    "summary_path",
+    "warnings"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["passed", "failed", "error"]},
+    "base_ref": {"type": "string"},
+    "merge_base": {"type": "string"},
+    "gate_allowed": {"type": "boolean"},
+    "exit_code": {"enum": [0, 2, 6]},
+    "run_directory": {"type": "string"},
+    "artifact_directory": {"type": "string"},
+    "summary_path": {"type": "string"},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/model-route.schema.json",
+  "title": "AgentKit phase model route",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "route", "phases", "warnings"],
+  "properties": {
+    "version": {"const": 1},
+    "route": {"type": "string", "minLength": 1},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "phases": {
+      "type": "object",
+      "required": ["plan", "implementation", "review", "targeted_fix"],
+      "additionalProperties": false,
+      "properties": {
+        "plan": {"$ref": "#/$defs/phase"},
+        "implementation": {"$ref": "#/$defs/phase"},
+        "review": {"$ref": "#/$defs/phase"},
+        "targeted_fix": {"$ref": "#/$defs/phase"}
+      }
+    }
+  },
+  "$defs": {
+    "phase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "target", "provider", "model", "reasons", "fallbacks"],
+      "properties": {
+        "phase": {"enum": ["plan", "implementation", "review", "targeted_fix"]},
+        "target": {"type": "string", "minLength": 1},
+        "provider": {"enum": ["cli", "openai"]},
+        "model": {"type": "string"},
+        "reasons": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "fallbacks": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

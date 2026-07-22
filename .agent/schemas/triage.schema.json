@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/triage.schema.json",
+  "x-agentkit-schema-version": 1,
+  "title": "Task triage result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_type", "execution_mode", "risk", "scope", "required_skills", "budgets"],
+  "properties": {
+    "task_type": {
+      "type": "string",
+      "enum": ["documentation", "bugfix", "feature", "refactor", "review", "migration", "operations", "investigation"]
+    },
+    "execution_mode": {"type": "string", "enum": ["fast", "standard", "deep"]},
+    "risk": {
+      "type": "object",
+      "required": ["level", "reasons"],
+      "properties": {
+        "level": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
+        "reasons": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": ["likely_paths", "compatibility_surfaces"],
+      "properties": {
+        "likely_paths": {"type": "array", "items": {"type": "string"}},
+        "forbidden_paths": {"type": "array", "items": {"type": "string"}, "default": []},
+        "compatibility_surfaces": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "required_skills": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "optional_skills": {"type": "array", "items": {"type": "string"}, "uniqueItems": true, "default": []},
+    "budgets": {
+      "type": "object",
+      "required": ["max_initial_files", "max_implementation_iterations", "max_review_iterations"],
+      "properties": {
+        "max_initial_files": {"type": "integer", "minimum": 1},
+        "max_implementation_iterations": {"type": "integer", "minimum": 1},
+        "max_review_iterations": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "assumptions_to_validate": {"type": "array", "items": {"type": "string"}, "default": []}
+  }
+}

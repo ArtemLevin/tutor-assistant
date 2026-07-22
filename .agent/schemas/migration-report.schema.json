@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/migration-report.schema.json",
+  "title": "AgentKit migration report",
+  "type": "object",
+  "required": ["version", "installed_version", "target_version", "compatible", "changes_required", "blocking_conflicts", "actions", "generated_at"],
+  "properties": {
+    "version": {"const": 1},
+    "installed_version": {"type": "string"},
+    "target_version": {"type": "string"},
+    "compatible": {"type": "boolean"},
+    "changes_required": {"type": "boolean"},
+    "blocking_conflicts": {"type": "array", "items": {"type": "string"}},
+    "actions": {"type": "array", "items": {"type": "object"}},
+    "generated_at": {"type": "string"}
+  }
+}

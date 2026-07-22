@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/hotspot-context.schema.json",
+  "title": "AgentKit hotspot-aware context",
+  "type": "object",
+  "required": ["version", "task", "source_snapshot", "source_fingerprint", "graph_available", "cache_key", "fingerprint", "cache_hit", "candidates", "warnings", "content_chars"],
+  "properties": {
+    "version": {"const": 1},
+    "task": {"type": "string"},
+    "source_snapshot": {"type": "string"},
+    "source_fingerprint": {"type": "string"},
+    "graph_available": {"type": "boolean"},
+    "cache_key": {"type": "string"},
+    "fingerprint": {"type": "string"},
+    "cache_hit": {"type": "boolean"},
+    "candidates": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "content_chars": {"type": "integer"}
+  }
+}

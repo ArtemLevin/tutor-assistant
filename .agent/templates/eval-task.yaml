@@ -1,0 +1,22 @@
+version: 1
+id: python-local-bugfix-001
+repository_fixture: evals/fixtures/python_service
+mode: standard
+task: Fix duplicate retry scheduling without changing the public API.
+repetitions: 1
+smoke: true
+acceptance:
+  commands:
+    - [python, -m, unittest, discover, -s, tests, -v]
+  required_files:
+    - tests/test_retry.py
+  forbidden_files:
+    - pyproject.toml
+quality:
+  allow_new_critical_hotspots: 0
+budget:
+  max_agent_calls: 4
+experiment:
+  graphify: true
+  context_cache: true
+  quality_context: true

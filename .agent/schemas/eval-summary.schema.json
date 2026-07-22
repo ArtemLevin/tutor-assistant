@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/eval-summary.schema.json",
+  "title": "AgentKit evaluation summary",
+  "type": "object",
+  "required": ["version", "evaluation_id", "task_ids", "kind", "run_count", "correctness", "efficiency", "quality"],
+  "properties": {
+    "version": {"const": 1},
+    "kind": {"enum": ["task", "suite"]},
+    "correctness": {"type": "object"},
+    "efficiency": {"type": "object"},
+    "quality": {"type": "object"}
+  }
+}

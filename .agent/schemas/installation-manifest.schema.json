@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/installation-manifest.schema.json",
+  "title": "AgentKit installation manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "agentkit_version", "previous_version", "installed_at", "resources"],
+  "properties": {
+    "version": {"const": 1},
+    "agentkit_version": {"type": "string"},
+    "previous_version": {"type": "string"},
+    "installed_at": {"type": "string"},
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "strategy"],
+        "properties": {
+          "path": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "strategy": {"enum": ["semantic-config", "managed-blocks", "user-owned", "managed-file", "preserved-customization"]}
+        }
+      }
+    }
+  }
+}

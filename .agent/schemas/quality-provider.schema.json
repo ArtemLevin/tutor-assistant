@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-provider.schema.json",
+  "title": "AgentKit quality provider status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "availability", "provider", "provider_version", "executable", "detected_languages", "supported_languages", "message", "capabilities"],
+  "properties": {
+    "version": {"const": 1},
+    "availability": {"enum": ["available", "unavailable", "unsupported", "failed", "partial"]},
+    "provider": {"type": "string"},
+    "provider_version": {"type": "string"},
+    "executable": {"type": "string"},
+    "detected_languages": {"type": "array", "items": {"type": "string"}},
+    "supported_languages": {"type": "array", "items": {"type": "string"}},
+    "message": {"type": "string"},
+    "capabilities": {"type": ["object", "null"]}
+  }
+}

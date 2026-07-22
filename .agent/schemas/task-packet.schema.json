@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/task-packet.schema.json",
+  "x-agentkit-schema-version": 1,
+  "title": "AgentKit task packet",
+  "type": "object",
+  "required": ["task", "mode", "risk_reasons", "selected_skills", "graph", "git_head", "limits"],
+  "properties": {
+    "task": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["fast", "standard", "deep"]},
+    "risk_reasons": {"type": "array", "items": {"type": "string"}},
+    "selected_skills": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "graph": {
+      "type": "object",
+      "required": ["available", "updated", "query", "output", "warning"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "updated": {"type": "boolean"},
+        "query": {"type": "string"},
+        "output": {"type": "string"},
+        "warning": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "quality": {"type": "object"},
+    "quality_route": {"type": "object"},
+    "model_route": {"$ref": "model-route.schema.json"},
+    "verification_plan": {"type": "object"},
+    "git_head": {"type": "string"},
+    "limits": {
+      "type": "object",
+      "required": ["max_changed_files", "max_fix_iterations"],
+      "properties": {
+        "max_changed_files": {"type": "integer", "minimum": 1},
+        "max_fix_iterations": {"type": "integer", "minimum": 0},
+        "hard_input_tokens": {"type": "integer", "minimum": 0},
+        "hard_output_tokens": {"type": "integer", "minimum": 0},
+        "hard_agent_calls": {"type": "integer", "minimum": 0},
+        "hard_duration_seconds": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

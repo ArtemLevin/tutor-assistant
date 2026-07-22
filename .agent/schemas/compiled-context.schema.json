@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/compiled-context.schema.json",
+  "title": "AgentKit compiled context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version", "phase", "cache_key", "fingerprint", "cache_hit",
+    "profile_fingerprint", "selected_skills", "candidate_files",
+    "symbol_inventory", "content"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "phase": {"enum": ["plan", "implementation", "review", "targeted_fix"]},
+    "cache_key": {"type": "string", "minLength": 64, "maxLength": 64},
+    "fingerprint": {"type": "string", "minLength": 64, "maxLength": 64},
+    "cache_hit": {"type": "boolean"},
+    "profile_fingerprint": {"type": "string", "minLength": 64, "maxLength": 64},
+    "selected_skills": {"type": "array", "items": {"type": "string"}},
+    "candidate_files": {"type": "array", "items": {"type": "string"}},
+    "symbol_inventory": {
+      "type": "object",
+      "additionalProperties": {"type": "array", "items": {"type": "string"}}
+    },
+    "content": {"type": "string"}
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/diagnostics-manifest.schema.json",
+  "title": "AgentKit diagnostics bundle manifest",
+  "type": "object",
+  "required": ["version", "created_at", "agentkit_version", "files", "redacted"],
+  "properties": {
+    "version": {"const": 1},
+    "created_at": {"type": "string"},
+    "agentkit_version": {"type": "string"},
+    "files": {"type": "array", "items": {"type": "string"}},
+    "redacted": {"const": true}
+  }
+}

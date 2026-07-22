@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/agent-capabilities.schema.json",
+  "x-agentkit-schema-version": 1,
+  "title": "Agent execution capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["structured_outputs", "exact_usage", "prompt_caching", "session_resume", "tool_calling", "read_only_mode", "reasoning_control", "local_workspace_mutation", "max_context_tokens"],
+  "properties": {
+    "structured_outputs": {"type": "boolean"},
+    "exact_usage": {"type": "boolean"},
+    "prompt_caching": {"type": "boolean"},
+    "session_resume": {"type": "boolean"},
+    "tool_calling": {"type": "boolean"},
+    "read_only_mode": {"type": "boolean"},
+    "reasoning_control": {"type": "boolean"},
+    "local_workspace_mutation": {"type": "boolean"},
+    "max_context_tokens": {"type": ["integer", "null"], "minimum": 1}
+  }
+}

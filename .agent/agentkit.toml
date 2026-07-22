@@ -1,0 +1,163 @@
+# AgentKit project configuration
+version = 1
+
+[agent]
+platform = "codex"
+# The {prompt} placeholder is replaced with the generated task packet.
+command = ["codex", "exec", "{prompt}"]
+timeout_seconds = 1800
+
+[models]
+# Disabled preserves the 0.10 fixed-CLI behavior. Configure routes and targets
+# before enabling phase-aware OpenAI execution.
+enabled = false
+default_route = "standard"
+max_retries = 1
+max_fallbacks = 1
+
+[graphify]
+enabled = true
+required = false
+directed = true
+update_before_task = "changed"
+query_budget = 1200
+max_initial_queries = 1
+
+[workflow]
+default_mode = "auto"
+require_clean_tree = true
+require_review = true
+deep_requires_approval = true
+max_fix_iterations = 1
+
+[budget]
+enabled = true
+soft_input_tokens = 30000
+hard_input_tokens = 60000
+soft_output_tokens = 8000
+hard_output_tokens = 16000
+soft_agent_calls = 4
+hard_agent_calls = 7
+soft_duration_seconds = 1800
+hard_duration_seconds = 3600
+# allow = record partial totals; warn = record a soft warning; stop = block the next model call
+unknown_usage_policy = "warn"
+
+[budget.phase_agent_call_limits]
+plan = 3
+implementation = 1
+review = 3
+targeted_fix = 1
+
+[context]
+enabled = true
+cache_enabled = true
+cache_path = ".agent/cache/context.db"
+profile_path = ".agent/project-profile.json"
+max_profile_files = 5000
+max_candidate_files = 12
+max_symbols_per_file = 20
+max_context_chars = 16000
+cache_ttl_seconds = 604800
+stale_after_days = 30
+
+[verification]
+# Each command is an argv array. Empty means AgentKit performs conservative auto-discovery.
+commands = []
+timeout_seconds = 900
+
+[scope]
+max_changed_files = 20
+
+[security]
+allowed_executables = [
+  "git", "python", "python3", "uv", "pytest", "ruff", "mypy",
+  "npm", "pnpm", "yarn", "make", "codex", "claude", "gemini", "aider", "graphify"
+]
+denied_substrings = [
+  "rm -rf /", "git push --force", "git reset --hard", "drop database",
+  "truncate table", "format c:", 'del /s /q c:\'
+]
+
+# BEGIN AGENTKIT QUALITY
+[quality]
+enabled = true
+provider = "strictacode"
+required = false
+mode = "report"
+details_policy = "on_warning"
+cache_enabled = true
+cache_ttl_seconds = 86400
+timeout_seconds = 900
+command = ["strictacode"]
+max_packages = 5
+max_modules = 5
+max_classes = 10
+max_methods = 15
+max_functions = 15
+include = []
+exclude = ["vendor", "generated", ".venv", "node_modules"]
+baseline_strategy = "run_start"
+base_branch = "main"
+baseline_file = ""
+unavailable_policy = "warn"
+
+[quality.absolute]
+score = 0
+rp = 0
+op = 0
+density = 0.0
+
+[quality.delta]
+score = 5
+rp = 5
+op = 5
+density = 3.0
+new_critical_hotspots = 0
+# END AGENTKIT QUALITY
+
+# BEGIN AGENTKIT QUALITY ROUTING
+[quality.routing]
+enabled = true
+allow_mode_escalation = true
+require_approval_on_crisis = true
+characterization_complexity = 40
+edge_case_complexity = 30
+high_refactoring_pressure = 60
+high_overengineering_pressure = 60
+high_fan_in = 10
+high_fan_out = 10
+high_centrality = 0.75
+# END AGENTKIT QUALITY ROUTING
+
+# BEGIN AGENTKIT QUALITY CI
+[quality.ci]
+enabled = true
+workflow_path = ".github/workflows/agentkit-quality.yml"
+python_version = "3.11"
+base_branch = "main"
+package_spec = "agent-skills-engineering-kit[quality]"
+artifact_retention_days = 7
+cache_enabled = true
+annotations = false
+eval_smoke_enabled = false
+eval_manifest_directory = "evals/tasks"
+eval_repetitions = 1
+# END AGENTKIT QUALITY CI
+
+# BEGIN AGENTKIT EVALS
+[eval]
+default_repetitions = 1
+max_repetitions = 10
+command_timeout_seconds = 900
+keep_workspaces = false
+report_limit = 50
+
+[eval.regression]
+acceptance_rate_drop = 0.0
+ready_rate_drop = 0.0
+quality_gate_pass_rate_drop = 0.0
+agent_calls_increase = 1.0
+duration_increase_percent = 25.0
+new_critical_hotspots_increase = 0.0
+# END AGENTKIT EVALS

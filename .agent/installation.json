@@ -1,0 +1,343 @@
+{
+  "agentkit_version": "1.0.0",
+  "installed_at": "2026-07-22T19:50:27.569140+00:00",
+  "previous_version": "",
+  "resources": [
+    {
+      "path": "AGENT.md",
+      "sha256": "93c19a2588dd3d3f674a66a74e2c45a708231694c6e382265b068ccdf851aacf",
+      "strategy": "user-owned"
+    },
+    {
+      "path": "agentkit.toml",
+      "sha256": "c15ab908807e4c1dd493f35c22890db1e391832da86e2c8e2e125caf917ceb08",
+      "strategy": "semantic-config"
+    },
+    {
+      "path": "Makefile.agent",
+      "sha256": "e023562fdcd1291054be167d15166f76c181b8248829810cfb66fb1a03b777fb",
+      "strategy": "managed-blocks"
+    },
+    {
+      "path": "policies/quality-gates.md",
+      "sha256": "0319e52ad54e050077bec39e2d029431402fadc6d1a40e10b10e54b57e0c7430",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "policies/severity-model.md",
+      "sha256": "fb29c65fbdbe96abefc04e2f35450f8d4a5be4e5c6f2d50fb54915f4c9dd5820",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "policies/token-budget.md",
+      "sha256": "98c5d480a4a9d74464fdcede6de55827183a782249bbdab29a088ace394559a4",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "policies/tool-permissions.md",
+      "sha256": "22259a0adc25db6ec415e012a91383bc8249d80c51a7cc3ccba07a9c0e818db8",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/agent-capabilities.schema.json",
+      "sha256": "f02a5ff4f71a27d22238b31c645975dc95b4d6bae0a89df7143123426560ac64",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/compiled-context.schema.json",
+      "sha256": "c3c4c6d4fb48416511534b32426a1f88f323e954c0128904de6f52417ebe4aec",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/completion.schema.json",
+      "sha256": "14df3c8d5d53b042c0be1a9c78ca7cdfc739d3f3f35f29febe93048e84f449f7",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/diagnostics-manifest.schema.json",
+      "sha256": "22e183a9e3b0539978aacce269c48974f398d24075c6d9a6f41a76e300f7d5f9",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/eval-comparison.schema.json",
+      "sha256": "83e83fe7116b3b9f555a9b51b9a30f44080a4261620a308333cf86df282fd7fc",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/eval-run.schema.json",
+      "sha256": "33bd0702ddd85822ba39209c963343b6a0d9308ef98822d866449a4189cbead2",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/eval-summary.schema.json",
+      "sha256": "5be346b2acf6b3b836ba062e29d4fc3f47142d37ef6a16f7d6cca6f5c3ae63c5",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/eval-task.schema.json",
+      "sha256": "130f6a791195a2fe8d1afd11e6a9bfb32a441e0caab25283f8ba0df0ded13d54",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/hotspot-context.schema.json",
+      "sha256": "3d69a3ab4868f0e6be5099bbed3fb30b540a339106051d5f7b2edebb18ca743e",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/installation-manifest.schema.json",
+      "sha256": "c94a7614a875feadf601d112233421efd06b0a39c44ea4c573beae7e00263362",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/migration-report.schema.json",
+      "sha256": "ba79cb0d27f87b43f158cff536b66d42197c46e97beb3c510bf224aec37bf9d4",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/model-attempts.schema.json",
+      "sha256": "da38b87cecd044f117a8a77ab5dee1c5efcb9e539049fc0c8840d8d23da1dcf2",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/model-route.schema.json",
+      "sha256": "82dd57ad56023a1a621f388767136db026c351fcc7ab5886143a004a27365844",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/plan.schema.json",
+      "sha256": "5c9ac03301c4afd2ecf258f5687d413dd3d660f9b1e1fbddfd72878820b2d758",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/project-profile.schema.json",
+      "sha256": "c64445376cb3c14e9878e7cc7180011dbf512d3fc2d8d3464100ed0e9ca3d6ca",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/prompt-prefix.schema.json",
+      "sha256": "c9be5334d63a73838bc4b569f994bcca73ddfd5d823c93b7d754de2eeb117d83",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-ci-result.schema.json",
+      "sha256": "ee1e35dd59220536ebddf5ae7ec143d1d31f433f3664472691f6de0189332392",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-diff.schema.json",
+      "sha256": "3c6bf2596ac9897ea0a02f117c52881ba813033ace07d976acb3e3573f9d3b3d",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-gate.schema.json",
+      "sha256": "1552daeafd8a115240ccd080065c6868693ece53d50e3b56d5496751ae46f5cf",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-hotspots.schema.json",
+      "sha256": "452903023c2545933b4819cdf3f936c3fcfdd0a710f6288d09d95271f8700932",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-provider.schema.json",
+      "sha256": "c40cdae6c98e490293ed54994cbb42ebf4a1f043c19ef1da2edbd8bb15f5ed55",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-route.schema.json",
+      "sha256": "bc0c94bbb918227674b8909ce163028f4f455f57501ec3c506e2e0304f0e303e",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/quality-snapshot.schema.json",
+      "sha256": "ed814cb77c283a31d8ce7f211ab6c29f2b446f7e9bb66530f67cf5066408e379",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/review.schema.json",
+      "sha256": "73a0a3d65d7e98b664e8a31ac6d383c417010bbc13c9dc79854470b6e31625fc",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/run-state.schema.json",
+      "sha256": "212601669ac4f5736a911e0cd418a0926594b7efc4071603278599509c1b9253",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/self-test.schema.json",
+      "sha256": "2bce3aa65ed2029bd1fda8788f34139b63e50b6e9174a3de8fadf6ad9630ba5b",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/task-packet.schema.json",
+      "sha256": "bba75261c7080244c4a481c29bc8847e2bd7acf59932762b72b3f5891b417440",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/triage.schema.json",
+      "sha256": "84a5cd36bd1f240ba49577fa3d95344d2fbdf4e2c4ce247f9b48f233e921ac61",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/usage.schema.json",
+      "sha256": "6aae6ac27add3c7a34dc2ecbf38ff6ac9ca2e1d2dea667e7a8473235b8c4d3fc",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "schemas/verification-plan.schema.json",
+      "sha256": "8eb2d06ffcae766e6060c89361f600094ff5bb3d04fb7890ef0185b4fd6cf427",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/adversarial-review/SKILL.md",
+      "sha256": "eb048dbc943259ecb794ef20682d44ae574f09ef0c362f04d8063ccdc1c703e2",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/architecture-guard/SKILL.md",
+      "sha256": "d87f3be9a8f4cfcffa368a81f7b2411e8a706e65c395282c1f3eb3a1274cd563",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/autopilot-orchestration/SKILL.md",
+      "sha256": "e8b26e5ba781cb2494d5212097ced41d14d8f5acb9e82b48ca63326150e929ff",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/change-planner/SKILL.md",
+      "sha256": "4f4cbe1798210d44e4688d0b8cf8e30728288de4bdea94786e996b6405324789",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/concurrency-review/SKILL.md",
+      "sha256": "67c322127b1bf1e973cf50b893070cb14a4e38e48eaf4fd2f47fdc36876a8373",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/context-compiler/SKILL.md",
+      "sha256": "50fbc6965c236ecccc54f5d637932836256cb1f0f6aadb43d8483e64df31534b",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/database-review/SKILL.md",
+      "sha256": "915d9f210aef9e6dc4ca02a012786d9c5d93dbf58bc1d289e14ef2267a055a8e",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/delivery-summary/SKILL.md",
+      "sha256": "3ef9d167120c5b99aaddfc9e79efebd2e49b836164d4e2805baad46173e962e2",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/engineering-balance/SKILL.md",
+      "sha256": "aab61e5ce3a025e9d821bedb7d54f9aaff128fa7a0ce8a1ad7d96b14b3637d10",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/evaluation-harness/SKILL.md",
+      "sha256": "f319cecadfda7c0cc6f9f73c735a0924579541c7df59b283a408917c11883643",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/graph-context/SKILL.md",
+      "sha256": "82f59b1973a4aa0a698d368dfea402c3ad166fcbea05d3ce2a2a4bb049e676b6",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/hotspot-aware-context/SKILL.md",
+      "sha256": "25c1895c433f482b9e426afce26b4c341e0d9be5a623f10d4d276b1e387c5875",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/implementation/SKILL.md",
+      "sha256": "8ffb0e5ea3f78ecf06754e1cd952cb711963ecc26666d7b768c8fc1d65fda987",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/intent-documentation/SKILL.md",
+      "sha256": "1ebb2bf9a4058e2d38f657ff8d37848659e5f854f248f3ddba5b7d53b97f466a",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/model-routing/SKILL.md",
+      "sha256": "dab11f29e71364fc07cf745ea6ceaf368852c21ccc95e5ea10a09cb380c61d3c",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/quality-aware-routing/SKILL.md",
+      "sha256": "d7725c05a943c211a0396b04ab16f8d647909c941fd2538877653645fde60efe",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/quality-ci/SKILL.md",
+      "sha256": "263966f74a9a7f70d4865d2a4aa17d6eb7b0c00fdd390a1748029f1732dc4439",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/quality-diagnostics/SKILL.md",
+      "sha256": "d9816e17ddb16324a744b06111cf143ed21f097af0d0f5883b688b166dc23ebc",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/quality-regression-gate/SKILL.md",
+      "sha256": "8f4dbc1b2523d7efd57708aa53712ce240b87f9072d41813d05915af33bd81cc",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/repository-context/SKILL.md",
+      "sha256": "a1646bfb1a59dee467f9998eed104328b2f6254fa45b6333fc05f3bff8c6a26f",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/requirements-contract/SKILL.md",
+      "sha256": "7d5a24df42ba5a2e1cc19981290708b2c5fc4094d5f42cca248ba0a181085840",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/risk-based-testing/SKILL.md",
+      "sha256": "59a1d831bc54bb3198d9f1b9610c5f5ab4f2d083669e38f46ff4d1dd4fd2bcb1",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/security-review/SKILL.md",
+      "sha256": "4b8e8d7210871f60e7e42bd729116d4e382c1672b072f083fd551396d1b21f0d",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/task-triage/SKILL.md",
+      "sha256": "70f80bc1dfa297497670fbd87dc5af3a0c95eed38def81f863e5be232878432a",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/token-telemetry/SKILL.md",
+      "sha256": "480a412c5e5bf7899bd791b0b03a72088e57716aa3d88f7c9718af8b9a0c70f2",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "skills/verification-router/SKILL.md",
+      "sha256": "83f3231df89a111b140994837c76ddcd314847f1f136495b6b44e13eecb83c56",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "templates/adr.md",
+      "sha256": "622a8ca8abbcf1f94c345df1d4e87682945ce42352e2c0dd1c431ff3d5b9b0b9",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "templates/agentkit-quality.yml",
+      "sha256": "bab33f33e039d8edbe0e1ecb6a0587fca2a1293415db991511f040ccdba6ee28",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "templates/eval-task.yaml",
+      "sha256": "47384bbba81893883469400d169f8adb6ef4cc5cccb792ebde41f53d201e7f15",
+      "strategy": "managed-file"
+    },
+    {
+      "path": "templates/final-summary.md",
+      "sha256": "7bb88b48707b6c9d15b3ecac5c55e632c152b96a09463db4e0cfc5a06d648a65",
+      "strategy": "managed-file"
+    }
+  ],
+  "version": 1
+}

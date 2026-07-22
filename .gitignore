@@ -15,3 +15,14 @@ recordings/
 *.flac
 .gigaide
 .idea
+# BEGIN AGENTKIT
+graphify-out/
+.agent/state/
+.agent/cache/
+.agent/evals/
+.agent/backups/
+.agent/diagnostics/
+.agent/update-candidates/
+.agent/worktrees/
+.agent/project-profile.json
+# END AGENTKIT

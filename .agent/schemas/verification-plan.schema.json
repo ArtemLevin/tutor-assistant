@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/verification-plan.schema.json",
+  "title": "AgentKit verification plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "selected_commands", "requirements", "escalation_conditions", "omitted_checks", "warnings"],
+  "properties": {
+    "version": {"const": 1},
+    "selected_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command", "reason", "source_evidence", "scope", "required"]
+      }
+    },
+    "requirements": {"type": "array", "items": {"type": "string"}},
+    "escalation_conditions": {"type": "array", "items": {"type": "string"}},
+    "omitted_checks": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

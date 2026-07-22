@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/prompt-prefix.schema.json",
+  "title": "AgentKit stable prompt prefix metadata",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "stable_prefix_hash", "stable_prefix_chars", "dynamic_context_chars", "phase", "target", "provider", "model"],
+  "properties": {
+    "version": {"const": 1},
+    "stable_prefix_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "stable_prefix_chars": {"type": "integer", "minimum": 0},
+    "dynamic_context_chars": {"type": "integer", "minimum": 0},
+    "phase": {"enum": ["plan", "implementation", "review", "targeted_fix"]},
+    "target": {"type": "string", "minLength": 1},
+    "provider": {"enum": ["cli", "openai"]},
+    "model": {"type": "string"}
+  }
+}

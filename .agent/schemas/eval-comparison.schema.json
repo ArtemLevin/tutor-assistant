@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/eval-comparison.schema.json",
+  "title": "AgentKit evaluation comparison",
+  "type": "object",
+  "required": ["version", "baseline", "current", "compatible", "verdict", "correctness", "efficiency", "quality", "regressions", "improvements"],
+  "properties": {
+    "version": {"const": 1},
+    "verdict": {"enum": ["regression", "improved", "neutral", "incomparable"]},
+    "regressions": {"type": "array", "items": {"type": "string"}},
+    "improvements": {"type": "array", "items": {"type": "string"}}
+  }
+}

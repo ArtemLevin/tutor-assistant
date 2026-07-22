@@ -92,3 +92,6 @@ scan-latex: ## Найти новый TEX в удалённых ветках за
 recover: ## Восстановить запись: make recover RECORDING=path/to/recording
 	$(if $(strip $(RECORDING)),,$(error Укажите путь: make recover RECORDING=path/to/recording))
 	$(UV) run --all-extras tutor-assistant-recover "$(RECORDING)"
+# BEGIN AGENTKIT
+-include .agent/Makefile.agent
+# END AGENTKIT

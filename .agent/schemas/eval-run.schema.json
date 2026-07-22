@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/eval-run.schema.json",
+  "title": "AgentKit evaluation run result",
+  "type": "object",
+  "required": ["version", "evaluation_id", "task_id", "run_id", "status", "correctness", "efficiency", "quality", "fixture_preserved"],
+  "properties": {
+    "version": {"const": 1},
+    "status": {"enum": ["passed", "failed", "error"]},
+    "correctness": {"type": "object"},
+    "efficiency": {"type": "object"},
+    "quality": {"type": "object"},
+    "fixture_preserved": {"type": "boolean"}
+  }
+}

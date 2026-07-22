@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/quality-hotspots.schema.json",
+  "title": "AgentKit quality hotspots",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "availability", "provider", "provider_version", "source_fingerprint", "hotspots", "warnings", "truncated"],
+  "properties": {
+    "version": {"const": 1},
+    "generated_at": {"type": "string"},
+    "availability": {"enum": ["available", "unavailable", "unsupported", "failed", "partial"]},
+    "provider": {"type": "string"},
+    "provider_version": {"type": "string"},
+    "source_fingerprint": {"type": "string"},
+    "hotspots": {"type": "array", "items": {"type": "object"}},
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "truncated": {"type": "boolean"}
+  }
+}
