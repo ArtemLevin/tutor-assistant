@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,20 @@ class GitError(RuntimeError):
     pass
 
 
+GIT_TIMEOUT_SECONDS = 120
+GH_TIMEOUT_SECONDS = 30
+PUBLICATION_ARTIFACTS = {
+    "verified_transcript": "transcript.txt",
+    "cleaned_transcript": "transcript_generated.txt",
+    "timestamped_transcript": "transcript_timestamped.txt",
+    "segments_json": "segments.json",
+    "student_signals": "important_student_signals.json",
+    "transcription_manifest": "transcription_manifest.json",
+    "teacher_transcript": "teacher_transcript.txt",
+    "student_transcript": "student_transcript.txt",
+}
+
+
 @dataclass(frozen=True)
 class PublicationResult:
     branch: str
@@ -25,11 +40,107 @@ class PublicationResult:
     warnings: tuple[str, ...] = ()
 
 
-def run_git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+def _noninteractive_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "Never",
+        }
+    )
+    return environment
+
+
+def _run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_noninteractive_environment(),
+        )
+    except FileNotFoundError as exc:
+        raise GitError(f"Команда не найдена: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"Команда {command[0]} превысила timeout {timeout:g} секунд") from exc
+
+
+def run_git(repo: Path, *args: str, timeout: float = GIT_TIMEOUT_SECONDS) -> str:
+    result = _run_command(["git", *args], cwd=repo, timeout=timeout)
     if result.returncode:
         raise GitError(result.stderr.strip() or result.stdout.strip())
     return result.stdout.strip()
+
+
+def _local_branch_exists(repo: Path, branch: str) -> bool:
+    result = _run_command(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repo,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    if result.returncode not in {0, 1}:
+        raise GitError(result.stderr.strip() or result.stdout.strip())
+    return result.returncode == 0
+
+
+def _remote_branch_exists(repo: Path, remote: str, branch: str) -> bool:
+    result = _run_command(
+        ["git", "ls-remote", "--exit-code", "--heads", remote, branch],
+        cwd=repo,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    if result.returncode not in {0, 2}:
+        raise GitError(result.stderr.strip() or result.stdout.strip())
+    return result.returncode == 0
+
+
+def ensure_private_repository(config: RepositoryConfig, checkout: Path) -> None:
+    if not config.repository_full_name.strip():
+        raise GitError("Укажите repository.repository_full_name перед публикацией")
+    if shutil.which("gh") is None:
+        raise GitError("Невозможно проверить приватность GitHub-репозитория: GitHub CLI не найден")
+    result = _run_command(
+        [
+            "gh",
+            "repo",
+            "view",
+            config.repository_full_name,
+            "--json",
+            "visibility",
+            "--jq",
+            ".visibility",
+        ],
+        cwd=checkout,
+        timeout=GH_TIMEOUT_SECONDS,
+    )
+    if result.returncode:
+        raise GitError(
+            "Не удалось проверить приватность GitHub-репозитория: "
+            + (result.stderr.strip() or result.stdout.strip())
+        )
+    visibility = result.stdout.strip().upper()
+    if visibility != "PRIVATE":
+        raise GitError(
+            f"Публикация заблокирована: {config.repository_full_name} имеет visibility "
+            f"{visibility or 'UNKNOWN'}, требуется PRIVATE"
+        )
+
+
+def publication_payload_files(lesson: Lesson) -> tuple[str, ...]:
+    files = ["lesson.json", "job.status.json"]
+    files.extend(
+        f"source/{filename}"
+        for field, filename in PUBLICATION_ARTIFACTS.items()
+        if (value := getattr(lesson.artifacts, field)) and Path(value).is_file()
+    )
+    return tuple(files)
 
 
 def create_draft_pr(
@@ -40,10 +151,14 @@ def create_draft_pr(
         return None, warnings
     if shutil.which("gh") is None:
         return None, ["GitHub CLI не найден: draft PR нужно создать вручную"]
-    auth = subprocess.run(["gh", "auth", "status"], cwd=checkout, capture_output=True, text=True, timeout=30)
+    auth = _run_command(
+        ["gh", "auth", "status"],
+        cwd=checkout,
+        timeout=GH_TIMEOUT_SECONDS,
+    )
     if auth.returncode:
         return None, ["GitHub CLI не авторизован: выполните gh auth login"]
-    existing = subprocess.run(
+    existing = _run_command(
         [
             "gh",
             "pr",
@@ -57,9 +172,7 @@ def create_draft_pr(
             ".url",
         ],
         cwd=checkout,
-        capture_output=True,
-        text=True,
-        timeout=30,
+        timeout=GH_TIMEOUT_SECONDS,
     )
     if existing.returncode == 0 and existing.stdout.strip():
         return existing.stdout.strip(), warnings
@@ -82,7 +195,7 @@ def create_draft_pr(
 
 PR создан Tutor Assistant и остаётся draft до завершения проверок.
 """
-    result = subprocess.run(
+    result = _run_command(
         [
             "gh",
             "pr",
@@ -100,8 +213,6 @@ PR создан Tutor Assistant и остаётся draft до завершен�
             body,
         ],
         cwd=checkout,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
     if result.returncode:
@@ -121,17 +232,7 @@ class LessonPublisher:
             raise GitError("Папка ученика выходит за пределы Git-репозитория")
         source_dir = target / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
-        mapping = {
-            "verified_transcript": "transcript.txt",
-            "cleaned_transcript": "transcript_generated.txt",
-            "timestamped_transcript": "transcript_timestamped.txt",
-            "segments_json": "segments.json",
-            "student_signals": "important_student_signals.json",
-            "transcription_manifest": "transcription_manifest.json",
-            "teacher_transcript": "teacher_transcript.txt",
-            "student_transcript": "student_transcript.txt",
-        }
-        for field, filename in mapping.items():
+        for field, filename in PUBLICATION_ARTIFACTS.items():
             value = getattr(lesson.artifacts, field)
             if value and Path(value).exists():
                 shutil.copy2(value, source_dir / filename)
@@ -161,8 +262,20 @@ class LessonPublisher:
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
             raise GitError(f"Git-репозиторий не найден: {repo}")
+        if self.config.push or self.config.auto_create_pr:
+            ensure_private_repository(self.config, repo)
         run_git(repo, "fetch", self.config.remote, self.config.base_branch)
         branch = f"lesson/{lesson.student.id}-{lesson.lesson_date:%Y%m%d}-{lesson.lesson_id[:8]}"
+        relative_target = Path(lesson.student.folder) / "lessons" / lesson.lesson_slug
+        local_branch_exists = _local_branch_exists(repo, branch)
+        if not local_branch_exists and _remote_branch_exists(
+            repo,
+            self.config.remote,
+            branch,
+        ):
+            run_git(repo, "fetch", self.config.remote, branch)
+            run_git(repo, "branch", branch, "FETCH_HEAD")
+            local_branch_exists = True
         checkout = repo
         worktree_path: Path | None = None
         try:
@@ -171,30 +284,51 @@ class LessonPublisher:
                 root.mkdir(parents=True, exist_ok=True)
                 worktree_path = Path(tempfile.mkdtemp(prefix="lesson-", dir=root))
                 worktree_path.rmdir()
-                run_git(
-                    repo,
-                    "worktree",
-                    "add",
-                    "-b",
-                    branch,
-                    str(worktree_path),
-                    f"{self.config.remote}/{self.config.base_branch}",
-                )
+                if local_branch_exists:
+                    run_git(repo, "worktree", "add", str(worktree_path), branch)
+                else:
+                    run_git(
+                        repo,
+                        "worktree",
+                        "add",
+                        "-b",
+                        branch,
+                        str(worktree_path),
+                        f"{self.config.remote}/{self.config.base_branch}",
+                    )
                 checkout = worktree_path
             elif self.config.create_branch:
                 if run_git(repo, "status", "--porcelain"):
                     raise GitError("Основная копия содержит незакоммиченные изменения; включите use_worktree")
                 run_git(repo, "switch", self.config.base_branch)
                 run_git(repo, "pull", "--ff-only", self.config.remote, self.config.base_branch)
-                run_git(repo, "switch", "-c", branch)
-            target = self._copy_job(lesson, checkout)
-            run_git(checkout, "add", str(target.relative_to(checkout)))
-            run_git(
-                checkout,
-                "commit",
-                "-m",
-                f"Add lesson job for {lesson.student.full_name} ({lesson.lesson_date})",
+                if local_branch_exists:
+                    run_git(repo, "switch", branch)
+                else:
+                    run_git(repo, "switch", "-c", branch)
+            committed_target = (
+                _run_command(
+                    [
+                        "git",
+                        "cat-file",
+                        "-e",
+                        f"HEAD:{relative_target.as_posix()}/lesson.json",
+                    ],
+                    cwd=checkout,
+                    timeout=GIT_TIMEOUT_SECONDS,
+                ).returncode
+                == 0
             )
+            target = checkout / relative_target
+            if not committed_target:
+                target = self._copy_job(lesson, checkout)
+                run_git(checkout, "add", str(target.relative_to(checkout)))
+                run_git(
+                    checkout,
+                    "commit",
+                    "-m",
+                    f"Add lesson job for {lesson.student.full_name} ({lesson.lesson_date})",
+                )
             commit = run_git(checkout, "rev-parse", "HEAD")
             if self.config.push:
                 run_git(checkout, "push", "-u", self.config.remote, "HEAD")

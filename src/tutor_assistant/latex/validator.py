@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import stat
 from pathlib import Path
 
 from .models import ValidationIssue
@@ -31,9 +32,35 @@ def _line_number(text: str, position: int) -> int:
     return text.count("\n", 0, position) + 1
 
 
+def validate_source_tree(root: Path) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for path in (root, *root.rglob("*")):
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            issues.append(
+                ValidationIssue(
+                    "unsafe-source",
+                    f"Не удалось проверить источник LaTeX {path}: {exc}",
+                )
+            )
+            continue
+        reparse = bool(
+            getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
+        if path.is_symlink() or reparse:
+            issues.append(
+                ValidationIssue(
+                    "unsafe-link",
+                    f"Символические ссылки и reparse points запрещены: {path}",
+                )
+            )
+    return issues
+
+
 def validate_tex(tex_file: Path) -> list[ValidationIssue]:
     text = _without_comments(tex_file.read_text(encoding="utf-8"))
-    issues: list[ValidationIssue] = []
+    issues = validate_source_tree(tex_file.parent)
     for code, pattern in FORBIDDEN_PATTERNS.items():
         for match in pattern.finditer(text):
             issues.append(

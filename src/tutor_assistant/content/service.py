@@ -137,6 +137,9 @@ class StudentContentService:
         )
         self.lease_store = ActivityLeaseStore(self.workspace / ".operations.sqlite3")
         self.owner_id = process_owner_id()
+        self._workspace_generation = self.lease_store.generation()
+        self._owned_leases: dict[str, ActivityLease] = {}
+        self._owned_leases_lock = Lock()
         self._maintenance_lock = Lock()
         self._maintenance_thread_id: int | None = None
         try:
@@ -169,9 +172,50 @@ class StudentContentService:
                 lease=None,
                 blockers=result.blockers,
             )
-        return ActivityAcquireResult(
-            lease=ActivityLease(self.lease_store, result.lease_info, ttl),
+        lease = ActivityLease(
+            self.lease_store,
+            result.lease_info,
+            ttl,
+            self._forget_owned_lease,
         )
+        with self._owned_leases_lock:
+            self._owned_leases[lease.info.lease_id] = lease
+        return ActivityAcquireResult(lease=lease)
+
+    def _forget_owned_lease(self, lease: ActivityLease) -> None:
+        with self._owned_leases_lock:
+            self._owned_leases.pop(lease.info.lease_id, None)
+
+    def _current_thread_lease_protects(self, lesson_id: str | None) -> bool:
+        thread_id = get_ident()
+        with self._owned_leases_lock:
+            leases = tuple(self._owned_leases.values())
+        return any(
+            lease.origin_thread_id == thread_id
+            and (
+                lease.info.exclusive
+                or lesson_id is None
+                or lease.info.lesson_id == lesson_id
+            )
+            for lease in leases
+        )
+
+    @contextmanager
+    def _write_activity(
+        self,
+        activity: str,
+        *,
+        lesson_id: str | None = None,
+    ) -> Iterator[None]:
+        if self.lease_store.generation() != self._workspace_generation:
+            raise ContentBusyError(
+                "База данных была восстановлена; перезагрузите данные перед записью"
+            )
+        if self._current_thread_lease_protects(lesson_id):
+            yield
+            return
+        with self.activity(activity, lesson_id=lesson_id):
+            yield
 
     def acquire_activity(
         self,
@@ -244,6 +288,7 @@ class StudentContentService:
                 for lesson_id, deleted in self.repository.list_lesson_index_states():
                     if not deleted:
                         self._synchronize_lesson_files(lesson_id)
+                self._workspace_generation = self.lease_store.advance_generation()
             except Exception:
                 logging.exception("Restore failed; rolling back to the safety backup")
                 self.backups.restore_from(safety.path)
@@ -272,7 +317,9 @@ class StudentContentService:
                 workspace / "tutor-assistant.sqlite3",
                 workspace / "backups",
             )
-            return backups.restore_offline(path)
+            result = backups.restore_offline(path)
+            lease_store.advance_generation()
+            return result
         finally:
             lease.release()
 
@@ -353,21 +400,23 @@ class StudentContentService:
                 )
 
     def create_lesson(self, lesson: Lesson) -> Lesson:
-        _validate_lesson_id(lesson.lesson_id)
-        self.repository.insert_lesson(lesson)
-        self._synchronize_lesson_files(lesson.lesson_id)
-        return lesson
+        with self._write_activity("lesson-create", lesson_id=lesson.lesson_id):
+            _validate_lesson_id(lesson.lesson_id)
+            self.repository.insert_lesson(lesson)
+            self._synchronize_lesson_files(lesson.lesson_id)
+            return lesson
 
     def update_lesson(self, lesson: Lesson, *, expected_row_version: int) -> Lesson:
-        _validate_lesson_id(lesson.lesson_id)
-        updated = self.repository.replace_lesson(
-            lesson,
-            expected_row_version=expected_row_version,
-        )
-        self._synchronize_lesson_files(updated.lesson_id)
-        for field in Lesson.model_fields:
-            setattr(lesson, field, deepcopy(getattr(updated, field)))
-        return updated
+        with self._write_activity("lesson-update", lesson_id=lesson.lesson_id):
+            _validate_lesson_id(lesson.lesson_id)
+            updated = self.repository.replace_lesson(
+                lesson,
+                expected_row_version=expected_row_version,
+            )
+            self._synchronize_lesson_files(updated.lesson_id)
+            for field in Lesson.model_fields:
+                setattr(lesson, field, deepcopy(getattr(updated, field)))
+            return updated
 
     def persist_pipeline_lesson(
         self,
@@ -377,18 +426,19 @@ class StudentContentService:
         expected_row_version: int | None = None,
         force_status: bool = False,
     ) -> Lesson:
-        _validate_lesson_id(lesson.lesson_id)
-        updated = self.repository.update_pipeline_lesson(
-            lesson,
-            fields,
-            expected_row_version=expected_row_version,
-            force_status=force_status,
-        )
-        self._synchronize_lesson_files(
-            updated.lesson_id,
-            project_assets=bool(frozenset(fields) & {"source_audio_local", "artifacts", "latex"}),
-        )
-        return updated
+        with self._write_activity("pipeline-write", lesson_id=lesson.lesson_id):
+            _validate_lesson_id(lesson.lesson_id)
+            updated = self.repository.update_pipeline_lesson(
+                lesson,
+                fields,
+                expected_row_version=expected_row_version,
+                force_status=force_status,
+            )
+            self._synchronize_lesson_files(
+                updated.lesson_id,
+                project_assets=bool(frozenset(fields) & {"source_audio_local", "artifacts", "latex"}),
+            )
+            return updated
 
     def update_lesson_metadata(
         self,
@@ -401,23 +451,24 @@ class StudentContentService:
         expected_updated_at: datetime,
         expected_row_version: int | None = None,
     ) -> Lesson:
-        subject = subject.strip()
-        topic = topic.strip()
-        if not subject:
-            raise ValueError("Укажите предмет")
-        if not topic:
-            raise ValueError("Укажите тему занятия")
-        lesson = self.repository.update_lesson_metadata(
-            lesson_id,
-            student=student,
-            subject=subject,
-            lesson_date=lesson_date,
-            topic=topic,
-            expected_updated_at=expected_updated_at,
-            expected_row_version=expected_row_version,
-        )
-        self._synchronize_lesson_files(lesson_id, project_assets=False)
-        return lesson
+        with self._write_activity("metadata-write", lesson_id=lesson_id):
+            subject = subject.strip()
+            topic = topic.strip()
+            if not subject:
+                raise ValueError("Укажите предмет")
+            if not topic:
+                raise ValueError("Укажите тему занятия")
+            lesson = self.repository.update_lesson_metadata(
+                lesson_id,
+                student=student,
+                subject=subject,
+                lesson_date=lesson_date,
+                topic=topic,
+                expected_updated_at=expected_updated_at,
+                expected_row_version=expected_row_version,
+            )
+            self._synchronize_lesson_files(lesson_id, project_assets=False)
+            return lesson
 
     def get_lesson(self, lesson_id: str, *, include_deleted: bool = False) -> LessonContent:
         return self.repository.get_content(lesson_id, include_deleted=include_deleted)
@@ -1583,28 +1634,31 @@ class StudentContentService:
         return digest.hexdigest(), copied
 
     def register_asset(self, lesson_id: str, path: Path | str, *, kind: AssetKind) -> LessonAsset:
-        if not self.repository.get_lesson(lesson_id, include_deleted=True):
-            raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
-        resolved, relative = self._resolve_path(path)
-        if not resolved.is_file():
-            raise FileNotFoundError(resolved)
-        media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
-        return self.repository.upsert_asset(
-            LessonAsset(
-                lesson_id=lesson_id,
-                kind=kind,
-                relative_path=relative,
-                media_type=media_type,
-                size_bytes=resolved.stat().st_size,
-                sha256=_sha256_file(resolved),
+        with self._write_activity("asset-write", lesson_id=lesson_id):
+            if not self.repository.get_lesson(lesson_id, include_deleted=True):
+                raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+            resolved, relative = self._resolve_path(path)
+            if not resolved.is_file():
+                raise FileNotFoundError(resolved)
+            media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+            return self.repository.upsert_asset(
+                LessonAsset(
+                    lesson_id=lesson_id,
+                    kind=kind,
+                    relative_path=relative,
+                    media_type=media_type,
+                    size_bytes=resolved.stat().st_size,
+                    sha256=_sha256_file(resolved),
+                )
             )
-        )
 
     def delete_asset(self, asset_id: int) -> None:
-        self.repository.set_asset_deleted(asset_id, deleted=True)
+        with self._write_activity("asset-write"):
+            self.repository.set_asset_deleted(asset_id, deleted=True)
 
     def restore_asset(self, asset_id: int) -> None:
-        self.repository.set_asset_deleted(asset_id, deleted=False)
+        with self._write_activity("asset-write"):
+            self.repository.set_asset_deleted(asset_id, deleted=False)
 
     def save_transcript(
         self,
@@ -1615,41 +1669,42 @@ class StudentContentService:
         created_by: str = "teacher",
         expected_revision_number: int | None | object = _EXPECTED_REVISION_UNSET,
     ) -> TranscriptRevision:
-        lesson = self.repository.get_lesson(lesson_id, include_deleted=True)
-        if lesson is None:
-            raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
-        current = self.repository.current_transcript(lesson_id, include_deleted=True)
-        if expected_revision_number is _EXPECTED_REVISION_UNSET:
-            expected_revision_number = current.revision_number if current else None
-        target = (
-            path
-            or (current.relative_path if current else None)
-            or Path("lessons") / lesson_id / "transcript" / "transcript_verified.txt"
-        )
-        resolved, relative = self._resolve_path(target)
-        normalized = text.rstrip() + "\n"
-        revision, _updated_lesson = self.repository.commit_transcript_revision(
-            TranscriptRevision(
-                lesson_id=lesson_id,
-                revision_number=1,
-                relative_path=relative,
-                content=normalized,
-                content_sha256=_sha256_text(normalized),
-                created_by=created_by,
-            ),
-            expected_revision_number=expected_revision_number,
-            verified_transcript=str(resolved),
-        )
-        # SQLite is the durable source of truth. Files are refreshed only after the
-        # optimistic transaction succeeds, so a conflict can never overwrite them.
-        self._synchronize_lesson_files(lesson_id)
-        self.repository.delete_transcript_draft(
-            lesson_id,
-            content_sha256=_sha256_text(text),
-            base_revision_number=expected_revision_number,
-            conditional=True,
-        )
-        return revision
+        with self._write_activity("transcript-write", lesson_id=lesson_id):
+            lesson = self.repository.get_lesson(lesson_id, include_deleted=True)
+            if lesson is None:
+                raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+            current = self.repository.current_transcript(lesson_id, include_deleted=True)
+            if expected_revision_number is _EXPECTED_REVISION_UNSET:
+                expected_revision_number = current.revision_number if current else None
+            target = (
+                path
+                or (current.relative_path if current else None)
+                or Path("lessons") / lesson_id / "transcript" / "transcript_verified.txt"
+            )
+            resolved, relative = self._resolve_path(target)
+            normalized = text.rstrip() + "\n"
+            revision, _updated_lesson = self.repository.commit_transcript_revision(
+                TranscriptRevision(
+                    lesson_id=lesson_id,
+                    revision_number=1,
+                    relative_path=relative,
+                    content=normalized,
+                    content_sha256=_sha256_text(normalized),
+                    created_by=created_by,
+                ),
+                expected_revision_number=expected_revision_number,
+                verified_transcript=str(resolved),
+            )
+            # SQLite is the durable source of truth. Files are refreshed only after the
+            # optimistic transaction succeeds, so a conflict can never overwrite them.
+            self._synchronize_lesson_files(lesson_id)
+            self.repository.delete_transcript_draft(
+                lesson_id,
+                content_sha256=_sha256_text(text),
+                base_revision_number=expected_revision_number,
+                conditional=True,
+            )
+            return revision
 
     def save_transcript_draft(
         self,
@@ -1658,17 +1713,19 @@ class StudentContentService:
         *,
         base_revision_number: int | None,
     ) -> TranscriptDraft:
-        return self.repository.save_transcript_draft(
-            TranscriptDraft(
-                lesson_id=lesson_id,
-                base_revision_number=base_revision_number,
-                content=text,
-                content_sha256=_sha256_text(text),
+        with self._write_activity("transcript-draft", lesson_id=lesson_id):
+            return self.repository.save_transcript_draft(
+                TranscriptDraft(
+                    lesson_id=lesson_id,
+                    base_revision_number=base_revision_number,
+                    content=text,
+                    content_sha256=_sha256_text(text),
+                )
             )
-        )
 
     def discard_transcript_draft(self, lesson_id: str) -> None:
-        self.repository.delete_transcript_draft(lesson_id)
+        with self._write_activity("transcript-draft", lesson_id=lesson_id):
+            self.repository.delete_transcript_draft(lesson_id)
 
     def list_transcript_revisions(self, lesson_id: str) -> list[TranscriptRevision]:
         if not self.repository.get_lesson(lesson_id):
@@ -1693,10 +1750,12 @@ class StudentContentService:
         )
 
     def delete_transcript_revision(self, revision_id: int) -> None:
-        self.repository.set_transcript_deleted(revision_id, deleted=True)
+        with self._write_activity("transcript-write"):
+            self.repository.set_transcript_deleted(revision_id, deleted=True)
 
     def restore_transcript_revision(self, revision_id: int) -> None:
-        self.repository.set_transcript_deleted(revision_id, deleted=False)
+        with self._write_activity("transcript-write"):
+            self.repository.set_transcript_deleted(revision_id, deleted=False)
 
     def revert_transcript(
         self,

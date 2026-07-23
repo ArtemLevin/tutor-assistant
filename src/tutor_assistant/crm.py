@@ -6,7 +6,8 @@ import json
 import logging
 import sqlite3
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -15,6 +16,12 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
+from .content.coordination import (
+    ActivityLease,
+    ActivityLeaseStore,
+    ContentBusyError,
+    process_owner_id,
+)
 from .domain import Student
 from .sqlite_utils import ClosingConnection
 
@@ -201,19 +208,32 @@ class CrmStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.codec = codec or create_secret_codec()
+        self.lease_store = ActivityLeaseStore(path.parent / ".operations.sqlite3")
+        self.owner_id = process_owner_id()
         self._initialize()
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        info = self.lease_store.acquire(
+            owner_id=self.owner_id,
+            activity="crm-access",
+        )
+        if info is None:
+            raise ContentBusyError("Хранилище занято эксклюзивной операцией")
+        lease = ActivityLease(self.lease_store, info, timedelta(minutes=2))
+        connection: sqlite3.Connection | None = None
         try:
+            connection = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA busy_timeout=10000")
             connection.execute("PRAGMA synchronous=NORMAL")
-        except Exception:
-            connection.close()
-            raise
-        return connection
+            with connection:
+                yield connection
+        finally:
+            if connection is not None:
+                connection.close()
+            lease.release()
 
     @staticmethod
     def _retry(operation):
@@ -323,7 +343,6 @@ class CrmStore:
                         created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
-                        full_name=excluded.full_name,
                         repository_folder=COALESCE(
                             crm_students.repository_folder, excluded.repository_folder
                         )

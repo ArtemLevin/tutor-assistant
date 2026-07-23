@@ -8,6 +8,8 @@ dist/
 build/
 *.egg-info/
 .env
+config/app.yaml
+config/students.yaml
 data/
 recordings/
 *.wav

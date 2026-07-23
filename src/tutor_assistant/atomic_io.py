@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -8,13 +7,6 @@ from time import sleep
 
 ATOMIC_WRITE_ATTEMPTS = 6
 ATOMIC_WRITE_RETRY_SECONDS = 0.05
-
-
-def _write_text_durable(path: Path, content: str) -> None:
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        file.write(content)
-        file.flush()
-        os.fsync(file.fileno())
 
 
 def atomic_write_text(path: Path, content: str) -> None:
@@ -47,12 +39,17 @@ def atomic_write_text(path: Path, content: str) -> None:
                 if attempt + 1 < ATOMIC_WRITE_ATTEMPTS:
                     sleep(ATOMIC_WRITE_RETRY_SECONDS * (2**attempt))
 
-        logging.warning(
-            "Не удалось атомарно заменить %s после %s попыток (%s); использую прямую durable-запись",
-            path,
-            ATOMIC_WRITE_ATTEMPTS,
-            last_error,
-        )
-        _write_text_durable(path, content)
+        if not path.exists():
+            try:
+                with path.open("x", encoding="utf-8", newline="\n") as file:
+                    file.write(content)
+                    file.flush()
+                    os.fsync(file.fileno())
+                return
+            except FileExistsError:
+                pass
+        raise PermissionError(
+            f"Не удалось атомарно заменить {path} после {ATOMIC_WRITE_ATTEMPTS} попыток"
+        ) from last_error
     finally:
         temporary.unlink(missing_ok=True)

@@ -1,0 +1,6 @@
+students:
+  - id: example_student
+    full_name: Тестовый ученик
+    grade: 10
+    exam: ЕГЭ
+    subjects: [mathematics]

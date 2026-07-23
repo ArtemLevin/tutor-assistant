@@ -14,7 +14,7 @@ from time import perf_counter
 from ..config import LatexConfig
 from .diagnostics import inspect_latex_environment
 from .models import CompilationResult
-from .validator import validate_tex
+from .validator import validate_source_tree, validate_tex
 
 ERROR_LINE = re.compile(r"(?:^|\n)([^\n:]+\.tex):(\d+):\s*(.+)")
 LATEX_ERROR = re.compile(r"(?:^|\n)!\s*(.+)")
@@ -163,7 +163,7 @@ class LatexCompiler:
         report_dir: Path | None = None,
         preview_dir: Path | None = None,
     ) -> CompilationResult:
-        tex_file = tex_file.resolve()
+        tex_file = tex_file.absolute()
         if not tex_file.is_file():
             raise FileNotFoundError(tex_file)
         report_dir = report_dir or tex_file.parent / "build"
@@ -171,7 +171,9 @@ class LatexCompiler:
         report_dir.mkdir(parents=True, exist_ok=True)
         log_file = report_dir / "compilation.log"
         report_file = report_dir / "compilation.json"
-        issues = validate_tex(tex_file)
+        issues = validate_source_tree(tex_file.parent)
+        if not issues:
+            issues = validate_tex(tex_file)
         started = perf_counter()
         if issues:
             log = "Компиляция заблокирована проверкой безопасности.\n" + "\n".join(

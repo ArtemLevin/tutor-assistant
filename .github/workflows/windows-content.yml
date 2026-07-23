@@ -2,28 +2,6 @@ name: Windows student content
 
 on:
   pull_request:
-    paths:
-      - "src/tutor_assistant/config.py"
-      - "src/tutor_assistant/domain.py"
-      - "src/tutor_assistant/pipeline.py"
-      - "src/tutor_assistant/cli.py"
-      - "src/tutor_assistant/content/**"
-      - "src/tutor_assistant/ui/content_*.py"
-      - "src/tutor_assistant/ui/student_content.py"
-      - "src/tutor_assistant/ui/app.py"
-      - "src/tutor_assistant/ui/concurrent_app.py"
-      - "src/tutor_assistant/ui/background.py"
-      - "src/tutor_assistant/ui/background_tasks.py"
-      - "src/tutor_assistant/ui/playback.py"
-      - "src/tutor_assistant/latex/**"
-      - "tests/test_background*.py"
-      - "tests/test_content*.py"
-      - "tests/test_latex*.py"
-      - "tests/test_student_content*.py"
-      - "tests/test_playback.py"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/windows-content.yml"
   workflow_dispatch:
 
 jobs:
@@ -50,29 +28,10 @@ jobs:
       - name: Validate patch whitespace
         shell: bash
         run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
-      - name: Student-content and background coordination tests
+      - name: Full test suite
         run: >-
           uv run pytest
           --junitxml=pytest-report.xml
-          tests/test_content_coordination.py
-          tests/test_content_integrity_cache.py
-          tests/test_content_maintenance_phases.py
-          tests/test_background_coordination.py
-          tests/test_background_task_coordinator.py
-          tests/test_content_browser.py
-          tests/test_content_editing.py
-          tests/test_content_hardening.py
-          tests/test_content_import.py
-          tests/test_content_trash.py
-          tests/test_content_write_consistency.py
-          tests/test_content_pipeline_projection.py
-          tests/test_content_maintenance.py
-          tests/test_content_backup.py
-          tests/test_latex_reservation.py
-          tests/test_latex_remote.py
-          tests/test_playback.py
-          tests/test_student_content.py
-          tests/test_student_content_gui.py
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4

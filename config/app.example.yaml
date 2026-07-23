@@ -42,12 +42,12 @@ repository:
   students_repo: ../students-26-27
   remote: origin
   base_branch: main
-  push: true
+  push: false
   create_branch: true
   use_worktree: true
   keep_worktree: false
   auto_create_pr: true
-  repository_full_name: ArtemLevin/students-26-27
+  repository_full_name: owner/private-students-repo
   pr_base_branch: main
 
 latex:

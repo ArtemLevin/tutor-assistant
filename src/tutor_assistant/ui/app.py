@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..atomic_io import atomic_write_text
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
@@ -50,6 +51,7 @@ from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
 from ..pipeline import LessonPipeline
 from ..playback import PlaybackController, PlaybackSegment
+from ..publisher import publication_payload_files
 from ..quick_start import evaluate_readiness, selected_profile
 from ..recording import (
     DualRecorder,
@@ -153,6 +155,7 @@ class MainWindow(QMainWindow):
         self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
         self.workers: list[Worker] = []
+        self._recovery_sessions: list[Path] = []
         self.transcription_queue = TranscriptionQueue(self.pipeline.store)
         self._loading_segments = False
         self._summary_dirty = False
@@ -557,28 +560,49 @@ class MainWindow(QMainWindow):
         self._maybe_finish_shutdown()
 
     def _offer_recovery(self) -> None:
-        sessions = find_recoverable_recordings(self.config.workspace)
-        if not sessions:
+        self._recovery_sessions = list(
+            reversed(find_recoverable_recordings(self.config.workspace))
+        )
+        self._offer_next_recovery()
+
+    def _offer_next_recovery(self) -> None:
+        if not self._recovery_sessions:
             return
-        directory = sessions[-1]
+        directory = self._recovery_sessions.pop(0)
         answer = QMessageBox.question(
             self,
             "Незавершённая запись",
             f"Найдены сохранённые чанки:\n{directory}\n\nВосстановить аудиозапись?",
         )
         if answer != QMessageBox.Yes:
+            self._offer_next_recovery()
             return
+        self._set_status("Восстанавливаю аудиозапись…", "working")
+        worker = Worker(recover_recording, directory)
+        worker.succeeded.connect(self._recovery_ready)
+        worker.failed.connect(self._recovery_failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _recovery_ready(self, result) -> None:
+        self.audio_path.setText(str(result.mixed_file))
         try:
-            result = recover_recording(directory)
-            self.audio_path.setText(str(result.mixed_file))
             session = json.loads(result.session_file.read_text(encoding="utf-8"))
-            session["status"] = "recovered"
-            result.session_file.write_text(
-                json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            QMessageBox.information(self, "Восстановление", f"Запись восстановлена:\n{result.mixed_file}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Ошибка восстановления", str(exc))
+        except json.JSONDecodeError:
+            session = {}
+        session["status"] = "recovered"
+        atomic_write_text(
+            result.session_file,
+            json.dumps(session, ensure_ascii=False, indent=2),
+        )
+        self._set_status("Аудиозапись восстановлена")
+        QMessageBox.information(self, "Восстановление", f"Запись восстановлена:\n{result.mixed_file}")
+        self._offer_next_recovery()
+
+    def _recovery_failed(self, details: str) -> None:
+        self._operation_failed("recovery", details)
+        self._offer_next_recovery()
 
     def _offer_unfinished_job(self) -> None:
         active = [
@@ -1410,9 +1434,9 @@ class MainWindow(QMainWindow):
             system_source = self.loopback.currentData()
             if not isinstance(system_source, SystemAudioSource):
                 raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
-            self.recorder.start(directory, int(self.mic.currentData()), system_source)
             recording_lesson.transition(JobStatus.RECORDING)
             self.pipeline.save_state(recording_lesson, "status", "error")
+            self.recorder.start(directory, int(self.mic.currentData()), system_source)
             self._update_scheduled_occurrence("in_progress", lesson_id=recording_lesson.lesson_id)
             self.recording_seconds = 0
             self._recording_stop_started = False
@@ -1993,9 +2017,13 @@ class MainWindow(QMainWindow):
         draft = self._draft_path()
         if draft and draft.exists():
             draft.unlink()
+        payload = "\n".join(
+            f"• {path}" for path in publication_payload_files(self.lesson)
+        )
         self.publish_summary.setText(
             f"{self.lesson.student.full_name}\n{self.lesson.lesson_date:%d.%m.%Y}\n"
-            f"{self.lesson.topic}\n\nЗадание будет помещено в отдельную Git-ветку."
+            f"{self.lesson.topic}\n\nБудут опубликованы:\n{payload}\n\n"
+            "Задание будет помещено в отдельную Git-ветку."
         )
         self.publish_button.setEnabled(True)
         self._set_status("Транскрипт подтверждён")

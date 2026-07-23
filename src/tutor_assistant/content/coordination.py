@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 from uuid import uuid4
 
 from ..sqlite_utils import ClosingConnection
@@ -83,6 +84,17 @@ class ActivityLeaseStore:
                 """
             )
             db.execute("CREATE INDEX IF NOT EXISTS activity_leases_expiry ON activity_leases(expires_at)")
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_state (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL
+                )
+                """
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO workspace_state(key, value) VALUES ('generation', 0)"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
@@ -135,8 +147,13 @@ class ActivityLeaseStore:
                 ).fetchall()
             else:
                 rows = db.execute(
-                    "SELECT * FROM activity_leases WHERE exclusive=1 "
-                    "ORDER BY acquired_at, lease_id"
+                    """
+                    SELECT * FROM activity_leases
+                    WHERE exclusive=1
+                       OR (? IS NOT NULL AND lesson_id=?)
+                    ORDER BY acquired_at, lease_id
+                    """,
+                    (lesson_id, lesson_id),
                 ).fetchall()
             blockers = tuple(self._from_row(row) for row in rows)
             if blockers:
@@ -222,6 +239,24 @@ class ActivityLeaseStore:
             rows = db.execute("SELECT * FROM activity_leases ORDER BY acquired_at, lease_id").fetchall()
         return [self._from_row(row) for row in rows]
 
+    def generation(self) -> int:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT value FROM workspace_state WHERE key='generation'"
+            ).fetchone()
+        return int(row["value"])
+
+    def advance_generation(self) -> int:
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE workspace_state SET value=value+1 WHERE key='generation'"
+            )
+            row = db.execute(
+                "SELECT value FROM workspace_state WHERE key='generation'"
+            ).fetchone()
+        return int(row["value"])
+
 
 class ActivityLease:
     def __init__(
@@ -229,12 +264,15 @@ class ActivityLease:
         store: ActivityLeaseStore,
         info: ActivityLeaseInfo,
         ttl: timedelta,
+        on_release: Callable[[ActivityLease], None] | None = None,
     ) -> None:
         self.store = store
         self.info = info
         self.ttl = ttl
         self._stop = Event()
         self._released = False
+        self.origin_thread_id = get_ident()
+        self._on_release = on_release
         interval = max(1.0, min(30.0, ttl.total_seconds() / 3))
         self._thread = Thread(
             target=self._heartbeat_loop,
@@ -254,7 +292,11 @@ class ActivityLease:
             return
         self._released = True
         self._stop.set()
-        self.store.release(self.info.lease_id, self.info.owner_id)
+        try:
+            self.store.release(self.info.lease_id, self.info.owner_id)
+        finally:
+            if self._on_release is not None:
+                self._on_release(self)
 
     def __enter__(self) -> ActivityLease:
         return self
