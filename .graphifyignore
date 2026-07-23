@@ -1,0 +1,6 @@
+# BEGIN AGENTKIT
+.agent/
+.agents/
+graphify-out/
+graph.json
+# END AGENTKIT

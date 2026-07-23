@@ -1,12 +1,12 @@
 {
-  "agentkit_version": "1.0.0",
-  "installed_at": "2026-07-22T19:50:27.569140+00:00",
-  "previous_version": "",
+  "agentkit_version": "1.0.4",
+  "installed_at": "2026-07-23T05:14:18.059972+00:00",
+  "previous_version": "1.0.3",
   "resources": [
     {
       "path": "AGENT.md",
       "sha256": "93c19a2588dd3d3f674a66a74e2c45a708231694c6e382265b068ccdf851aacf",
-      "strategy": "user-owned"
+      "strategy": "preserved-customization"
     },
     {
       "path": "agentkit.toml",
@@ -285,7 +285,7 @@
     },
     {
       "path": "skills/repository-context/SKILL.md",
-      "sha256": "a1646bfb1a59dee467f9998eed104328b2f6254fa45b6333fc05f3bff8c6a26f",
+      "sha256": "f941616892049fd9a20222a8f365bf52083bb78e6b07a9b29541407e67fb3aa5",
       "strategy": "managed-file"
     },
     {
