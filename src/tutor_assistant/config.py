@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import yaml
@@ -41,12 +42,12 @@ class RepositoryConfig(BaseModel):
     students_repo: Path = Path("../students-26-27")
     remote: str = "origin"
     base_branch: str = "main"
-    push: bool = True
+    push: bool = False
     create_branch: bool = True
     use_worktree: bool = True
     keep_worktree: bool = False
     auto_create_pr: bool = True
-    repository_full_name: str = "ArtemLevin/students-26-27"
+    repository_full_name: str = "owner/private-students-repo"
     pr_base_branch: str = "main"
 
 
@@ -130,5 +131,11 @@ class AppConfig(BaseModel):
 
 
 def load_students(path: Path) -> list[Student]:
+    if not path.is_file():
+        logging.warning(
+            "Локальный файл учеников отсутствует; используется CRM без YAML-импорта: %s",
+            path,
+        )
+        return []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return [Student.model_validate(item) for item in data.get("students", [])]

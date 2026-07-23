@@ -30,7 +30,7 @@ def store(tmp_path: Path) -> CrmStore:
 def test_students_yaml_is_migrated_without_overwriting_crm_fields(store: CrmStore) -> None:
     source = Student(
         id="nikol",
-        full_name="Николь Саркисянц",
+        full_name="Тестовая Ученица",
         grade=11,
         exam="ЕГЭ",
         subjects=["mathematics"],
@@ -41,11 +41,11 @@ def test_students_yaml_is_migrated_without_overwriting_crm_fields(store: CrmStor
     profile.goal = "90+ баллов"
     store.save_student(profile, [])
 
-    store.sync_students([source.model_copy(update={"full_name": "Николь С."})])
+    store.sync_students([source.model_copy(update={"full_name": "Изменённое имя"})])
 
     updated = store.get_student("nikol")
     assert updated is not None
-    assert updated.full_name == "Николь С."
+    assert updated.full_name == "Тестовая Ученица"
     assert updated.goal == "90+ баллов"
 
 

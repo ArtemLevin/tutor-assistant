@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import queue
 import shutil
 import subprocess
@@ -13,10 +12,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic, sleep
+from time import monotonic
 
 import numpy as np
 
+from ..atomic_io import atomic_write_text
 from .devices import SystemAudioSource
 
 
@@ -57,58 +57,8 @@ class AudioBlock:
     queued_at: float
 
 
-_ATOMIC_WRITE_ATTEMPTS = 6
-_ATOMIC_WRITE_RETRY_SECONDS = 0.05
-
-
-def _write_text_durable(path: Path, content: str) -> None:
-    with path.open("w", encoding="utf-8", newline="\n") as file:
-        file.write(content)
-        file.flush()
-        os.fsync(file.fileno())
-
-
 def _atomic_json(path: Path, payload: dict) -> None:
-    """Persist JSON safely, including when Windows temporarily locks the target."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = json.dumps(payload, ensure_ascii=False, indent=2)
-    handle = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        newline="\n",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    )
-    temporary = Path(handle.name)
-    try:
-        with handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        last_error: PermissionError | None = None
-        for attempt in range(_ATOMIC_WRITE_ATTEMPTS):
-            try:
-                temporary.replace(path)
-                return
-            except PermissionError as exc:
-                last_error = exc
-                if attempt + 1 < _ATOMIC_WRITE_ATTEMPTS:
-                    sleep(_ATOMIC_WRITE_RETRY_SECONDS * (2**attempt))
-
-        logging.warning(
-            "Не удалось атомарно заменить %s после %s попыток (%s); "
-            "использую прямую запись",
-            path,
-            _ATOMIC_WRITE_ATTEMPTS,
-            last_error,
-        )
-        _write_text_durable(path, content)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 class QueuedChunkWriter:
@@ -141,6 +91,7 @@ class QueuedChunkWriter:
         self.first_callback_monotonic: float | None = None
         self.last_callback_monotonic: float | None = None
         self.error: BaseException | None = None
+        self._stop_requested = threading.Event()
         self.last_non_silent_monotonic: float | None = None
         self.current_level = 0.0
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -161,15 +112,21 @@ class QueuedChunkWriter:
             self.dropped_blocks += 1
 
     def stop(self, timeout: float = 30.0) -> None:
-        while True:
-            if not self.thread.is_alive():
-                break
+        if timeout < 0:
+            raise ValueError("Writer timeout must not be negative")
+        deadline = monotonic() + timeout
+        self._stop_requested.set()
+        if self.thread.is_alive():
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"Поток записи {self.prefix} не завершился за {timeout} секунд")
             try:
-                self.queue.put(None, timeout=0.5)
-                break
-            except queue.Full:
-                continue
-        self.thread.join(timeout)
+                self.queue.put(None, timeout=remaining)
+            except queue.Full as exc:
+                raise RuntimeError(
+                    f"Очередь записи {self.prefix} не приняла stop за {timeout} секунд"
+                ) from exc
+        self.thread.join(max(0.0, deadline - monotonic()))
         if self.thread.is_alive():
             raise RuntimeError(f"Поток записи {self.prefix} не завершился за {timeout} секунд")
         if self.error:
@@ -209,14 +166,31 @@ class QueuedChunkWriter:
                         self.on_chunk_closed()
                         file = self._open(sf)
                 self.queue.task_done()
+                if self._stop_requested.is_set() and self.queue.empty():
+                    break
         except BaseException as exc:
             self.error = exc
             logging.exception("Ошибка аудиопотока %s", self.prefix)
         finally:
+            finalization_errors: list[BaseException] = []
             if file is not None:
-                file.flush()
-                file.close()
-                self.on_chunk_closed()
+                for operation in (file.flush, file.close, self.on_chunk_closed):
+                    try:
+                        operation()
+                    except BaseException as exc:
+                        finalization_errors.append(exc)
+                        logging.exception("Ошибка финализации аудиопотока %s", self.prefix)
+            if finalization_errors:
+                errors = (
+                    [self.error, *finalization_errors]
+                    if self.error is not None
+                    else finalization_errors
+                )
+                details = "; ".join(str(error) for error in errors)
+                self.error = BaseExceptionGroup(
+                    f"Ошибки финализации writer-потока {self.prefix}: {details}",
+                    errors,
+                )
 
     def _open(self, sf):
         self.frames_in_chunk = 0
@@ -615,6 +589,143 @@ def _resample_linear(data: np.ndarray, source_rate: int, target_rate: int) -> np
     )
 
 
+_MIX_BLOCK_FRAMES = 65_536
+
+
+def _resampled_frame_count(
+    source_frames: int,
+    source_rate: int,
+    target_rate: int,
+    tempo: float,
+) -> int:
+    if source_rate <= 0 or target_rate <= 0 or tempo <= 0:
+        raise ValueError("Sample rates and tempo must be positive")
+    return round(source_frames * target_rate / source_rate / tempo)
+
+
+def _read_resampled_block(
+    source,
+    output_start: int,
+    output_frames: int,
+    *,
+    source_rate: int,
+    target_rate: int,
+    tempo: float,
+) -> np.ndarray:
+    if output_frames <= 0:
+        return np.empty((0, source.channels), dtype=np.float32)
+    ratio = source_rate * tempo / target_rate
+    positions = (output_start + np.arange(output_frames, dtype=np.float64)) * ratio
+    first = int(np.floor(positions[0]))
+    last = min(source.frames - 1, int(np.ceil(positions[-1])))
+    source.seek(first)
+    samples = source.read(last - first + 1, dtype="float32", always_2d=True)
+    local_positions = positions - first
+    axis = np.arange(len(samples), dtype=np.float64)
+    return np.column_stack(
+        [
+            np.interp(local_positions, axis, samples[:, channel])
+            for channel in range(samples.shape[1])
+        ]
+    ).astype(np.float32, copy=False)
+
+
+def _stream_mix_tracks(
+    microphone: Path,
+    system: Path,
+    output: Path,
+    microphone_rate: int,
+    system_rate: int,
+    target_rate: int,
+    microphone_delay_ms: int,
+    system_delay_ms: int,
+    microphone_tempo: float,
+    system_tempo: float,
+) -> None:
+    import soundfile as sf
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        suffix=".mix.wav",
+        delete=False,
+    )
+    temporary = Path(handle.name)
+    handle.close()
+    try:
+        with (
+            sf.SoundFile(microphone) as mic_source,
+            sf.SoundFile(system) as sys_source,
+        ):
+            mic_frames = _resampled_frame_count(
+                mic_source.frames,
+                microphone_rate,
+                target_rate,
+                microphone_tempo,
+            )
+            sys_frames = _resampled_frame_count(
+                sys_source.frames,
+                system_rate,
+                target_rate,
+                system_tempo,
+            )
+            mic_delay = round(microphone_delay_ms * target_rate / 1000)
+            sys_delay = round(system_delay_ms * target_rate / 1000)
+            channels = max(mic_source.channels, sys_source.channels)
+            total_frames = max(mic_delay + mic_frames, sys_delay + sys_frames)
+            peak = 0.0
+            with sf.SoundFile(
+                temporary,
+                "w",
+                samplerate=target_rate,
+                channels=channels,
+                subtype="FLOAT",
+            ) as mixed:
+                for block_start in range(0, total_frames, _MIX_BLOCK_FRAMES):
+                    block_frames = min(_MIX_BLOCK_FRAMES, total_frames - block_start)
+                    block = np.zeros((block_frames, channels), dtype=np.float32)
+                    for source, delay, frames, rate, tempo in (
+                        (mic_source, mic_delay, mic_frames, microphone_rate, microphone_tempo),
+                        (sys_source, sys_delay, sys_frames, system_rate, system_tempo),
+                    ):
+                        overlap_start = max(block_start, delay)
+                        overlap_end = min(block_start + block_frames, delay + frames)
+                        if overlap_start >= overlap_end:
+                            continue
+                        data = _read_resampled_block(
+                            source,
+                            overlap_start - delay,
+                            overlap_end - overlap_start,
+                            source_rate=rate,
+                            target_rate=target_rate,
+                            tempo=tempo,
+                        )
+                        target_start = overlap_start - block_start
+                        block[
+                            target_start : target_start + len(data),
+                            : data.shape[1],
+                        ] += data
+                    peak = max(peak, float(np.max(np.abs(block))) if len(block) else 0.0)
+                    mixed.write(block)
+
+        scale = peak if peak > 1 else 1.0
+        with (
+            sf.SoundFile(temporary) as mixed,
+            sf.SoundFile(
+                output,
+                "w",
+                samplerate=target_rate,
+                channels=mixed.channels,
+                subtype="PCM_16",
+            ) as target,
+        ):
+            while len(block := mixed.read(_MIX_BLOCK_FRAMES, dtype="float32", always_2d=True)):
+                target.write(block / scale)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def mix_tracks(
     microphone: Path,
     system: Path,
@@ -655,28 +766,21 @@ def mix_tracks(
             ],
             check=True,
             capture_output=True,
+            timeout=3600,
         )
         return
-    import soundfile as sf
-
-    mic, _ = sf.read(microphone, always_2d=True)
-    sys, _ = sf.read(system, always_2d=True)
-    mic = _resample_linear(mic, microphone_rate, target_rate)
-    sys = _resample_linear(sys, system_rate, target_rate)
-    if microphone_tempo != 1.0:
-        mic = _resample_linear(mic, target_rate, round(target_rate / microphone_tempo))
-    if system_tempo != 1.0:
-        sys = _resample_linear(sys, target_rate, round(target_rate / system_tempo))
-    mic = np.pad(mic, ((round(microphone_delay_ms * target_rate / 1000), 0), (0, 0)))
-    sys = np.pad(sys, ((round(system_delay_ms * target_rate / 1000), 0), (0, 0)))
-    size = max(len(mic), len(sys))
-    result = np.zeros((size, max(mic.shape[1], sys.shape[1])))
-    result[: len(mic), : mic.shape[1]] += mic
-    result[: len(sys), : sys.shape[1]] += sys
-    peak = float(np.max(np.abs(result))) or 1.0
-    if peak > 1:
-        result /= peak
-    sf.write(output, result, target_rate, subtype="PCM_16")
+    _stream_mix_tracks(
+        microphone,
+        system,
+        output,
+        microphone_rate,
+        system_rate,
+        target_rate,
+        microphone_delay_ms,
+        system_delay_ms,
+        microphone_tempo,
+        system_tempo,
+    )
 
 
 def recover_recording(output_dir: Path) -> RecordingResult:
@@ -685,21 +789,30 @@ def recover_recording(output_dir: Path) -> RecordingResult:
     session_file = output_dir / "session.json"
     if not session_file.exists():
         raise RuntimeError(f"Манифест записи не найден: {session_file}")
-    session = json.loads(session_file.read_text(encoding="utf-8"))
-    channels = int(session.get("channels", 1))
-    legacy_rate = int(session.get("sample_rate", 48_000))
-    mic_rate = int(session.get("microphone_sample_rate", legacy_rate))
-    sys_rate = int(session.get("system_sample_rate", legacy_rate))
+    try:
+        session = json.loads(session_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logging.warning("Повреждённый session.json будет восстановлен по аудиочанкам: %s", session_file)
+        session = {}
+    mic_chunks = _valid_chunks(output_dir / "chunks" / "microphone")
+    sys_chunks = _valid_chunks(output_dir / "chunks" / "system")
+    mic_info = sf.info(mic_chunks[0]) if mic_chunks else None
+    sys_info = sf.info(sys_chunks[0]) if sys_chunks else None
+    channels = int(session.get("channels") or (mic_info.channels if mic_info else 1))
+    legacy_rate = int(session.get("sample_rate") or (mic_info.samplerate if mic_info else 48_000))
+    mic_rate = int(
+        session.get("microphone_sample_rate")
+        or (mic_info.samplerate if mic_info else legacy_rate)
+    )
+    sys_rate = int(session.get("system_sample_rate") or (sys_info.samplerate if sys_info else legacy_rate))
     target_rate = int(session.get("target_sample_rate", legacy_rate))
     microphone_file = output_dir / "microphone.wav"
     system_file = output_dir / "system.wav"
     mixed_file = output_dir / "lesson.wav"
     sync_report = output_dir / "sync_report.json"
     quality_report = output_dir / "audio_quality_report.json"
-    concatenate_chunks(
-        _valid_chunks(output_dir / "chunks" / "microphone"), microphone_file, mic_rate, channels
-    )
-    concatenate_chunks(_valid_chunks(output_dir / "chunks" / "system"), system_file, sys_rate, channels)
+    concatenate_chunks(mic_chunks, microphone_file, mic_rate, channels)
+    concatenate_chunks(sys_chunks, system_file, sys_rate, channels)
     mic_start = session.get("microphone_first_callback")
     sys_start = session.get("system_first_callback")
     if mic_start is None or sys_start is None:
@@ -772,8 +885,14 @@ def find_recoverable_recordings(workspace: Path) -> list[Path]:
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            continue
-        if data.get("status") in {"recording", "recorded"} and any(
+            data = {}
+        if data.get("status") in {
+            None,
+            "recording",
+            "recorded",
+            "failed_to_start",
+            "failed_to_stop",
+        } and any(
             (manifest.parent / "chunks").rglob("*.wav")
         ):
             sessions.append(manifest.parent)
