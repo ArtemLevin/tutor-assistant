@@ -1,0 +1,90 @@
+[
+  {
+    "id": "math_formula",
+    "subject": "mathematics",
+    "speaker": "П",
+    "text": "Решаем неравенство x^2 - 5x + 6 ≥ 0.",
+    "allowed_actions": ["keep", "trim"],
+    "blocking_drop": true
+  },
+  {
+    "id": "physics_units",
+    "subject": "physics",
+    "speaker": "П",
+    "text": "Скорость равна 12 м/с, время — 5 с.",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "chemistry_formula",
+    "subject": "chemistry",
+    "speaker": "П",
+    "text": "Формула алкана CnH2n+2.",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "greeting",
+    "subject": "other",
+    "speaker": "П",
+    "text": "Здравствуйте, как дела?",
+    "allowed_actions": ["drop"],
+    "blocking_drop": false
+  },
+  {
+    "id": "audio_check",
+    "subject": "other",
+    "speaker": "П",
+    "text": "Меня слышно?",
+    "allowed_actions": ["drop"],
+    "blocking_drop": false
+  },
+  {
+    "id": "small_talk",
+    "subject": "other",
+    "speaker": "У",
+    "text": "Сегодня на улице очень жарко.",
+    "allowed_actions": ["drop", "keep"],
+    "blocking_drop": false
+  },
+  {
+    "id": "student_error",
+    "subject": "mathematics",
+    "speaker": "У",
+    "text": "Мне кажется, что 2 + 2 = 5.",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "student_question",
+    "subject": "mathematics",
+    "speaker": "У",
+    "text": "Почему при переходе через корень знак меняется?",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "homework",
+    "subject": "mathematics",
+    "speaker": "П",
+    "text": "Домашнее задание: номера 12, 15 и 18 к пятнице.",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "mixed_trim",
+    "subject": "mathematics",
+    "speaker": "П",
+    "text": "Меня слышно? Хорошо, тогда решаем уравнение x = 4.",
+    "allowed_actions": ["trim", "keep"],
+    "blocking_drop": true
+  },
+  {
+    "id": "ambiguous_keep",
+    "subject": "mathematics",
+    "speaker": "У",
+    "text": "Я ещё подумаю над этим способом.",
+    "allowed_actions": ["keep"],
+    "blocking_drop": true
+  }
+]

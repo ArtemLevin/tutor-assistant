@@ -154,6 +154,7 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
     for module, label in (
         ("PySide6", "Desktop UI"),
         ("faster_whisper", "Whisper"),
+        ("httpx", "Ollama HTTP"),
         ("sounddevice", "SoundDevice"),
         ("soundcard", "WASAPI Loopback"),
         ("soundfile", "SoundFile"),
@@ -258,6 +259,78 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
             checks.append(DiagnosticCheck("LaTeX", "error", str(exc), required=True))
     else:
         checks.append(DiagnosticCheck("LaTeX", "ok", "Автокомпиляция отключена", required=False))
+
+    normalization_directory = config.workspace / "lessons"
+    normalization_parent = _nearest_existing_parent(normalization_directory)
+    checks.append(
+        _check(
+            "Артефакты нормализации",
+            normalization_parent.is_dir() and os.access(normalization_parent, os.W_OK),
+            f"{normalization_directory} (доступен для записи)",
+            f"Невозможно сохранять JSON в {normalization_directory}",
+            required=config.normalization.enabled,
+        )
+    )
+    if config.normalization.enabled:
+        try:
+            from .normalization.ollama_client import OllamaClient
+
+            ollama = OllamaClient(config.normalization).diagnose()
+            endpoint_ready = ollama.reachable and (
+                ollama.endpoint_local or config.normalization.allow_remote_endpoint
+            )
+            endpoint_status = "ok" if endpoint_ready else "error"
+            endpoint_required = True
+            endpoint_message = f"{config.normalization.base_url}; версия {ollama.version}"
+            if ollama.reachable and not ollama.endpoint_local and config.normalization.allow_remote_endpoint:
+                endpoint_status = "warning"
+                endpoint_required = False
+                endpoint_message = "Разрешён удалённый Ollama endpoint; транскрипт покинет этот компьютер"
+            elif not endpoint_ready:
+                endpoint_message = (
+                    "; ".join(ollama.errors)
+                    or f"Endpoint недоступен или не локальный: {config.normalization.base_url}"
+                )
+            checks.extend(
+                (
+                    DiagnosticCheck(
+                        "Ollama endpoint",
+                        endpoint_status,
+                        endpoint_message,
+                        required=endpoint_required,
+                    ),
+                    _check(
+                        "Ollama model",
+                        ollama.model_available,
+                        config.normalization.model,
+                        f"Модель {config.normalization.model} не найдена",
+                    ),
+                    _check(
+                        "Ollama structured output",
+                        ollama.structured_output_valid,
+                        "Синтетический JSON прошёл Pydantic-проверку",
+                        "Ollama не вернул валидный тестовый JSON",
+                    ),
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                DiagnosticCheck(
+                    "Ollama",
+                    "error",
+                    str(exc),
+                    required=True,
+                )
+            )
+    else:
+        checks.append(
+            DiagnosticCheck(
+                "Ollama",
+                "ok",
+                "Локальная нормализация отключена",
+                required=False,
+            )
+        )
 
     ready = not any(check.required and check.status == "error" for check in checks)
     return DiagnosticReport(ready=ready, checks=tuple(checks))

@@ -30,6 +30,7 @@ class BackgroundTaskPurpose(StrEnum):
     CONTENT_BROWSER = "content-browser"
     DATABASE_BACKUP = "database-backup"
     CONTENT_DIAGNOSTICS = "content-diagnostics"
+    TRANSCRIPT_NORMALIZATION = "transcript-normalization"
 
 
 class BusyPolicy(StrEnum):

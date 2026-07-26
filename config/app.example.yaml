@@ -11,6 +11,10 @@ content:
   backup_enabled: true
   backup_interval_hours: 24
   backup_retention_count: 14
+  maintenance_max_lessons_per_cycle: 50
+  maintenance_max_seconds: 120
+  maintenance_apply_max_seconds: 30
+  maintenance_full_scan_interval_hours: 168
 students_file: config/students.yaml
 
 recording:
@@ -79,3 +83,24 @@ quick_start:
       student_id: null
       auto_transcribe: true
       countdown_seconds: 3
+
+normalization:
+  enabled: true
+  auto_run: false
+  provider: ollama
+  base_url: http://127.0.0.1:11434
+  allow_remote_endpoint: false
+  model: qwen3:8b
+  mode: conservative
+  temperature: 0
+  num_ctx: 8192
+  num_predict: 4096
+  max_segments_per_chunk: 50
+  max_input_characters: 12000
+  context_overlap_segments: 4
+  request_timeout_seconds: 600
+  max_attempts: 2
+  retry_backoff_seconds: 2
+  include_removed_text: false
+  require_manual_approval: true
+  high_removal_threshold: 0.35

@@ -329,6 +329,7 @@ class MainWindow(base_app.MainWindow):
         }:
             self._go_to(3)
         self._set_status(f"Занятие открыто · {lesson.student.full_name}")
+        self._sync_normalization_controls()
         self._sync_parallel_review_ui()
 
     def _load_lesson(self, lesson: Lesson) -> None:
