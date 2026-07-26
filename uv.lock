@@ -1107,9 +1107,10 @@ wheels = [
 
 [[package]]
 name = "tutor-assistant"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "platformdirs" },
@@ -1149,6 +1150,7 @@ dev = [
 requires-dist = [
     { name = "faster-whisper", marker = "extra == 'all'", specifier = ">=1.1,<2" },
     { name = "faster-whisper", marker = "extra == 'transcription'", specifier = ">=1.1,<2" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "platformdirs", specifier = ">=4.3,<5" },

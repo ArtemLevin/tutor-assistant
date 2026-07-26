@@ -260,6 +260,50 @@ def _asset_verification_cache(db: sqlite3.Connection) -> None:
     )
 
 
+def _transcript_normalization(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS normalization_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            configuration_hash TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'running', 'review_required', 'approved',
+                'failed', 'stale', 'cancelled'
+            )),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            artifact_path TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            approved_at TEXT,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id) ON DELETE CASCADE
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS normalization_runs_logical_active
+        ON normalization_runs(
+            lesson_id, source_sha256, model, prompt_version, configuration_hash
+        )
+        WHERE status IN (
+            'pending', 'running', 'review_required', 'failed', 'cancelled'
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE INDEX IF NOT EXISTS normalization_runs_lesson_created
+        ON normalization_runs(lesson_id, created_at DESC)
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
@@ -268,6 +312,7 @@ MIGRATIONS = (
     Migration(5, "student_content_hardening", _content_hardening),
     Migration(6, "content_write_consistency", _content_write_consistency),
     Migration(7, "asset_verification_cache", _asset_verification_cache),
+    Migration(8, "transcript_normalization", _transcript_normalization),
 )
 
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .domain import Student
 
@@ -103,6 +105,68 @@ class ContentConfig(BaseModel):
     maintenance_full_scan_interval_hours: int = Field(default=168, ge=1, le=8760)
 
 
+class NormalizationConfig(BaseModel):
+    enabled: bool = True
+    auto_run: bool = False
+    provider: str = "ollama"
+    base_url: str = "http://127.0.0.1:11434"
+    allow_remote_endpoint: bool = False
+    model: str = "qwen3:8b"
+    mode: str = "conservative"
+    temperature: float = Field(default=0, ge=0, le=2)
+    num_ctx: int = Field(default=8192, ge=1024)
+    num_predict: int = Field(default=4096, ge=256)
+    max_segments_per_chunk: int = Field(default=50, gt=0)
+    max_input_characters: int = Field(default=12_000, gt=0)
+    context_overlap_segments: int = Field(default=4, ge=0)
+    request_timeout_seconds: int = Field(default=600, gt=0)
+    max_attempts: int = Field(default=2, ge=1, le=5)
+    retry_backoff_seconds: float = Field(default=2, ge=0, le=60)
+    include_removed_text: bool = False
+    require_manual_approval: bool = True
+    high_removal_threshold: float = Field(default=0.35, gt=0, lt=1)
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        if value != "ollama":
+            raise ValueError("Поддерживается только локальный provider=ollama")
+        return value
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        if value != "conservative":
+            raise ValueError("Поддерживается только mode=conservative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_endpoint_and_chunking(self) -> NormalizationConfig:
+        parsed = urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("normalization.base_url должен быть HTTP(S) URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("normalization.base_url не должен содержать credentials, query или fragment")
+        if parsed.path not in {"", "/"}:
+            raise ValueError("normalization.base_url не должен содержать путь")
+        if not self.allow_remote_endpoint:
+            host = parsed.hostname.casefold()
+            is_local = host == "localhost"
+            if not is_local:
+                try:
+                    is_local = ip_address(host).is_loopback
+                except ValueError:
+                    is_local = False
+            if not is_local:
+                raise ValueError(
+                    "Удалённый Ollama endpoint запрещён; используйте 127.0.0.1 "
+                    "или включите allow_remote_endpoint"
+                )
+        if self.context_overlap_segments >= self.max_segments_per_chunk:
+            raise ValueError("context_overlap_segments должен быть меньше max_segments_per_chunk")
+        return self
+
+
 class AppConfig(BaseModel):
     setup_completed: bool = False
     workspace: Path = Path("data")
@@ -113,6 +177,7 @@ class AppConfig(BaseModel):
     latex: LatexConfig = Field(default_factory=LatexConfig)
     quick_start: QuickStartConfig = Field(default_factory=QuickStartConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)
+    normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

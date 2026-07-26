@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tutor-assistant"
-version = "0.10.0"
+version = "0.11.0"
 description = "Desktop pipeline: lesson recording, local transcription and material-generation jobs"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 authors = [{name = "Лёвин Артём Александрович"}]
 dependencies = [
   "pydantic>=2.10,<3",
+  "httpx>=0.28,<1",
   "PyYAML>=6.0,<7",
   "platformdirs>=4.3,<5",
   "numpy>=2.0,<3",
@@ -40,6 +41,9 @@ packages = ["src/tutor_assistant"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "ollama: integration tests that require a local Ollama instance",
+]
 
 [tool.ruff]
 line-length = 110

@@ -1,0 +1,260 @@
+{
+  "$defs": {
+    "NormalizationQuality": {
+      "properties": {
+        "schema_valid": {
+          "title": "Schema Valid",
+          "type": "boolean"
+        },
+        "all_source_segments_classified": {
+          "title": "All Source Segments Classified",
+          "type": "boolean"
+        },
+        "numbers_preserved": {
+          "title": "Numbers Preserved",
+          "type": "boolean"
+        },
+        "formula_tokens_preserved": {
+          "title": "Formula Tokens Preserved",
+          "type": "boolean"
+        },
+        "requires_manual_attention": {
+          "title": "Requires Manual Attention",
+          "type": "boolean"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_valid",
+        "all_source_segments_classified",
+        "numbers_preserved",
+        "formula_tokens_preserved",
+        "requires_manual_attention"
+      ],
+      "title": "NormalizationQuality",
+      "type": "object"
+    },
+    "NormalizationStatistics": {
+      "properties": {
+        "source_characters": {
+          "minimum": 0,
+          "title": "Source Characters",
+          "type": "integer"
+        },
+        "normalized_characters": {
+          "minimum": 0,
+          "title": "Normalized Characters",
+          "type": "integer"
+        },
+        "retained_ratio": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Retained Ratio",
+          "type": "number"
+        },
+        "source_segments": {
+          "minimum": 0,
+          "title": "Source Segments",
+          "type": "integer"
+        },
+        "kept_segments": {
+          "minimum": 0,
+          "title": "Kept Segments",
+          "type": "integer"
+        },
+        "trimmed_segments": {
+          "minimum": 0,
+          "title": "Trimmed Segments",
+          "type": "integer"
+        },
+        "removed_segments": {
+          "minimum": 0,
+          "title": "Removed Segments",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_characters",
+        "normalized_characters",
+        "retained_ratio",
+        "source_segments",
+        "kept_segments",
+        "trimmed_segments",
+        "removed_segments"
+      ],
+      "title": "NormalizationStatistics",
+      "type": "object"
+    },
+    "NormalizedSegment": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source_segment_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Source Segment Ids",
+          "type": "array"
+        },
+        "speaker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speaker"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "content_type": {
+          "title": "Content Type",
+          "type": "string"
+        },
+        "text": {
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source_segment_ids",
+        "content_type",
+        "text"
+      ],
+      "title": "NormalizedSegment",
+      "type": "object"
+    },
+    "RemovedFragment": {
+      "properties": {
+        "source_segment_ids": {
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Source Segment Ids",
+          "type": "array"
+        },
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        }
+      },
+      "required": [
+        "source_segment_ids",
+        "category",
+        "reason_code"
+      ],
+      "title": "RemovedFragment",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "lesson_id": {
+      "title": "Lesson Id",
+      "type": "string"
+    },
+    "source": {
+      "additionalProperties": true,
+      "title": "Source",
+      "type": "object"
+    },
+    "normalizer": {
+      "additionalProperties": true,
+      "title": "Normalizer",
+      "type": "object"
+    },
+    "educational_text": {
+      "title": "Educational Text",
+      "type": "string"
+    },
+    "segments": {
+      "items": {
+        "$ref": "#/$defs/NormalizedSegment"
+      },
+      "title": "Segments",
+      "type": "array"
+    },
+    "removed_fragments": {
+      "items": {
+        "$ref": "#/$defs/RemovedFragment"
+      },
+      "title": "Removed Fragments",
+      "type": "array"
+    },
+    "statistics": {
+      "$ref": "#/$defs/NormalizationStatistics"
+    },
+    "quality": {
+      "$ref": "#/$defs/NormalizationQuality"
+    }
+  },
+  "required": [
+    "lesson_id",
+    "source",
+    "normalizer",
+    "educational_text",
+    "segments",
+    "removed_fragments",
+    "statistics",
+    "quality"
+  ],
+  "title": "NormalizedTranscript",
+  "type": "object"
+}

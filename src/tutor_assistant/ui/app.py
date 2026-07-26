@@ -49,6 +49,13 @@ from ..content_browser import is_audio_path
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
 from ..logging_config import configure_logging, install_exception_hook, log_directory
+from ..normalization import NormalizationService, SourceSegment
+from ..normalization.models import (
+    NormalizationExecution,
+    NormalizationRunStatus,
+    NormalizedTranscript,
+)
+from ..normalization.protocol import CancellationToken
 from ..pipeline import LessonPipeline
 from ..playback import PlaybackController, PlaybackSegment
 from ..publisher import publication_payload_files
@@ -64,6 +71,7 @@ from ..recording import (
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
+from .normalization import NormalizationReviewDialog
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
 from .student_content import StudentContentPage
@@ -137,6 +145,20 @@ class MainWindow(QMainWindow):
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
         self.content_service = self.pipeline.content_service
+        self.normalization_service = NormalizationService(
+            self.config.normalization,
+            self.content_service,
+        )
+        recovered_normalizations = self.normalization_service.recover_interrupted()
+        if recovered_normalizations:
+            logging.info(
+                "event=normalization_recovered count=%d",
+                recovered_normalizations,
+            )
+        self._normalization_cancellation: CancellationToken | None = None
+        self._normalization_execution: NormalizationExecution | None = None
+        self._normalization_lesson_id: str | None = None
+        self._pending_auto_normalizations: list[str] = []
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
             self.devices, self.config.recording.target_sample_rate
@@ -165,6 +187,7 @@ class MainWindow(QMainWindow):
         self.transcription_worker.succeeded.connect(self._background_transcription_ready)
         self.transcription_worker.failed.connect(self._background_transcription_failed)
         self.transcription_worker.became_idle.connect(self._maybe_finish_shutdown)
+        self.transcription_worker.became_idle.connect(self._pump_auto_normalization)
         self.transcription_worker.finished.connect(self._maybe_finish_shutdown)
         self.playback_backend = QtPlaybackBackend(self)
         self.playback_scheduler = QtStopScheduler(self)
@@ -174,9 +197,7 @@ class MainWindow(QMainWindow):
             lambda: self._parallel_policy().audio_playback_allowed,
             self._playback_error,
         )
-        self.playback_backend.error_occurred.connect(
-            self.playback_controller.report_backend_error
-        )
+        self.playback_backend.error_occurred.connect(self.playback_controller.report_backend_error)
         self.quick_countdown_timer = QTimer(self)
         self.quick_countdown_timer.setInterval(1000)
         self.quick_countdown_timer.timeout.connect(self._quick_countdown_tick)
@@ -231,9 +252,7 @@ class MainWindow(QMainWindow):
         self.header_eyebrow.setObjectName("eyebrow")
         self.header_title = QLabel("Tutor Assistant")
         self.header_title.setObjectName("appTitle")
-        self.header_subtitle = QLabel(
-            "Запись занятия, проверка транскрипта и выпуск материалов в одном окне"
-        )
+        self.header_subtitle = QLabel("Запись занятия, проверка транскрипта и выпуск материалов в одном окне")
         self.header_subtitle.setObjectName("subtitle")
         brand.addWidget(self.header_eyebrow)
         brand.addWidget(self.header_title)
@@ -290,9 +309,7 @@ class MainWindow(QMainWindow):
         self.student_content_page.lesson_trashed.connect(self._forget_trashed_lesson)
         self.student_content_page.lesson_purged.connect(self._forget_trashed_lesson)
         self.student_content_page.trash_retention_changed.connect(self._save_trash_retention)
-        self.materials_tab_index = self.tabs.addTab(
-            self.student_content_page, "08  Материалы"
-        )
+        self.materials_tab_index = self.tabs.addTab(self.student_content_page, "08  Материалы")
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
         self.content_stack.addWidget(self.quick_page)
@@ -393,10 +410,7 @@ class MainWindow(QMainWindow):
             not self.config.content.maintenance_enabled
             or self._shutdown_requested
             or (self.recorder and self.recorder.active)
-            or any(
-                getattr(worker, "purpose", "") == "content-maintenance"
-                for worker in self.workers
-            )
+            or any(getattr(worker, "purpose", "") == "content-maintenance" for worker in self.workers)
         ):
             return
 
@@ -405,13 +419,9 @@ class MainWindow(QMainWindow):
                 auto_repair=self.config.content.auto_repair,
                 purge_expired=self.config.content.auto_purge_trash,
                 cleanup_temporary=self.config.content.auto_cleanup_temporary,
-                temporary_retention=timedelta(
-                    hours=self.config.content.temporary_retention_hours
-                ),
+                temporary_retention=timedelta(hours=self.config.content.temporary_retention_hours),
                 backup_enabled=self.config.content.backup_enabled,
-                backup_interval=timedelta(
-                    hours=self.config.content.backup_interval_hours
-                ),
+                backup_interval=timedelta(hours=self.config.content.backup_interval_hours),
                 backup_retention_count=self.config.content.backup_retention_count,
             )
 
@@ -560,9 +570,7 @@ class MainWindow(QMainWindow):
         self._maybe_finish_shutdown()
 
     def _offer_recovery(self) -> None:
-        self._recovery_sessions = list(
-            reversed(find_recoverable_recordings(self.config.workspace))
-        )
+        self._recovery_sessions = list(reversed(find_recoverable_recordings(self.config.workspace)))
         self._offer_next_recovery()
 
     def _offer_next_recovery(self) -> None:
@@ -712,6 +720,7 @@ class MainWindow(QMainWindow):
         }:
             self._go_to(3)
         self._set_status(f"Занятие восстановлено · {lesson.student.full_name}")
+        self._sync_normalization_controls()
 
     def _quick_start_page(self) -> QWidget:
         page = QWidget()
@@ -874,9 +883,7 @@ class MainWindow(QMainWindow):
         )
         self.quick_readiness_button.setText("✓" if readiness.ready else "!")
         self.quick_readiness_button.setProperty("tone", "ready" if readiness.ready else "blocked")
-        lines = [
-            f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items
-        ]
+        lines = [f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items]
         lines.append("")
         lines.append("Нажмите, чтобы открыть подробную проверку")
         self.quick_readiness_button.setToolTip("\n".join(lines))
@@ -1205,6 +1212,54 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.playback_speed)
         controls.addStretch()
         segments_layout.addLayout(controls)
+        normalization_controls = QHBoxLayout()
+        normalization_label = QLabel("Локальная LLM")
+        normalization_label.setObjectName("muted")
+        normalization_controls.addWidget(normalization_label)
+        self.normalization_model = QComboBox()
+        self.normalization_model.setEditable(True)
+        self.normalization_model.addItems(["qwen3:8b", "qwen3:14b"])
+        self.normalization_model.setCurrentText(self.config.normalization.model)
+        self.normalization_model.setMinimumWidth(145)
+        normalization_controls.addWidget(self.normalization_model)
+        self.normalize_button = set_button_kind(
+            QPushButton("Нормализовать локально"),
+            "primary",
+        )
+        self.normalize_button.clicked.connect(self.normalize_current_transcript)
+        normalization_controls.addWidget(self.normalize_button)
+        self.cancel_normalization_button = set_button_kind(
+            QPushButton("Отменить нормализацию"),
+            "ghost",
+        )
+        self.cancel_normalization_button.clicked.connect(self.cancel_normalization)
+        normalization_controls.addWidget(self.cancel_normalization_button)
+        self.retry_normalization_button = set_button_kind(
+            QPushButton("Повторить"),
+            "ghost",
+        )
+        self.retry_normalization_button.clicked.connect(lambda: self.normalize_current_transcript(force=True))
+        normalization_controls.addWidget(self.retry_normalization_button)
+        self.open_normalization_button = set_button_kind(
+            QPushButton("Открыть результат"),
+            "ghost",
+        )
+        self.open_normalization_button.clicked.connect(self.open_normalization_result)
+        normalization_controls.addWidget(self.open_normalization_button)
+        self.apply_normalization_button = set_button_kind(
+            QPushButton("Применить результат"),
+            "ghost",
+        )
+        self.apply_normalization_button.clicked.connect(self.open_normalization_result)
+        normalization_controls.addWidget(self.apply_normalization_button)
+        self.reject_normalization_button = set_button_kind(
+            QPushButton("Отклонить результат"),
+            "danger",
+        )
+        self.reject_normalization_button.clicked.connect(self.reject_normalization_result)
+        normalization_controls.addWidget(self.reject_normalization_button)
+        normalization_controls.addStretch()
+        segments_layout.addLayout(normalization_controls)
         summary = QGroupBox("Сводный текст")
         summary_layout = QVBoxLayout(summary)
         self.transcript = QPlainTextEdit()
@@ -1231,6 +1286,7 @@ class MainWindow(QMainWindow):
         transcript_splitter.setStretchFactor(1, 2)
         transcript_splitter.setSizes([390, 290])
         layout.addWidget(transcript_splitter, 1)
+        self._sync_normalization_controls()
         return page
 
     def _publish_tab(self) -> QWidget:
@@ -1782,7 +1838,7 @@ class MainWindow(QMainWindow):
         self._pump_transcription_queue()
 
     def _pump_transcription_queue(self) -> None:
-        if self._shutdown_requested:
+        if self._shutdown_requested or self._normalization_cancellation is not None:
             return
         job = self.transcription_queue.start_next()
         if job is None:
@@ -1792,10 +1848,17 @@ class MainWindow(QMainWindow):
 
     def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
         self.transcription_queue.complete(job_id, lesson)
+        if (
+            self.config.normalization.enabled
+            and self.config.normalization.auto_run
+            and lesson.lesson_id not in self._pending_auto_normalizations
+        ):
+            self._pending_auto_normalizations.append(lesson.lesson_id)
         self._update_transcription_queue_ui()
         self._set_status(f"Транскрипт готов · {lesson.student.full_name}", "warning")
         logging.info("Фоновая транскрибация завершена: lesson=%s", lesson.lesson_id)
         self._pump_transcription_queue()
+        QTimer.singleShot(0, self._pump_auto_normalization)
 
     def _background_transcription_failed(self, job_id: str, details: str) -> None:
         job = self.transcription_queue.fail(job_id, details)
@@ -1827,9 +1890,7 @@ class MainWindow(QMainWindow):
         self.processing_summary.setText(f"В обработке: {unfinished} · готовы к проверке: {ready}")
         self.quick_queue_button.setText(f"≡ {unfinished + ready}")
         self.quick_queue_button.setToolTip(
-            f"В обработке: {unfinished}\n"
-            f"Готовы к проверке: {ready}\n"
-            "Нажмите, чтобы открыть очередь"
+            f"В обработке: {unfinished}\nГотовы к проверке: {ready}\nНажмите, чтобы открыть очередь"
         )
 
     def _show_processing_queue(self) -> None:
@@ -1990,6 +2051,322 @@ class MainWindow(QMainWindow):
             rate=speed,
         )
 
+    def _current_source_segments(self) -> list[SourceSegment]:
+        segments: list[SourceSegment] = []
+        for row in range(self.segment_table.rowCount()):
+            start_item = self.segment_table.item(row, 0)
+            end_item = self.segment_table.item(row, 1)
+            speaker_item = self.segment_table.item(row, 2)
+            text_item = self.segment_table.item(row, 3)
+            if text_item is None:
+                continue
+            speaker = speaker_item.text().strip() if speaker_item else ""
+            segments.append(
+                SourceSegment(
+                    source_segment_id=row + 1,
+                    start=start_item.data(256) if start_item else None,
+                    end=end_item.data(256) if end_item else None,
+                    speaker=None if speaker in {"", "—"} else speaker,
+                    text=text_item.text(),
+                )
+            )
+        return segments
+
+    def _sync_normalization_controls(self) -> None:
+        if not hasattr(self, "normalize_button"):
+            return
+        run = self.normalization_service.runs.latest(self.lesson.lesson_id) if self.lesson else None
+        task_running = self._normalization_cancellation is not None
+        can_start = bool(
+            self.lesson
+            and self.config.normalization.enabled
+            and self.segment_table.rowCount()
+            and not task_running
+        )
+        self.normalize_button.setEnabled(can_start)
+        self.cancel_normalization_button.setEnabled(task_running)
+        self.retry_normalization_button.setEnabled(
+            can_start
+            and bool(
+                run
+                and run.status
+                in {
+                    NormalizationRunStatus.FAILED,
+                    NormalizationRunStatus.CANCELLED,
+                }
+            )
+        )
+        artifact_ready = bool(
+            run and run.artifact_path and (self.content_service.workspace / run.artifact_path).is_file()
+        )
+        self.open_normalization_button.setEnabled(artifact_ready)
+        review_ready = bool(run and run.status == NormalizationRunStatus.REVIEW_REQUIRED)
+        self.apply_normalization_button.setEnabled(review_ready and artifact_ready)
+        self.reject_normalization_button.setEnabled(
+            bool(
+                run
+                and run.status
+                in {
+                    NormalizationRunStatus.PENDING,
+                    NormalizationRunStatus.RUNNING,
+                    NormalizationRunStatus.REVIEW_REQUIRED,
+                    NormalizationRunStatus.FAILED,
+                }
+            )
+        )
+
+    def normalize_current_transcript(
+        self,
+        _checked: bool = False,
+        *,
+        force: bool = False,
+    ) -> None:
+        del _checked
+        if not self.lesson:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "Сначала откройте транскрипт занятия",
+            )
+            return
+        if self.transcription_worker.busy or self.transcription_queue.active:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "Дождитесь завершения активной Whisper-транскрибации: оба процесса используют CPU.",
+            )
+            return
+        if self._normalization_cancellation is not None:
+            self._set_status("Нормализация уже выполняется", "warning")
+            return
+        segments = self._current_source_segments()
+        if not segments:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "В транскрипте нет сегментов",
+            )
+            return
+        lesson_id = self.lesson.lesson_id
+        model = self.normalization_model.currentText().strip()
+        if not model:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "Укажите модель Ollama",
+            )
+            return
+        token = CancellationToken()
+        self._normalization_cancellation = token
+        self._normalization_lesson_id = lesson_id
+        self._sync_normalization_controls()
+        self._set_status(
+            f"Нормализую транскрипт локально · {model}",
+            "working",
+        )
+        worker = Worker(
+            lambda: self.normalization_service.normalize_lesson(
+                lesson_id,
+                model=model,
+                force=force,
+                source_segments=segments,
+                source_artifact="review-buffer",
+                cancellation=token,
+            )
+        )
+        worker.succeeded.connect(
+            lambda result, expected=lesson_id: self._normalization_ready(
+                result,
+                expected,
+            )
+        )
+        worker.failed.connect(self._normalization_failed)
+        worker.finished.connect(lambda: self._normalization_worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _pump_auto_normalization(self) -> None:
+        if (
+            self._shutdown_requested
+            or self._normalization_cancellation is not None
+            or self.transcription_worker.busy
+            or self.transcription_queue.active is not None
+            or not self._pending_auto_normalizations
+        ):
+            return
+        lesson_id = self._pending_auto_normalizations.pop(0)
+        token = CancellationToken()
+        self._normalization_cancellation = token
+        self._normalization_lesson_id = lesson_id
+        self._sync_normalization_controls()
+        worker = Worker(
+            lambda: self.normalization_service.normalize_lesson(
+                lesson_id,
+                cancellation=token,
+            )
+        )
+        worker.succeeded.connect(
+            lambda result, expected=lesson_id: self._normalization_ready(
+                result,
+                expected,
+            )
+        )
+        worker.failed.connect(self._normalization_failed)
+        worker.finished.connect(lambda: self._normalization_worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def cancel_normalization(self) -> None:
+        if self._normalization_cancellation is None:
+            return
+        self._normalization_cancellation.cancel()
+        self.cancel_normalization_button.setEnabled(False)
+        self._set_status("Отмена нормализации запрошена…", "warning")
+
+    def _normalization_ready(
+        self,
+        result: NormalizationExecution,
+        expected_lesson_id: str,
+    ) -> None:
+        if (
+            self.lesson
+            and self.lesson.lesson_id == expected_lesson_id
+            and result.transcript.lesson_id == expected_lesson_id
+        ):
+            self._normalization_execution = result
+        warnings = len(result.transcript.quality.warnings)
+        self._set_status(
+            (
+                f"Нормализация готова · сохранено "
+                f"{result.transcript.statistics.retained_ratio * 100:.1f}%"
+                + (f" · предупреждений: {warnings}" if warnings else "")
+            ),
+            "warning" if result.transcript.quality.requires_manual_attention else "success",
+        )
+        logging.info(
+            "event=normalization_gui_ready lesson_id=%s run_id=%s",
+            expected_lesson_id,
+            result.run.id if result.run else "dry-run",
+        )
+
+    def _normalization_failed(self, details: str) -> None:
+        logging.error("Локальная нормализация завершилась ошибкой:\n%s", details)
+        lines = [line.strip() for line in details.splitlines() if line.strip()]
+        message = lines[-1] if lines else "Неизвестная ошибка локальной нормализации"
+        self._set_status("Ошибка локальной нормализации", "error")
+        QMessageBox.warning(self, "Локальная нормализация", message)
+
+    def _normalization_worker_finished(self, worker: Worker) -> None:
+        self._normalization_cancellation = None
+        self._normalization_lesson_id = None
+        self._worker_finished(worker)
+        self._sync_normalization_controls()
+        self._pump_transcription_queue()
+        QTimer.singleShot(0, self._pump_auto_normalization)
+
+    def _normalization_payload(
+        self,
+    ) -> tuple[int, NormalizedTranscript, list[SourceSegment]] | None:
+        if not self.lesson:
+            return None
+        run = self.normalization_service.runs.latest(self.lesson.lesson_id)
+        if not run or not run.artifact_path:
+            return None
+        artifact = self.content_service.workspace / run.artifact_path
+        if not artifact.is_file():
+            return None
+        transcript = NormalizedTranscript.model_validate_json(artifact.read_text(encoding="utf-8"))
+        return run.id or 0, transcript, self._current_source_segments()
+
+    def open_normalization_result(self) -> None:
+        payload = self._normalization_payload()
+        if payload is None:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "Готовый JSON-результат не найден",
+            )
+            return
+        run_id, transcript, source_segments = payload
+        dialog = NormalizationReviewDialog(transcript, source_segments, self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        edited_text = dialog.edited_text
+        if not edited_text:
+            QMessageBox.warning(
+                self,
+                "Локальная нормализация",
+                "Нельзя применить пустой транскрипт",
+            )
+            return
+        self._apply_normalization_result(
+            run_id,
+            transcript.lesson_id,
+            source_segments,
+            edited_text,
+        )
+
+    def _apply_normalization_result(
+        self,
+        run_id: int,
+        lesson_id: str,
+        source_segments: list[SourceSegment],
+        edited_text: str,
+    ) -> None:
+        self._set_status("Применяю результат как новую ревизию…", "working")
+        worker = Worker(
+            lambda: self.normalization_service.apply_result(
+                run_id,
+                current_segments=source_segments,
+                edited_text=edited_text,
+            )
+        )
+        worker.succeeded.connect(
+            lambda _run, expected=lesson_id, text=edited_text: self._normalization_applied(expected, text)
+        )
+        worker.failed.connect(self._normalization_failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _normalization_applied(self, lesson_id: str, text: str) -> None:
+        if self.lesson and self.lesson.lesson_id == lesson_id:
+            self.lesson = self.content_service.get_lesson(lesson_id).lesson
+            self._loading_segments = True
+            self.transcript.setPlainText(text)
+            self._loading_segments = False
+            self._summary_dirty = False
+            self.approve.setEnabled(False)
+            self.publish_button.setEnabled(True)
+            self._sync_normalization_controls()
+        self._set_status("Нормализация применена как новая ревизия")
+
+    def reject_normalization_result(self) -> None:
+        if not self.lesson:
+            return
+        run = self.normalization_service.runs.latest(self.lesson.lesson_id)
+        if not run:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Отклонить нормализацию",
+            "Отклонить результат? Исходный транскрипт останется без изменений.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        if self._normalization_cancellation:
+            self._normalization_cancellation.cancel()
+        try:
+            self.normalization_service.reject_result(run.id or 0)
+        except Exception as exc:
+            QMessageBox.warning(self, "Локальная нормализация", str(exc))
+            return
+        self._normalization_execution = None
+        self._sync_normalization_controls()
+        self._set_status("Результат нормализации отклонён", "warning")
+
     def approve_transcript(self) -> None:
         if not self.lesson or self.lesson.status != JobStatus.REVIEW_REQUIRED:
             QMessageBox.warning(self, "Транскрипт", "Выберите занятие, готовое к проверке")
@@ -2017,9 +2394,7 @@ class MainWindow(QMainWindow):
         draft = self._draft_path()
         if draft and draft.exists():
             draft.unlink()
-        payload = "\n".join(
-            f"• {path}" for path in publication_payload_files(self.lesson)
-        )
+        payload = "\n".join(f"• {path}" for path in publication_payload_files(self.lesson))
         self.publish_summary.setText(
             f"{self.lesson.student.full_name}\n{self.lesson.lesson_date:%d.%m.%Y}\n"
             f"{self.lesson.topic}\n\nБудут опубликованы:\n{payload}\n\n"
@@ -2089,6 +2464,7 @@ class MainWindow(QMainWindow):
         self.compilation_log.setPlainText("Компиляция запущена…")
         self._set_status("Компилирую PDF…", "working")
         logging.info("Локальная компиляция LaTeX начата: %s", path)
+
         def compile_tex():
             with self.content_service.activity("latex-compilation"):
                 return LatexCompiler(self.config.latex).compile(path)
@@ -2238,6 +2614,8 @@ class MainWindow(QMainWindow):
             return
         event.ignore()
         self._shutdown_requested = True
+        if self._normalization_cancellation is not None:
+            self._normalization_cancellation.cancel()
         self.transcription_worker.shutdown()
         self.timer.stop()
         self.latex_poll_timer.stop()

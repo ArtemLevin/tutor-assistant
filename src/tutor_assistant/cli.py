@@ -63,6 +63,31 @@ def parser() -> argparse.ArgumentParser:
     transcribe = commands.add_parser("transcribe", help="Транскрибировать аудио")
     transcribe.add_argument("lesson_json", type=Path)
     transcribe.add_argument("audio", type=Path)
+    normalize = commands.add_parser(
+        "normalize",
+        help="Локально нормализовать транскрипт занятия через Ollama",
+    )
+    normalize.add_argument("lesson_id")
+    normalize.add_argument("--model")
+    normalize.add_argument("--force", action="store_true")
+    normalize.add_argument("--dry-run", action="store_true")
+    normalize.add_argument("--output", type=Path)
+    normalize.add_argument(
+        "--no-apply",
+        action="store_true",
+        help="Совместимый явный флаг: результат в любом случае требует ручного применения",
+    )
+    normalize.add_argument(
+        "--include-removed-text",
+        action="store_true",
+        default=None,
+    )
+    normalization_doctor = commands.add_parser(
+        "normalization-doctor",
+        help="Проверить локальный Ollama и structured output на синтетическом тексте",
+    )
+    normalization_doctor.add_argument("--model")
+    normalization_doctor.add_argument("--json", action="store_true")
     publish = commands.add_parser("publish", help="Опубликовать подтверждённое занятие")
     publish.add_argument("lesson_json", type=Path)
     commands.add_parser("latex-doctor", help="Проверить локальное LaTeX-окружение")
@@ -113,6 +138,27 @@ def main() -> None:
 
         print(json.dumps(inspect_latex_environment(config.latex).to_dict(), ensure_ascii=False, indent=2))
         return
+    if args.command == "normalization-doctor":
+        from .normalization.ollama_client import OllamaClient
+
+        report = OllamaClient(
+            config.normalization,
+            model=args.model or config.normalization.model,
+        ).diagnose()
+        if args.json:
+            print(report.model_dump_json(indent=2))
+        else:
+            status = "ГОТОВО" if report.structured_output_valid else "ТРЕБУЕТ НАСТРОЙКИ"
+            print(
+                f"Ollama: {status}\n"
+                f"Endpoint локальный: {'да' if report.endpoint_local else 'нет'}\n"
+                f"Версия: {report.version or '—'}\n"
+                f"Модель доступна: {'да' if report.model_available else 'нет'}\n"
+                f"Structured output: {'да' if report.structured_output_valid else 'нет'}"
+            )
+            for error in report.errors:
+                print(f"- {error}")
+        raise SystemExit(0 if report.structured_output_valid else 1)
     if args.command == "content-index":
         from .content import StudentContentService
 
@@ -242,6 +288,41 @@ def main() -> None:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
         raise SystemExit(0 if result.success else 1)
     pipeline = LessonPipeline(config)
+    if args.command == "normalize":
+        from .content import ContentBusyError, ContentNotFoundError
+        from .normalization import NormalizationError, NormalizationService
+
+        service = NormalizationService(config.normalization, pipeline.content_service)
+        try:
+            result = service.normalize_lesson(
+                args.lesson_id,
+                model=args.model,
+                force=args.force,
+                dry_run=args.dry_run,
+                output=args.output,
+                include_removed_text=args.include_removed_text,
+            )
+        except (NormalizationError, ContentBusyError, ContentNotFoundError) as exc:
+            raise SystemExit(str(exc)) from None
+        print(
+            json.dumps(
+                {
+                    "lesson_id": args.lesson_id,
+                    "run_id": result.run.id if result.run else None,
+                    "status": result.run.status if result.run else "dry_run",
+                    "artifact": result.artifact_path,
+                    "manifest": result.manifest_path,
+                    "retained_ratio": result.transcript.statistics.retained_ratio,
+                    "requires_manual_attention": (result.transcript.quality.requires_manual_attention),
+                    "warnings": result.transcript.quality.warnings,
+                    "reused": result.reused,
+                    "applied": False,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
     if args.command == "create":
         students = {item.id: item for item in load_students(config.students_file)}
         lesson = Lesson(
