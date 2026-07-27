@@ -2,25 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
-
-SegmentAction = Literal["keep", "trim", "drop"]
-SegmentCategory = Literal[
-    "educational",
-    "greeting",
-    "farewell",
-    "audio_check",
-    "video_check",
-    "screen_sharing",
-    "technical_issue",
-    "small_talk",
-    "filler",
-    "duplicate",
-    "background_noise",
-    "other_non_educational",
-]
 
 
 class SourceSegment(BaseModel):
@@ -38,24 +21,7 @@ class SourceSegment(BaseModel):
         return self
 
 
-class SegmentDecision(BaseModel):
-    source_segment_id: int
-    action: SegmentAction
-    normalized_text: str | None = None
-    category: SegmentCategory
-    reason_code: str = Field(min_length=1, max_length=120)
-
-    @model_validator(mode="after")
-    def validate_action_text(self) -> SegmentDecision:
-        if self.action == "drop" and self.normalized_text is not None:
-            raise ValueError("action=drop must not contain normalized_text")
-        if self.action == "trim" and not (self.normalized_text or "").strip():
-            raise ValueError("action=trim requires non-empty normalized_text")
-        return self
-
-
 class NormalizationChunkRequest(BaseModel):
-    schema_version: str = "1.0"
     lesson_id: str
     prompt_version: str
     mode: str
@@ -69,54 +35,30 @@ class NormalizationChunkRequest(BaseModel):
         return self
 
 
-class NormalizationChunkResponse(BaseModel):
-    decisions: list[SegmentDecision]
-
-
-class NormalizedSegment(BaseModel):
-    id: str
-    source_segment_ids: list[int] = Field(min_length=1)
-    speaker: str | None = None
-    start: float | None = None
-    end: float | None = None
-    content_type: str
-    text: str = Field(min_length=1)
-
-
-class RemovedFragment(BaseModel):
-    source_segment_ids: list[int] = Field(min_length=1)
-    category: str
-    reason_code: str
-    text: str | None = None
-
-
 class NormalizationStatistics(BaseModel):
     source_characters: int = Field(ge=0)
     normalized_characters: int = Field(ge=0)
     retained_ratio: float = Field(ge=0, le=1)
     source_segments: int = Field(ge=0)
-    kept_segments: int = Field(ge=0)
-    trimmed_segments: int = Field(ge=0)
-    removed_segments: int = Field(ge=0)
+    chunk_count: int = Field(ge=0)
 
 
 class NormalizationQuality(BaseModel):
-    schema_valid: bool
-    all_source_segments_classified: bool
+    plain_text_valid: bool
     numbers_preserved: bool
     formula_tokens_preserved: bool
+    protected_content_preserved: bool
     requires_manual_attention: bool
     warnings: list[str] = Field(default_factory=list)
 
 
 class NormalizedTranscript(BaseModel):
-    schema_version: str = "1.0"
+    """In-memory review model; the persisted transcript artifact is plain UTF-8 text."""
+
     lesson_id: str
     source: dict
     normalizer: dict
     educational_text: str
-    segments: list[NormalizedSegment]
-    removed_fragments: list[RemovedFragment]
     statistics: NormalizationStatistics
     quality: NormalizationQuality
 
@@ -152,6 +94,7 @@ class NormalizationManifest(BaseModel):
     provider: str
     model: str
     prompt_version: str
+    source_artifact: str
     source_sha256: str
     configuration_hash: str
     started_at: datetime
@@ -160,6 +103,8 @@ class NormalizationManifest(BaseModel):
     chunk_count: int = Field(ge=0)
     attempts: int = Field(ge=0)
     status: NormalizationRunStatus
+    statistics: NormalizationStatistics
+    quality: NormalizationQuality
 
 
 class NormalizationExecution(BaseModel):
@@ -170,10 +115,15 @@ class NormalizationExecution(BaseModel):
     reused: bool = False
 
 
-class OllamaDiagnostics(BaseModel):
+class NormalizationDiagnostics(BaseModel):
+    provider: str
+    endpoint: str
     endpoint_local: bool
     reachable: bool
     version: str | None = None
     model_available: bool = False
-    structured_output_valid: bool = False
+    plain_text_valid: bool = False
     errors: list[str] = Field(default_factory=list)
+
+
+OllamaDiagnostics = NormalizationDiagnostics

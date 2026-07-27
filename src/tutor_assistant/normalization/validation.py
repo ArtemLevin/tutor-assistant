@@ -4,17 +4,9 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .errors import (
-    IncompleteSegmentClassificationError,
-    InvalidStructuredOutputError,
-    UnsafeNormalizationResultError,
-)
-from .models import (
-    NormalizationChunkResponse,
-    NormalizationQuality,
-    SegmentDecision,
-    SourceSegment,
-)
+from .errors import InvalidPlainTextOutputError, UnsafeNormalizationResultError
+from .models import NormalizationQuality, SourceSegment
+from .prompts import render_target_text
 
 NUMBER_PATTERN = re.compile(
     r"(?<![\w])(?:№\s*)?"
@@ -33,6 +25,68 @@ FORMULA_PATTERN = re.compile(
     r"|[₀-₉₊₋₌₍₎]+"
     r"|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾]+"
 )
+MATH_TERM_STEMS = (
+    "логариф",
+    "неравен",
+    "уравнен",
+    "функц",
+    "график",
+    "производн",
+    "интеграл",
+    "первообразн",
+    "прогресси",
+    "тригонометр",
+    "синус",
+    "косинус",
+    "тангенс",
+    "котангенс",
+    "дискриминант",
+    "корень",
+    "степен",
+    "модул",
+    "одз",
+    "интервал",
+    "теорем",
+    "доказатель",
+    "треуголь",
+    "четырёхуголь",
+    "окружност",
+    "площад",
+    "объём",
+    "вектор",
+    "координат",
+    "вероятност",
+    "комбинатор",
+    "статистик",
+)
+PROTECTED_MARKERS = (
+    "домашн",
+    "дз",
+    "к следующему занятию",
+    "не понимаю",
+    "не понял",
+    "не поняла",
+    "не получается",
+    "сомнева",
+    "ошиб",
+    "почему",
+)
+NON_CONTENT_WORDS = {
+    "это",
+    "как",
+    "что",
+    "тогда",
+    "здесь",
+    "почему",
+    "когда",
+    "который",
+    "которая",
+    "которые",
+    "меня",
+    "тебя",
+    "сейчас",
+    "просто",
+}
 
 
 def extract_numbers(text: str) -> list[str]:
@@ -46,22 +100,17 @@ def extract_formula_tokens(text: str) -> list[str]:
     return [match.group(0).casefold() for match in FORMULA_PATTERN.finditer(text)]
 
 
-@dataclass(slots=True)
-class ValidationState:
-    numbers_preserved: bool = True
-    formula_tokens_preserved: bool = True
-    requires_manual_attention: bool = False
-    warnings: list[str] = field(default_factory=list)
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\w+|[^\w\s]", text.casefold(), flags=re.UNICODE)
 
-    def quality(self) -> NormalizationQuality:
-        return NormalizationQuality(
-            schema_valid=True,
-            all_source_segments_classified=True,
-            numbers_preserved=self.numbers_preserved,
-            formula_tokens_preserved=self.formula_tokens_preserved,
-            requires_manual_attention=self.requires_manual_attention,
-            warnings=list(dict.fromkeys(self.warnings)),
-        )
+
+def _without_speaker_labels(text: str) -> str:
+    return re.sub(r"(?m)^\[[^\]\n]+\]\s*", "", text)
+
+
+def _is_token_subsequence(source: str, normalized: str) -> bool:
+    iterator = iter(_tokens(source))
+    return all(any(token == candidate for candidate in iterator) for token in _tokens(normalized))
 
 
 def _counter_added(source: list[str], normalized: list[str]) -> list[str]:
@@ -72,130 +121,127 @@ def _counter_removed(source: list[str], normalized: list[str]) -> list[str]:
     return list((Counter(source) - Counter(normalized)).elements())
 
 
-def _is_token_subsequence(source: str, normalized: str) -> bool:
-    source_tokens = re.findall(r"\w+|[^\w\s]", source.casefold(), flags=re.UNICODE)
-    normalized_tokens = re.findall(
-        r"\w+|[^\w\s]",
-        normalized.casefold(),
-        flags=re.UNICODE,
-    )
-    iterator = iter(source_tokens)
-    return all(any(token == candidate for candidate in iterator) for token in normalized_tokens)
+@dataclass(slots=True)
+class ValidationState:
+    numbers_preserved: bool = True
+    formula_tokens_preserved: bool = True
+    protected_content_preserved: bool = True
+    requires_manual_attention: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+    def merge(self, other: ValidationState) -> None:
+        self.numbers_preserved &= other.numbers_preserved
+        self.formula_tokens_preserved &= other.formula_tokens_preserved
+        self.protected_content_preserved &= other.protected_content_preserved
+        self.requires_manual_attention |= other.requires_manual_attention
+        self.warnings.extend(other.warnings)
+
+    def quality(self) -> NormalizationQuality:
+        return NormalizationQuality(
+            plain_text_valid=True,
+            numbers_preserved=self.numbers_preserved,
+            formula_tokens_preserved=self.formula_tokens_preserved,
+            protected_content_preserved=self.protected_content_preserved,
+            requires_manual_attention=self.requires_manual_attention,
+            warnings=list(dict.fromkeys(self.warnings)),
+        )
 
 
-def validate_chunk_response(
+def _validate_protected_segments(
+    target_segments: list[SourceSegment],
+    normalized: str,
+    state: ValidationState,
+) -> None:
+    lowered = normalized.casefold()
+    normalized_words = set(re.findall(r"[а-яёa-z0-9]+", lowered))
+    for segment in target_segments:
+        source = segment.text.casefold()
+        matched_terms = [stem for stem in MATH_TERM_STEMS if stem in source]
+        missing_terms = [stem for stem in matched_terms if stem not in lowered]
+        if missing_terms:
+            state.protected_content_preserved = False
+            raise UnsafeNormalizationResultError("Удалён термин школьного курса: " + ", ".join(missing_terms))
+
+        protected_statement = any(marker in source for marker in PROTECTED_MARKERS)
+        protected_statement |= segment.speaker == "У" and "?" in segment.text
+        if not protected_statement:
+            continue
+        content_words = {
+            word
+            for word in re.findall(r"[а-яёa-z0-9]+", source)
+            if len(word) >= 4 and word not in NON_CONTENT_WORDS
+        }
+        required = min(2, len(content_words))
+        if required and len(content_words & normalized_words) < required:
+            state.protected_content_preserved = False
+            raise UnsafeNormalizationResultError(
+                f"Удалён защищённый вопрос, ошибка или учебное указание "
+                f"source_segment_id={segment.source_segment_id}"
+            )
+
+
+def validate_plain_text_response(
     source_segments: tuple[SourceSegment, ...],
     target_ids: tuple[int, ...],
-    response: NormalizationChunkResponse,
+    response: str,
     state: ValidationState,
-) -> dict[int, SegmentDecision]:
-    source = {segment.source_segment_id: segment for segment in source_segments}
-    target_set = set(target_ids)
-    decisions: dict[int, SegmentDecision] = {}
-    for decision in response.decisions:
-        source_id = decision.source_segment_id
-        if source_id not in source:
-            raise InvalidStructuredOutputError(f"Неизвестный source_segment_id={source_id}")
-        if source[source_id].context_only or source_id not in target_set:
-            raise InvalidStructuredOutputError(
-                f"Решение для контекстного сегмента source_segment_id={source_id}"
-            )
-        if source_id in decisions:
-            raise InvalidStructuredOutputError(f"Повторное решение для source_segment_id={source_id}")
-        decisions[source_id] = decision
+) -> str:
+    if not isinstance(response, str):
+        raise InvalidPlainTextOutputError("Модель должна вернуть обычный текст")
+    normalized = response.replace("\r\n", "\n").strip()
+    if "\x00" in normalized:
+        raise InvalidPlainTextOutputError("Ответ содержит недопустимый нулевой символ")
+    first_line = normalized.splitlines()[0] if normalized else ""
+    if normalized.startswith(("```", "{")) or (
+        normalized.startswith("[") and not re.match(r"^\[[^\]\n]+\]\s+\S", first_line)
+    ):
+        raise InvalidPlainTextOutputError("Модель вернула JSON или служебную разметку вместо текста")
 
-    missing = target_set - decisions.keys()
-    if missing:
-        ids = ", ".join(str(item) for item in sorted(missing))
-        raise IncompleteSegmentClassificationError(f"Пропущены сегменты: {ids}")
+    source_by_id = {segment.source_segment_id: segment for segment in source_segments}
+    unknown = set(target_ids) - source_by_id.keys()
+    if unknown:
+        raise InvalidPlainTextOutputError("Блок содержит неизвестные целевые сегменты")
+    targets = [source_by_id[source_id] for source_id in target_ids]
+    source_text = render_target_text(targets)
+    semantic_source = _without_speaker_labels(source_text)
+    semantic_normalized = _without_speaker_labels(normalized)
 
-    for source_id in target_ids:
-        segment = source[source_id]
-        decision = decisions[source_id]
-        if decision.action == "keep":
-            if decision.normalized_text not in {None, segment.text}:
-                raise InvalidStructuredOutputError(f"keep изменил текст source_segment_id={source_id}")
-            if not segment.text.strip():
-                raise InvalidStructuredOutputError(f"keep сохранил пустой source_segment_id={source_id}")
-            continue
-        if decision.action == "drop":
-            lowered = segment.text.casefold()
-            explicitly_non_educational = decision.category in {
-                "greeting",
-                "farewell",
-                "audio_check",
-                "video_check",
-                "screen_sharing",
-                "technical_issue",
-                "small_talk",
-                "filler",
-                "duplicate",
-                "background_noise",
-                "other_non_educational",
-            }
-            protected_language = (
-                "?" in segment.text
-                and not explicitly_non_educational
-                or segment.speaker == "У"
-                and any(
-                    marker in lowered
-                    for marker in (
-                        "не понимаю",
-                        "не понял",
-                        "не поняла",
-                        "не получается",
-                        "сомнева",
-                        "ошиб",
-                        "почему",
-                    )
-                )
-                or any(
-                    marker in lowered
-                    for marker in (
-                        "домашн",
-                        "дз",
-                        "задание №",
-                        "задача №",
-                        "к следующему занятию",
-                    )
-                )
-            )
-            if (
-                decision.category == "educational"
-                or extract_numbers(segment.text)
-                or extract_formula_tokens(segment.text)
-                or protected_language
-            ):
-                raise UnsafeNormalizationResultError(
-                    f"drop затронул защищённый учебный фрагмент source_segment_id={source_id}"
-                )
-            continue
-        normalized = (decision.normalized_text or "").strip()
-        source_numbers = extract_numbers(segment.text)
-        normalized_numbers = extract_numbers(normalized)
-        added_numbers = _counter_added(source_numbers, normalized_numbers)
-        if added_numbers:
-            raise UnsafeNormalizationResultError(
-                f"В trim появились новые числа source_segment_id={source_id}"
-            )
-        if _counter_removed(source_numbers, normalized_numbers):
-            state.numbers_preserved = False
-            state.requires_manual_attention = True
-            state.warnings.append(f"numbers_removed:{source_id}")
+    source_numbers = extract_numbers(semantic_source)
+    normalized_numbers = extract_numbers(semantic_normalized)
+    if _counter_added(source_numbers, normalized_numbers):
+        raise UnsafeNormalizationResultError("В нормализованном тексте появились новые числа")
 
-        source_tokens = extract_formula_tokens(segment.text)
-        normalized_tokens = extract_formula_tokens(normalized)
-        added_tokens = _counter_added(source_tokens, normalized_tokens)
-        if added_tokens:
-            raise UnsafeNormalizationResultError(
-                f"В trim появились новые формульные токены source_segment_id={source_id}"
+    source_formula = extract_formula_tokens(semantic_source)
+    normalized_formula = extract_formula_tokens(semantic_normalized)
+    if _counter_added(source_formula, normalized_formula):
+        raise UnsafeNormalizationResultError("В нормализованном тексте появились новые формульные токены")
+
+    for context in (segment for segment in source_segments if segment.context_only):
+        context_text = context.text.strip()
+        if context_text and context_text in normalized and context_text not in source_text:
+            raise InvalidPlainTextOutputError(
+                f"В ответ попал контекстный сегмент source_segment_id={context.source_segment_id}"
             )
-        if not _is_token_subsequence(segment.text, normalized):
-            raise UnsafeNormalizationResultError(
-                f"trim добавил или перефразировал текст source_segment_id={source_id}"
-            )
-        if _counter_removed(source_tokens, normalized_tokens):
-            state.formula_tokens_preserved = False
-            state.requires_manual_attention = True
-            state.warnings.append(f"formula_tokens_removed:{source_id}")
-    return decisions
+
+    if normalized and not _is_token_subsequence(source_text, normalized):
+        raise UnsafeNormalizationResultError("Модель добавила или перефразировала текст")
+    if normalized and any(
+        not re.match(r"^\[[^\]\n]+\]\s+\S", line) for line in normalized.splitlines() if line.strip()
+    ):
+        raise InvalidPlainTextOutputError("Каждая сохранённая реплика должна содержать метку говорящего")
+
+    if _counter_removed(source_numbers, normalized_numbers):
+        state.numbers_preserved = False
+        state.requires_manual_attention = True
+        state.warnings.append("numbers_removed")
+
+    removed_formula = _counter_removed(source_formula, normalized_formula)
+    if source_formula and not normalized_formula:
+        raise UnsafeNormalizationResultError("Удалён формульный фрагмент целиком")
+    if removed_formula:
+        state.formula_tokens_preserved = False
+        state.requires_manual_attention = True
+        state.warnings.append("formula_tokens_removed")
+
+    _validate_protected_segments(targets, normalized, state)
+    return normalized

@@ -154,7 +154,7 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
     for module, label in (
         ("PySide6", "Desktop UI"),
         ("faster_whisper", "Whisper"),
-        ("httpx", "Ollama HTTP"),
+        ("httpx", "LLM HTTP"),
         ("sounddevice", "SoundDevice"),
         ("soundcard", "WASAPI Loopback"),
         ("soundfile", "SoundFile"),
@@ -267,56 +267,60 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
             "Артефакты нормализации",
             normalization_parent.is_dir() and os.access(normalization_parent, os.W_OK),
             f"{normalization_directory} (доступен для записи)",
-            f"Невозможно сохранять JSON в {normalization_directory}",
+            f"Невозможно сохранять текст в {normalization_directory}",
             required=config.normalization.enabled,
         )
     )
     if config.normalization.enabled:
         try:
-            from .normalization.ollama_client import OllamaClient
+            from .normalization import build_provider
 
-            ollama = OllamaClient(config.normalization).diagnose()
-            endpoint_ready = ollama.reachable and (
-                ollama.endpoint_local or config.normalization.allow_remote_endpoint
+            diagnostics = build_provider(config.normalization).diagnose()
+            endpoint_ready = diagnostics.reachable and (
+                diagnostics.endpoint_local
+                or config.normalization.provider == "yandex_ai_studio"
+                or config.normalization.allow_remote_endpoint
             )
             endpoint_status = "ok" if endpoint_ready else "error"
             endpoint_required = True
-            endpoint_message = f"{config.normalization.base_url}; версия {ollama.version}"
-            if ollama.reachable and not ollama.endpoint_local and config.normalization.allow_remote_endpoint:
+            endpoint_message = f"{diagnostics.endpoint}; версия {diagnostics.version or '—'}"
+            if diagnostics.reachable and not diagnostics.endpoint_local:
                 endpoint_status = "warning"
                 endpoint_required = False
-                endpoint_message = "Разрешён удалённый Ollama endpoint; транскрипт покинет этот компьютер"
+                endpoint_message = (
+                    f"{diagnostics.endpoint}; используется облачная обработка, "
+                    "транскрипт покинет этот компьютер"
+                )
             elif not endpoint_ready:
                 endpoint_message = (
-                    "; ".join(ollama.errors)
-                    or f"Endpoint недоступен или не локальный: {config.normalization.base_url}"
+                    "; ".join(diagnostics.errors) or f"Endpoint недоступен: {diagnostics.endpoint}"
                 )
             checks.extend(
                 (
                     DiagnosticCheck(
-                        "Ollama endpoint",
+                        "Normalization endpoint",
                         endpoint_status,
                         endpoint_message,
                         required=endpoint_required,
                     ),
                     _check(
-                        "Ollama model",
-                        ollama.model_available,
-                        config.normalization.model,
-                        f"Модель {config.normalization.model} не найдена",
+                        "Normalization model",
+                        diagnostics.model_available,
+                        config.normalization.effective_model,
+                        f"Модель {config.normalization.effective_model} недоступна",
                     ),
                     _check(
-                        "Ollama structured output",
-                        ollama.structured_output_valid,
-                        "Синтетический JSON прошёл Pydantic-проверку",
-                        "Ollama не вернул валидный тестовый JSON",
+                        "Normalization plain text",
+                        diagnostics.plain_text_valid,
+                        "Синтетический plain-text ответ прошёл проверку",
+                        "Provider не вернул валидный тестовый текст",
                     ),
                 )
             )
         except Exception as exc:
             checks.append(
                 DiagnosticCheck(
-                    "Ollama",
+                    "Нормализация",
                     "error",
                     str(exc),
                     required=True,
@@ -325,9 +329,9 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
     else:
         checks.append(
             DiagnosticCheck(
-                "Ollama",
+                "Нормализация",
                 "ok",
-                "Локальная нормализация отключена",
+                "Нормализация отключена",
                 required=False,
             )
         )

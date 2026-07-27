@@ -91,6 +91,12 @@ normalization:
   base_url: http://127.0.0.1:11434
   allow_remote_endpoint: false
   model: qwen3:8b
+  # Для облака установите provider: yandex_ai_studio и явно разрешите передачу текста.
+  allow_cloud_processing: false
+  yandex_base_url: https://ai.api.cloud.yandex.net/v1
+  yandex_folder_id: null
+  yandex_api_key_env: YANDEX_AI_STUDIO_API_KEY
+  yandex_model: yandexgpt-lite
   mode: conservative
   temperature: 0
   num_ctx: 8192
@@ -101,6 +107,5 @@ normalization:
   request_timeout_seconds: 600
   max_attempts: 2
   retry_backoff_seconds: 2
-  include_removed_text: false
   require_manual_approval: true
   high_removal_threshold: 0.35

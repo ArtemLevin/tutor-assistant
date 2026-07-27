@@ -17,47 +17,51 @@ from .artifacts import (
     configuration_hash,
     source_sha256,
     write_json_atomic,
+    write_text_atomic,
 )
 from .chunking import chunk_segments, sort_segments
 from .errors import (
-    IncompleteSegmentClassificationError,
-    InvalidStructuredOutputError,
+    InvalidPlainTextOutputError,
     NormalizationCancelledError,
     NormalizationError,
     OllamaTimeoutError,
     SourceTranscriptChangedError,
     UnsafeNormalizationResultError,
+    YandexAIStudioTimeoutError,
 )
 from .models import (
     NormalizationChunkRequest,
     NormalizationExecution,
     NormalizationManifest,
-    NormalizationQuality,
     NormalizationRun,
     NormalizationRunStatus,
     NormalizationStatistics,
-    NormalizedSegment,
     NormalizedTranscript,
-    RemovedFragment,
-    SegmentDecision,
     SourceSegment,
 )
 from .ollama_client import OllamaClient
-from .prompts import PROMPT_VERSION
+from .prompts import PROMPT_VERSION, render_target_text
 from .protocol import CancellationToken, NormalizationProvider
-from .validation import ValidationState, validate_chunk_response
+from .validation import ValidationState, validate_plain_text_response
+from .yandex_client import YandexAIStudioClient
 
 ProviderFactory = Callable[[NormalizationConfig, str], NormalizationProvider]
 RETRYABLE_OUTPUT_ERRORS = (
-    InvalidStructuredOutputError,
-    IncompleteSegmentClassificationError,
+    InvalidPlainTextOutputError,
     UnsafeNormalizationResultError,
     OllamaTimeoutError,
+    YandexAIStudioTimeoutError,
 )
 
 
-def _default_provider(config: NormalizationConfig, model: str) -> NormalizationProvider:
-    return OllamaClient(config, model=model)
+def build_provider(
+    config: NormalizationConfig,
+    model: str | None = None,
+) -> NormalizationProvider:
+    selected = model or config.effective_model
+    if config.provider == "yandex_ai_studio":
+        return YandexAIStudioClient(config, model=selected)
+    return OllamaClient(config, model=selected)
 
 
 class NormalizationService:
@@ -66,7 +70,7 @@ class NormalizationService:
         config: NormalizationConfig,
         content_service: StudentContentService,
         *,
-        provider_factory: ProviderFactory = _default_provider,
+        provider_factory: ProviderFactory = build_provider,
     ) -> None:
         self.config = config
         self.content_service = content_service
@@ -116,10 +120,9 @@ class NormalizationService:
             raise NormalizationError(f"Файл исходных сегментов не найден: {path}")
         return self.load_source_segments(path), path.name
 
-    def _configuration_payload(self, model: str, include_removed_text: bool) -> dict[str, Any]:
+    def _configuration_payload(self, model: str) -> dict[str, Any]:
         payload = self.config.model_dump(mode="json")
         payload["model"] = model
-        payload["include_removed_text"] = include_removed_text
         return payload
 
     def normalize_lesson(
@@ -135,12 +138,10 @@ class NormalizationService:
         source_artifact: str | None = None,
         cancellation: CancellationToken | None = None,
     ) -> NormalizationExecution:
+        del include_removed_text
         if not self.config.enabled and not dry_run:
-            raise NormalizationError("Локальная нормализация отключена в конфигурации")
-        selected_model = model or self.config.model
-        include_removed = (
-            self.config.include_removed_text if include_removed_text is None else include_removed_text
-        )
+            raise NormalizationError("Нормализация отключена в конфигурации")
+        selected_model = model or self.config.effective_model
         cancellation = cancellation or CancellationToken()
         with self.content_service.activity(
             "transcript-normalization",
@@ -154,7 +155,6 @@ class NormalizationService:
                 force=force,
                 dry_run=dry_run,
                 output=output,
-                include_removed_text=include_removed,
                 source_segments=source_segments,
                 source_artifact=source_artifact,
                 cancellation=cancellation,
@@ -168,7 +168,6 @@ class NormalizationService:
         force: bool,
         dry_run: bool,
         output: Path | None,
-        include_removed_text: bool,
         source_segments: list[SourceSegment] | None,
         source_artifact: str | None,
         cancellation: CancellationToken,
@@ -189,7 +188,7 @@ class NormalizationService:
             raise NormalizationError("Исходный транскрипт содержит повторяющиеся ID сегментов")
 
         source_hash = source_sha256(source_segments)
-        config_hash = configuration_hash(self._configuration_payload(model, include_removed_text))
+        config_hash = configuration_hash(self._configuration_payload(model))
         run: NormalizationRun | None = None
         if not dry_run:
             run, created = self.runs.create_or_get(
@@ -209,18 +208,14 @@ class NormalizationService:
                 }
                 and run.artifact_path
             ):
-                artifact = self.content_service.workspace / run.artifact_path
-                if artifact.is_file():
-                    transcript = NormalizedTranscript.model_validate_json(
-                        artifact.read_text(encoding="utf-8")
-                    )
-                    return NormalizationExecution(
-                        run=run,
-                        transcript=transcript,
-                        artifact_path=str(artifact),
-                        manifest_path=lesson.artifacts.normalization_manifest,
-                        reused=True,
-                    )
+                result = self.load_result(run)
+                return NormalizationExecution(
+                    run=run,
+                    transcript=result,
+                    artifact_path=str(self._artifact_path(run)),
+                    manifest_path=str(self._manifest_path(run)),
+                    reused=True,
+                )
             run = self.runs.mark_running(run.id or 0)
 
         provider = self.provider_factory(self.config, model)
@@ -235,40 +230,41 @@ class NormalizationService:
                 max_characters=self.config.max_input_characters,
                 overlap_segments=self.config.context_overlap_segments,
             )
-            decisions, validation, attempts = self._classify_chunks(
+            normalized_chunks, validation, attempts = self._normalize_chunks(
                 lesson_id,
                 chunks,
                 provider,
                 run,
                 cancellation,
             )
-            transcript = self._build_transcript(
+            educational_text = "\n".join(part for part in normalized_chunks if part).strip()
+            transcript = self._build_result(
                 lesson_id=lesson_id,
                 source_segments=source_segments,
-                decisions=decisions,
+                educational_text=educational_text,
                 source_artifact=source_artifact,
                 source_hash=source_hash,
                 model=model,
+                chunk_count=len(chunks),
                 validation=validation,
-                include_removed_text=include_removed_text,
                 created_at=datetime.now(UTC),
             )
             cancellation.raise_if_cancelled()
             if output is None:
                 if dry_run:
                     directory = Path(tempfile.mkdtemp(prefix="tutor-normalization-"))
-                    artifact_path = directory / "transcript_normalized.json"
+                    artifact_path = directory / "transcript_normalized.txt"
                 else:
                     artifact_path = (
                         self.content_service.workspace
                         / "lessons"
                         / lesson_id
                         / "transcript"
-                        / "transcript_normalized.json"
+                        / "transcript_normalized.txt"
                     )
             else:
                 artifact_path = output.resolve()
-            write_json_atomic(artifact_path, transcript)
+            write_text_atomic(artifact_path, educational_text)
 
             manifest_path: Path | None = None
             if not dry_run and run is not None:
@@ -279,6 +275,7 @@ class NormalizationService:
                     provider=self.config.provider,
                     model=model,
                     prompt_version=PROMPT_VERSION,
+                    source_artifact=source_artifact,
                     source_sha256=source_hash,
                     configuration_hash=config_hash,
                     started_at=started_at,
@@ -287,8 +284,10 @@ class NormalizationService:
                     chunk_count=len(chunks),
                     attempts=persisted_run.attempts if persisted_run else attempts,
                     status=NormalizationRunStatus.REVIEW_REQUIRED,
+                    statistics=transcript.statistics,
+                    quality=transcript.quality,
                 )
-                write_json_atomic(manifest_path, manifest.model_dump(mode="json"))
+                write_json_atomic(manifest_path, manifest)
                 try:
                     relative_artifact = artifact_path.relative_to(self.content_service.workspace).as_posix()
                 except ValueError:
@@ -299,16 +298,18 @@ class NormalizationService:
                     artifact_path=relative_artifact,
                 )
                 current = self.content_service.get_lesson(lesson_id).lesson
-                current.artifacts.normalized_transcript_json = str(artifact_path.resolve())
+                current.artifacts.normalized_transcript_text = str(artifact_path.resolve())
+                current.artifacts.normalized_transcript_json = None
                 current.artifacts.normalization_manifest = str(manifest_path.resolve())
                 self.content_service.persist_pipeline_lesson(
                     current,
                     frozenset({"artifacts"}),
                 )
             logging.info(
-                "event=normalization_completed lesson_id=%s model=%s chunks=%d "
+                "event=normalization_completed lesson_id=%s provider=%s model=%s chunks=%d "
                 "segments=%d elapsed_seconds=%.3f retained_ratio=%.3f",
                 lesson_id,
+                self.config.provider,
                 model,
                 len(chunks),
                 len(source_segments),
@@ -337,22 +338,23 @@ class NormalizationService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             logging.exception(
-                "event=normalization_failed lesson_id=%s model=%s error_code=%s",
+                "event=normalization_failed lesson_id=%s provider=%s model=%s error_code=%s",
                 lesson_id,
+                self.config.provider,
                 model,
                 type(exc).__name__,
             )
             raise
 
-    def _classify_chunks(
+    def _normalize_chunks(
         self,
         lesson_id: str,
         chunks,
         provider: NormalizationProvider,
         run: NormalizationRun | None,
         cancellation: CancellationToken,
-    ) -> tuple[dict[int, SegmentDecision], ValidationState, int]:
-        all_decisions: dict[int, SegmentDecision] = {}
+    ) -> tuple[list[str], ValidationState, int]:
+        normalized_chunks: list[str] = []
         state = ValidationState()
         attempts_total = 0
         for chunk in chunks:
@@ -375,23 +377,14 @@ class NormalizationService:
                         cancellation=cancellation,
                     )
                     candidate_state = ValidationState()
-                    decisions = validate_chunk_response(
+                    normalized = validate_plain_text_response(
                         chunk.segments,
                         chunk.target_ids,
                         response,
                         candidate_state,
                     )
-                    duplicate = set(all_decisions) & set(decisions)
-                    if duplicate:
-                        raise InvalidStructuredOutputError(
-                            "Повторные решения между блоками: "
-                            + ", ".join(str(item) for item in sorted(duplicate))
-                        )
-                    all_decisions.update(decisions)
-                    state.numbers_preserved &= candidate_state.numbers_preserved
-                    state.formula_tokens_preserved &= candidate_state.formula_tokens_preserved
-                    state.requires_manual_attention |= candidate_state.requires_manual_attention
-                    state.warnings.extend(candidate_state.warnings)
+                    normalized_chunks.append(normalized)
+                    state.merge(candidate_state)
                     break
                 except RETRYABLE_OUTPUT_ERRORS as exc:
                     if attempt + 1 >= self.config.max_attempts:
@@ -400,70 +393,29 @@ class NormalizationService:
                     if self.config.retry_backoff_seconds:
                         sleep(self.config.retry_backoff_seconds)
             else:
-                raise InvalidStructuredOutputError("Не удалось проверить ответ блока")
-        return all_decisions, state, attempts_total
+                raise InvalidPlainTextOutputError("Не удалось проверить plain-text ответ блока")
+        return normalized_chunks, state, attempts_total
 
-    def _build_transcript(
+    def _build_result(
         self,
         *,
         lesson_id: str,
         source_segments: list[SourceSegment],
-        decisions: dict[int, SegmentDecision],
+        educational_text: str,
         source_artifact: str,
         source_hash: str,
         model: str,
+        chunk_count: int,
         validation: ValidationState,
-        include_removed_text: bool,
         created_at: datetime,
     ) -> NormalizedTranscript:
-        normalized_segments: list[NormalizedSegment] = []
-        removed: list[RemovedFragment] = []
-        educational_lines: list[str] = []
-        kept = trimmed = dropped = 0
-        normalized_characters = 0
-
-        for source in source_segments:
-            decision = decisions.get(source.source_segment_id)
-            if decision is None:
-                raise IncompleteSegmentClassificationError(
-                    f"Нет решения для source_segment_id={source.source_segment_id}"
-                )
-            if decision.action == "drop":
-                dropped += 1
-                removed.append(
-                    RemovedFragment(
-                        source_segment_ids=[source.source_segment_id],
-                        category=decision.category,
-                        reason_code=decision.reason_code,
-                        text=source.text if include_removed_text else None,
-                    )
-                )
-                continue
-            if decision.action == "trim":
-                trimmed += 1
-                text = (decision.normalized_text or "").strip()
-            else:
-                kept += 1
-                text = source.text
-            normalized_characters += len(text)
-            normalized = NormalizedSegment(
-                id=f"normalized-{len(normalized_segments) + 1:04d}",
-                source_segment_ids=[source.source_segment_id],
-                speaker=source.speaker,
-                start=source.start,
-                end=source.end,
-                content_type=decision.category,
-                text=text,
-            )
-            normalized_segments.append(normalized)
-            educational_lines.append(f"[{source.speaker}] {text}" if source.speaker else text)
-
-        source_characters = sum(len(segment.text) for segment in source_segments)
+        source_text = render_target_text(source_segments)
+        source_characters = len(source_text)
+        normalized_characters = len(educational_text)
         retained_ratio = normalized_characters / source_characters if source_characters else 1.0
         if 1 - retained_ratio > self.config.high_removal_threshold:
             validation.requires_manual_attention = True
             validation.warnings.append("unusually_high_removal_ratio")
-        quality: NormalizationQuality = validation.quality()
         return NormalizedTranscript(
             lesson_id=lesson_id,
             source={
@@ -479,19 +431,54 @@ class NormalizationService:
                 "mode": self.config.mode,
                 "created_at": created_at.isoformat(),
             },
-            educational_text="\n".join(educational_lines),
-            segments=normalized_segments,
-            removed_fragments=removed,
+            educational_text=educational_text,
             statistics=NormalizationStatistics(
                 source_characters=source_characters,
                 normalized_characters=normalized_characters,
                 retained_ratio=round(retained_ratio, 6),
                 source_segments=len(source_segments),
-                kept_segments=kept,
-                trimmed_segments=trimmed,
-                removed_segments=dropped,
+                chunk_count=chunk_count,
             ),
-            quality=quality,
+            quality=validation.quality(),
+        )
+
+    def _artifact_path(self, run: NormalizationRun) -> Path:
+        if not run.artifact_path:
+            raise NormalizationError("Текстовый артефакт нормализации отсутствует")
+        return self.content_service.workspace / run.artifact_path
+
+    def _manifest_path(self, run: NormalizationRun) -> Path:
+        return self._artifact_path(run).with_name("normalization_manifest.json")
+
+    def load_result(self, run: NormalizationRun) -> NormalizedTranscript:
+        artifact = self._artifact_path(run)
+        manifest_path = self._manifest_path(run)
+        if not artifact.is_file():
+            raise NormalizationError(f"Текстовый артефакт не найден: {artifact}")
+        if not manifest_path.is_file():
+            raise NormalizationError(f"Manifest нормализации не найден: {manifest_path}")
+        try:
+            manifest = NormalizationManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise NormalizationError("Manifest нормализации повреждён") from exc
+        return NormalizedTranscript(
+            lesson_id=run.lesson_id,
+            source={
+                "artifact": manifest.source_artifact,
+                "sha256": manifest.source_sha256,
+                "segment_count": manifest.statistics.source_segments,
+                "language": "ru",
+            },
+            normalizer={
+                "provider": manifest.provider,
+                "model": manifest.model,
+                "prompt_version": manifest.prompt_version,
+                "mode": self.config.mode,
+                "created_at": manifest.completed_at.isoformat(),
+            },
+            educational_text=artifact.read_text(encoding="utf-8").strip(),
+            statistics=manifest.statistics,
+            quality=manifest.quality,
         )
 
     def apply_result(
@@ -520,15 +507,16 @@ class NormalizationService:
                     "Исходный транскрипт был изменён после запуска нормализации. "
                     "Запустите нормализацию повторно."
                 )
-            if not run.artifact_path:
-                raise NormalizationError("JSON-артефакт нормализации отсутствует")
-            artifact = self.content_service.workspace / run.artifact_path
-            transcript = NormalizedTranscript.model_validate_json(artifact.read_text(encoding="utf-8"))
+            result = self.load_result(run)
+            content = edited_text if edited_text is not None else result.educational_text
+            if not content.strip():
+                raise NormalizationError("Нельзя применить пустой нормализованный транскрипт")
             current_revision = self.content_service.repository.current_transcript(run.lesson_id)
+            provider = result.normalizer.get("provider", self.config.provider)
             self.content_service.save_transcript(
                 run.lesson_id,
-                edited_text if edited_text is not None else transcript.educational_text,
-                created_by=f"ollama:{run.model}",
+                content,
+                created_by=f"{provider}:{run.model}",
                 expected_revision_number=(current_revision.revision_number if current_revision else None),
             )
             lesson = self.content_service.get_lesson(run.lesson_id).lesson

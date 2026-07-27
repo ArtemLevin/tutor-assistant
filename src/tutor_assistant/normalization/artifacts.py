@@ -11,7 +11,6 @@ from ..atomic_io import atomic_write_text
 from .models import (
     NormalizationRun,
     NormalizationRunStatus,
-    NormalizedTranscript,
     SourceSegment,
 )
 
@@ -41,7 +40,12 @@ def configuration_hash(payload: Any) -> str:
     return sha256_text(_canonical_json(payload))
 
 
-def write_json_atomic(path: Path, payload: NormalizedTranscript | dict[str, Any]) -> Path:
+def write_text_atomic(path: Path, text: str) -> Path:
+    atomic_write_text(path, text.rstrip() + "\n")
+    return path
+
+
+def write_json_atomic(path: Path, payload: Any) -> Path:
     if hasattr(payload, "model_dump"):
         data = payload.model_dump(mode="json")
     else:

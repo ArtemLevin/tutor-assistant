@@ -111,6 +111,8 @@ class ArtifactPaths(BaseModel):
     transcription_manifest: str | None = None
     teacher_transcript: str | None = None
     student_transcript: str | None = None
+    normalized_transcript_text: str | None = None
+    # Compatibility with lesson.json files created by Transcript Normalization v1.
     normalized_transcript_json: str | None = None
     normalization_manifest: str | None = None
 
