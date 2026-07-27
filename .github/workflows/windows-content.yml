@@ -29,7 +29,8 @@ jobs:
             exit 0
           fi
           set +e
-          {
+          (
+            set -e
             echo '== decode =='
             base64 -d scripts/pr37_bootstrap.py.gz.b64 | gzip -d > scripts/pr37_bootstrap.py
             echo '== apply =='
@@ -40,7 +41,7 @@ jobs:
             uv lock
             echo '== compile =='
             python -m compileall -q src/tutor_assistant tests
-          } > bootstrap-error.txt 2>&1
+          ) > bootstrap-error.txt 2>&1
           status=$?
           set -e
           git config user.name github-actions[bot]
