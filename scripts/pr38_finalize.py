@@ -84,7 +84,7 @@ def test_cancelled_cloud_request_requires_explicit_retry_confirmation(tmp_path: 
 '''
 if "test_cancelled_cloud_request_requires_explicit_retry_confirmation" in text:
     raise RuntimeError("cancellation test already exists")
-path.write_text(text.rstrip() + addition + "\n", encoding="utf-8")
+path.write_text((text.rstrip() + addition).rstrip() + "\n", encoding="utf-8")
 
 replace_once(
     "tests/test_normalization_resume.py",
@@ -188,3 +188,10 @@ replace_once(
     )
 ''',
 )
+
+for filename in (
+    "tests/test_cloud_service_consent.py",
+    "tests/test_normalization_resume.py",
+):
+    target = Path(filename)
+    target.write_text(target.read_text(encoding="utf-8").rstrip() + "\n", encoding="utf-8")
