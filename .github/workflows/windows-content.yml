@@ -33,18 +33,32 @@ jobs:
       - name: Install test and desktop dependencies
         run: uv sync --extra desktop --group dev
       - name: Lint
-        run: uv run ruff check .
+        shell: pwsh
+        run: |
+          uv run ruff check . --output-format=concise 2>&1 | Tee-Object ruff-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Ruff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-ruff-report
+          path: ruff-report.txt
+          if-no-files-found: ignore
       - name: Compile Python sources
         run: uv run python -m compileall -q src/tutor_assistant tests
       - name: Filtering import smoke
         run: uv run python -c "from tutor_assistant.normalization.prompts import system_prompt; from tutor_assistant.ui.normalization_provider import provider_label; assert 'импульс' in system_prompt('physics').casefold(); assert provider_label('ollama') == 'Локальная LLM (Ollama)'"
-      - name: Filtering feature contracts
+      - name: Filtering and checkpoint contracts
         run: >-
           uv run pytest -q
           tests/test_filtering_feature_contracts.py
           tests/test_subject_aware_filtering.py
           tests/test_subject_manifest_compatibility.py
           tests/test_normalization_provider_gui.py
+          tests/test_normalization_checkpoint_migration.py
+          tests/test_normalization_checkpoint_store.py
+          tests/test_normalization_resume.py
+          tests/test_normalization_progress_gui.py
       - name: Validate patch whitespace
         if: github.event_name == 'pull_request'
         shell: bash

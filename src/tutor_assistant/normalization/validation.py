@@ -127,6 +127,17 @@ class ValidationState:
         self.requires_manual_attention |= other.requires_manual_attention
         self.warnings.extend(other.warnings)
 
+    @classmethod
+    def from_quality(cls, quality: NormalizationQuality) -> ValidationState:
+        return cls(
+            numbers_preserved=quality.numbers_preserved,
+            formula_tokens_preserved=quality.formula_tokens_preserved,
+            protected_content_preserved=quality.protected_content_preserved,
+            subject_units_preserved=quality.subject_units_preserved,
+            requires_manual_attention=quality.requires_manual_attention,
+            warnings=list(quality.warnings),
+        )
+
     def quality(self) -> NormalizationQuality:
         return NormalizationQuality(
             plain_text_valid=True,

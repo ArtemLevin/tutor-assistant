@@ -304,6 +304,47 @@ def _transcript_normalization(db: sqlite3.Connection) -> None:
     )
 
 
+def _resumable_normalization_chunks(db: sqlite3.Connection) -> None:
+    _add_column(db, "normalization_runs", "provider TEXT NOT NULL DEFAULT 'ollama'")
+    _add_column(db, "normalization_runs", "resume_count INTEGER NOT NULL DEFAULT 0")
+    _add_column(db, "normalization_runs", "last_resumed_at TEXT")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS normalization_chunks (
+            run_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+            chunk_sha256 TEXT NOT NULL,
+            target_ids_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'running', 'completed', 'failed', 'indeterminate'
+            )),
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            normalized_text TEXT,
+            quality_json TEXT,
+            response_sha256 TEXT,
+            error TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(run_id, chunk_index),
+            FOREIGN KEY(run_id) REFERENCES normalization_runs(id) ON DELETE CASCADE,
+            CHECK(
+                status <> 'completed'
+                OR (
+                    normalized_text IS NOT NULL
+                    AND quality_json IS NOT NULL
+                    AND response_sha256 IS NOT NULL
+                )
+            )
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS normalization_chunks_run_status "
+        "ON normalization_chunks(run_id, status, chunk_index)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
@@ -313,6 +354,7 @@ MIGRATIONS = (
     Migration(6, "content_write_consistency", _content_write_consistency),
     Migration(7, "asset_verification_cache", _asset_verification_cache),
     Migration(8, "transcript_normalization", _transcript_normalization),
+    Migration(9, "resumable_normalization_chunks", _resumable_normalization_chunks),
 )
 
 

@@ -71,6 +71,11 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--dry-run", action="store_true")
         command.add_argument("--output", type=Path)
         command.add_argument(
+            "--retry-indeterminate",
+            action="store_true",
+            help="Явно повторить неопределённый облачный запрос после аварийного завершения",
+        )
+        command.add_argument(
             "--no-apply",
             action="store_true",
             help="Результат всегда требует ручного применения",
@@ -334,6 +339,7 @@ def main() -> None:
                 dry_run=args.dry_run,
                 output=args.output,
                 include_removed_text=args.include_removed_text,
+                retry_indeterminate=args.retry_indeterminate,
             )
         except (NormalizationError, ContentBusyError, ContentNotFoundError) as exc:
             raise SystemExit(str(exc)) from None
