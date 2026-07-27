@@ -1,31 +1,4 @@
 Downloading ruff (10.9MiB)
  Downloaded ruff
 Installed 1 package in 1ms
-I001 [*] Import block is un-sorted or un-formatted
-  --> tests/test_normalization_yandex.py:1:1
-   |
- 1 | / from __future__ import annotations
- 2 | |
- 3 | | import pytest
- 4 | |
- 5 | | from tutor_assistant.config import NormalizationConfig
- 6 | | from tutor_assistant.normalization.errors import YandexAIStudioAuthenticationError
- 7 | | from tutor_assistant.normalization.models import NormalizationChunkRequest
- 8 | | from tutor_assistant.normalization.prompts import PROMPT_VERSION
- 9 | | from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
-10 | | import tutor_assistant.normalization.yandex_client as yandex_module
-   | |___________________________________________________________________^
-   |
-help: Organize imports
-   |
-4  |
-5  + import tutor_assistant.normalization.yandex_client as yandex_module
-6  | from tutor_assistant.config import NormalizationConfig
---------------------------------------------------------------------------------
-10 | from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
-   - import tutor_assistant.normalization.yandex_client as yandex_module
-11 |
-   |
-
-Found 1 error.
-[*] 1 fixable with the `--fix` option.
+All checks passed!
