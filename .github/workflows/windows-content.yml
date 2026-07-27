@@ -2,77 +2,77 @@ name: Windows student content
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  bootstrap-pr38:
-    if: github.event_name == 'pull_request' && github.head_ref == 'security/cloud-processing-boundary'
+  content:
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: security/cloud-processing-boundary
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-
-      - name: Verify and apply product patch
-        shell: pwsh
-        run: |
-          $parts = @(
-            @{Path='.agent/pr38/product.patch.b64'; Sha='0a8b7dd2c7ce4b25a47daa39a66936c5b4669ca34abc5396c02eb20c4468b545'},
-            @{Path='.agent/pr38/patch.02'; Sha='d2b25612fe608969e2181d7a4e310b3e90da27e75a71773d9e42ec19abc6bfc9'},
-            @{Path='.agent/pr38/patch.05'; Sha='69fe1cb6310c8b5ca0c9eb6b05ce5c6ad6f0eeb3b6f29e73e6f244b03c39e15d'},
-            @{Path='.agent/pr38/patch.06'; Sha='7b14c6bb90872e6cb0330fdea19831c41e11a395c30919d283dc698b79313256'},
-            @{Path='.agent/pr38/patch.04'; Sha='1aec2fd0e2dff2e1b73865c993c961b36d1723bf7955bc89d075d8512730caff'}
-          )
-          foreach ($part in $parts) {
-            $actual = (Get-FileHash $part.Path -Algorithm SHA256).Hash.ToLower()
-            if ($actual -ne $part.Sha) { throw "Patch part mismatch: $($part.Path) $actual" }
-          }
-          $payload = ($parts | ForEach-Object { Get-Content $_.Path -Raw }) -join ''
-          Set-Content .agent/pr38/assembled.b64 -Value $payload -NoNewline
-          $payloadHash = (Get-FileHash .agent/pr38/assembled.b64 -Algorithm SHA256).Hash.ToLower()
-          if ($payloadHash -ne '9eef6f47bb20c2afa78570394725ddf7426f6ef4f9556fa48c2259a94f2c5703') {
-            throw "Combined patch payload mismatch: $payloadHash"
-          }
-          python -c "import base64,pathlib; p=pathlib.Path('.agent/pr38/assembled.b64'); pathlib.Path('.agent/pr38/product.patch.gz').write_bytes(base64.b64decode(p.read_text(), validate=True))"
-          $gzipHash = (Get-FileHash .agent/pr38/product.patch.gz -Algorithm SHA256).Hash.ToLower()
-          if ($gzipHash -ne '41531ef8fdebe429fc43e89bd3e819b97969eb8e14b9afc76c7967a519e72355') {
-            throw "Patch archive mismatch: $gzipHash"
-          }
-          python -c "import gzip,pathlib; p=pathlib.Path('.agent/pr38/product.patch.gz'); pathlib.Path('.agent/pr38/product.patch').write_bytes(gzip.decompress(p.read_bytes()))"
-          $patchHash = (Get-FileHash .agent/pr38/product.patch -Algorithm SHA256).Hash.ToLower()
-          if ($patchHash -ne '7ca56d670c2a341a8032249286cf8b69da3da504d58e4838eeb022a06a833fec') {
-            throw "Product patch mismatch: $patchHash"
-          }
-          git apply --check --whitespace=error-all .agent/pr38/product.patch
-          git apply --whitespace=error-all .agent/pr38/product.patch
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         run: python -m pip install uv
 
-      - name: Validate lock and dependencies
-        run: |
-          uv lock --check
-          uv sync --extra desktop --group dev
+      - name: Check lock file
+        run: uv lock --check
 
-      - name: Lint and compile
-        run: |
-          uv run ruff check .
-          uv run python -m compileall -q src/tutor_assistant tests
+      - name: Install test and desktop dependencies
+        run: uv sync --extra desktop --group dev
 
-      - name: Focused privacy contracts
+      - name: Lint
+        shell: pwsh
+        run: |
+          uv run ruff check . --output-format=concise 2>&1 | Tee-Object ruff-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Ruff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-ruff-report
+          path: ruff-report.txt
+          if-no-files-found: ignore
+
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src/tutor_assistant tests
+
+      - name: Privacy import smoke
+        run: >-
+          uv run python -c "from tutor_assistant.security import CloudConsentSession, credential_status, redact_text; assert redact_text('Authorization: Api-Key demo-secret-value') == 'Authorization: Api-Key [REDACTED]'; assert CloudConsentSession(); assert callable(credential_status)"
+
+      - name: Added secret scan
+        if: github.event_name == 'pull_request'
+        run: uv run python scripts/scan_added_secrets.py ${{ github.event.pull_request.base.sha }}
+
+      - name: Filtering, checkpoint and privacy contracts
         run: >-
           uv run pytest -q
+          tests/test_filtering_feature_contracts.py
+          tests/test_subject_aware_filtering.py
+          tests/test_subject_manifest_compatibility.py
+          tests/test_normalization_provider_gui.py
+          tests/test_normalization_checkpoint_migration.py
+          tests/test_normalization_checkpoint_store.py
+          tests/test_normalization_resume.py
+          tests/test_normalization_progress_gui.py
           tests/test_credential_store.py
           tests/test_cloud_consent.py
           tests/test_cloud_privacy_migration.py
@@ -82,22 +82,19 @@ jobs:
           tests/test_privacy_doctor.py
           tests/test_cloud_consent_cli.py
           tests/test_cloud_service_consent.py
-          tests/test_normalization_provider_gui.py
-          tests/test_normalization_service.py
 
-      - name: Remove temporary payload
-        shell: pwsh
-        run: |
-          Remove-Item .agent/pr38 -Recurse -Force
-          Remove-Item scripts/apply_pr38.py -Force -ErrorAction SilentlyContinue
-
-      - name: Commit product implementation
+      - name: Validate patch whitespace
+        if: github.event_name == 'pull_request'
         shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git reset -- .github/workflows/windows-content.yml
-          git diff --cached --check
-          git commit -m "Implement cloud privacy boundary and secure credentials"
-          git push origin HEAD:security/cloud-processing-boundary
+        run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
+
+      - name: Full test suite
+        run: uv run pytest --junitxml=pytest-report.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore
