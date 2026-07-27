@@ -40,8 +40,9 @@ from .models import (
     SourceSegment,
 )
 from .ollama_client import OllamaClient
-from .prompts import PROMPT_VERSION, render_target_text
+from .prompts import render_target_text
 from .protocol import CancellationToken, NormalizationProvider
+from .subjects import SubjectProfile, resolve_subject_profile
 from .validation import ValidationState, validate_plain_text_response
 from .yandex_client import YandexAIStudioClient
 
@@ -120,9 +121,16 @@ class NormalizationService:
             raise NormalizationError(f"Файл исходных сегментов не найден: {path}")
         return self.load_source_segments(path), path.name
 
-    def _configuration_payload(self, model: str) -> dict[str, Any]:
+    def _configuration_payload(
+        self,
+        model: str,
+        *,
+        subject_profile: SubjectProfile,
+    ) -> dict[str, Any]:
         payload = self.config.model_dump(mode="json")
         payload["model"] = model
+        payload["subject_profile"] = subject_profile.name.value
+        payload["prompt_version"] = subject_profile.prompt_version
         return payload
 
     def normalize_lesson(
@@ -175,6 +183,8 @@ class NormalizationService:
         lesson = self.content_service.repository.get_lesson(lesson_id)
         if lesson is None:
             raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+        subject_profile = resolve_subject_profile(lesson.subject)
+        prompt_version = subject_profile.prompt_version
         if source_segments is None:
             source_segments, loaded_artifact = self.lesson_source_segments(lesson_id)
             source_artifact = source_artifact or loaded_artifact
@@ -188,14 +198,14 @@ class NormalizationService:
             raise NormalizationError("Исходный транскрипт содержит повторяющиеся ID сегментов")
 
         source_hash = source_sha256(source_segments)
-        config_hash = configuration_hash(self._configuration_payload(model))
+        config_hash = configuration_hash(self._configuration_payload(model, subject_profile=subject_profile))
         run: NormalizationRun | None = None
         if not dry_run:
             run, created = self.runs.create_or_get(
                 lesson_id=lesson_id,
                 source_hash=source_hash,
                 model=model,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=prompt_version,
                 config_hash=config_hash,
                 force=force,
             )
@@ -236,6 +246,8 @@ class NormalizationService:
                 provider,
                 run,
                 cancellation,
+                lesson_subject=lesson.subject,
+                subject_profile=subject_profile,
             )
             educational_text = "\n".join(part for part in normalized_chunks if part).strip()
             transcript = self._build_result(
@@ -248,6 +260,9 @@ class NormalizationService:
                 chunk_count=len(chunks),
                 validation=validation,
                 created_at=datetime.now(UTC),
+                lesson_subject=lesson.subject,
+                subject_profile=subject_profile,
+                prompt_version=prompt_version,
             )
             cancellation.raise_if_cancelled()
             if output is None:
@@ -274,7 +289,7 @@ class NormalizationService:
                 manifest = NormalizationManifest(
                     provider=self.config.provider,
                     model=model,
-                    prompt_version=PROMPT_VERSION,
+                    prompt_version=prompt_version,
                     source_artifact=source_artifact,
                     source_sha256=source_hash,
                     configuration_hash=config_hash,
@@ -286,6 +301,8 @@ class NormalizationService:
                     status=NormalizationRunStatus.REVIEW_REQUIRED,
                     statistics=transcript.statistics,
                     quality=transcript.quality,
+                    lesson_subject=lesson.subject,
+                    subject_profile=subject_profile.name.value,
                 )
                 write_json_atomic(manifest_path, manifest)
                 try:
@@ -306,11 +323,13 @@ class NormalizationService:
                     frozenset({"artifacts"}),
                 )
             logging.info(
-                "event=content_filter_completed lesson_id=%s provider=%s model=%s chunks=%d "
-                "segments=%d elapsed_seconds=%.3f retained_ratio=%.3f",
+                "event=content_filter_completed lesson_id=%s provider=%s model=%s "
+                "subject_profile=%s chunks=%d segments=%d elapsed_seconds=%.3f "
+                "retained_ratio=%.3f",
                 lesson_id,
                 self.config.provider,
                 model,
+                subject_profile.name.value,
                 len(chunks),
                 len(source_segments),
                 perf_counter() - started,
@@ -353,6 +372,9 @@ class NormalizationService:
         provider: NormalizationProvider,
         run: NormalizationRun | None,
         cancellation: CancellationToken,
+        *,
+        lesson_subject: str,
+        subject_profile: SubjectProfile,
     ) -> tuple[list[str], ValidationState, int]:
         normalized_chunks: list[str] = []
         state = ValidationState()
@@ -360,9 +382,11 @@ class NormalizationService:
         for chunk in chunks:
             request = NormalizationChunkRequest(
                 lesson_id=lesson_id,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=subject_profile.prompt_version,
                 mode=self.config.mode,
                 segments=list(chunk.segments),
+                lesson_subject=lesson_subject,
+                subject_profile=subject_profile.name.value,
             )
             validation_errors: tuple[str, ...] = ()
             for attempt in range(self.config.max_attempts):
@@ -382,6 +406,7 @@ class NormalizationService:
                         chunk.target_ids,
                         response,
                         candidate_state,
+                        subject_profile=subject_profile.name.value,
                     )
                     normalized_chunks.append(normalized)
                     state.merge(candidate_state)
@@ -408,6 +433,9 @@ class NormalizationService:
         chunk_count: int,
         validation: ValidationState,
         created_at: datetime,
+        lesson_subject: str,
+        subject_profile: SubjectProfile,
+        prompt_version: str,
     ) -> NormalizedTranscript:
         source_text = render_target_text(source_segments)
         source_characters = len(source_text)
@@ -423,11 +451,14 @@ class NormalizationService:
                 "sha256": source_hash,
                 "segment_count": len(source_segments),
                 "language": "ru",
+                "subject": lesson_subject,
             },
             normalizer={
                 "provider": self.config.provider,
                 "model": model,
-                "prompt_version": PROMPT_VERSION,
+                "prompt_version": prompt_version,
+                "subject_profile": subject_profile.name.value,
+                "subject_display_name": subject_profile.display_name,
                 "mode": self.config.mode,
                 "created_at": created_at.isoformat(),
             },
@@ -468,11 +499,14 @@ class NormalizationService:
                 "sha256": manifest.source_sha256,
                 "segment_count": manifest.statistics.source_segments,
                 "language": "ru",
+                "subject": manifest.lesson_subject,
             },
             normalizer={
                 "provider": manifest.provider,
                 "model": manifest.model,
                 "prompt_version": manifest.prompt_version,
+                "subject_profile": manifest.subject_profile,
+                "subject_display_name": resolve_subject_profile(manifest.subject_profile).display_name,
                 "mode": self.config.mode,
                 "created_at": manifest.completed_at.isoformat(),
             },

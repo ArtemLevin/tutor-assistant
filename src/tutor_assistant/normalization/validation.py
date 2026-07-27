@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from .errors import InvalidPlainTextOutputError, UnsafeNormalizationResultError
 from .models import NormalizationQuality, SourceSegment
 from .prompts import render_target_text
+from .subjects import SubjectProfileName, get_subject_profile
 
 NUMBER_PATTERN = re.compile(
     r"(?<![\w])(?:№\s*)?"
@@ -17,7 +18,7 @@ NUMBER_PATTERN = re.compile(
     flags=re.UNICODE,
 )
 FORMULA_PATTERN = re.compile(
-    r"[+\-=<>≤≥/^√%()[\]]"
+    r"[+\-=<>≤≥/^√%()[\]{}→⇄]"
     r"|[A-Za-z]+"
     r"|(?<=[A-Za-zΑ-Ωα-ω])\d+"
     r"|\d+(?=[A-Za-zΑ-Ωα-ω])"
@@ -25,40 +26,7 @@ FORMULA_PATTERN = re.compile(
     r"|[₀-₉₊₋₌₍₎]+"
     r"|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾]+"
 )
-MATH_TERM_STEMS = (
-    "логариф",
-    "неравен",
-    "уравнен",
-    "функц",
-    "график",
-    "производн",
-    "интеграл",
-    "первообразн",
-    "прогресси",
-    "тригонометр",
-    "синус",
-    "косинус",
-    "тангенс",
-    "котангенс",
-    "дискриминант",
-    "корень",
-    "степен",
-    "модул",
-    "одз",
-    "интервал",
-    "теорем",
-    "доказатель",
-    "треуголь",
-    "четырёхуголь",
-    "окружност",
-    "площад",
-    "объём",
-    "вектор",
-    "координат",
-    "вероятност",
-    "комбинатор",
-    "статистик",
-)
+MATH_TERM_STEMS = get_subject_profile(SubjectProfileName.MATHEMATICS).all_protected_stems
 PROTECTED_MARKERS = (
     "домашн",
     "дз",
@@ -100,6 +68,27 @@ def extract_formula_tokens(text: str) -> list[str]:
     return [match.group(0).casefold() for match in FORMULA_PATTERN.finditer(text)]
 
 
+def _normalized_lookup_text(text: str) -> str:
+    normalized = text.casefold().replace("ё", "е").replace("²", "^2").replace("³", "^3")
+    normalized = re.sub(r"\s*/\s*", "/", normalized)
+    normalized = re.sub(r"\s*\^\s*", "^", normalized)
+    return re.sub(r"\s+", " ", normalized)
+
+
+def extract_subject_units(text: str, subject_profile: str) -> list[str]:
+    profile = get_subject_profile(subject_profile)
+    normalized = _normalized_lookup_text(text)
+    found: list[str] = []
+    for token in profile.unit_tokens:
+        marker = _normalized_lookup_text(token)
+        if len(marker) == 1 and marker.isalnum():
+            pattern = re.compile(rf"(?<=\d)\s*{re.escape(marker)}(?![\w])")
+        else:
+            pattern = re.compile(rf"(?<![\w]){re.escape(marker)}(?![\w])")
+        found.extend(marker for _ in pattern.finditer(normalized))
+    return found
+
+
 def _tokens(text: str) -> list[str]:
     return re.findall(r"\w+|[^\w\s]", text.casefold(), flags=re.UNICODE)
 
@@ -126,6 +115,7 @@ class ValidationState:
     numbers_preserved: bool = True
     formula_tokens_preserved: bool = True
     protected_content_preserved: bool = True
+    subject_units_preserved: bool = True
     requires_manual_attention: bool = False
     warnings: list[str] = field(default_factory=list)
 
@@ -133,6 +123,7 @@ class ValidationState:
         self.numbers_preserved &= other.numbers_preserved
         self.formula_tokens_preserved &= other.formula_tokens_preserved
         self.protected_content_preserved &= other.protected_content_preserved
+        self.subject_units_preserved &= other.subject_units_preserved
         self.requires_manual_attention |= other.requires_manual_attention
         self.warnings.extend(other.warnings)
 
@@ -142,6 +133,7 @@ class ValidationState:
             numbers_preserved=self.numbers_preserved,
             formula_tokens_preserved=self.formula_tokens_preserved,
             protected_content_preserved=self.protected_content_preserved,
+            subject_units_preserved=self.subject_units_preserved,
             requires_manual_attention=self.requires_manual_attention,
             warnings=list(dict.fromkeys(self.warnings)),
         )
@@ -151,16 +143,21 @@ def _validate_protected_segments(
     target_segments: list[SourceSegment],
     normalized: str,
     state: ValidationState,
+    *,
+    subject_profile: str,
 ) -> None:
-    lowered = normalized.casefold()
+    profile = get_subject_profile(subject_profile)
+    lowered = normalized.casefold().replace("ё", "е")
     normalized_words = set(re.findall(r"[а-яёa-z0-9]+", lowered))
     for segment in target_segments:
-        source = segment.text.casefold()
-        matched_terms = [stem for stem in MATH_TERM_STEMS if stem in source]
+        source = segment.text.casefold().replace("ё", "е")
+        matched_terms = [stem for stem in profile.all_protected_stems if stem in source]
         missing_terms = [stem for stem in matched_terms if stem not in lowered]
         if missing_terms:
             state.protected_content_preserved = False
-            raise UnsafeNormalizationResultError("Удалён термин школьного курса: " + ", ".join(missing_terms))
+            raise UnsafeNormalizationResultError(
+                f"Удалён термин профиля {profile.name.value}: " + ", ".join(missing_terms)
+            )
 
         protected_statement = any(marker in source for marker in PROTECTED_MARKERS)
         protected_statement |= segment.speaker == "У" and "?" in segment.text
@@ -175,7 +172,7 @@ def _validate_protected_segments(
         if required and len(content_words & normalized_words) < required:
             state.protected_content_preserved = False
             raise UnsafeNormalizationResultError(
-                f"Удалён защищённый вопрос, ошибка или учебное указание "
+                "Удалён защищённый вопрос, ошибка или учебное указание "
                 f"source_segment_id={segment.source_segment_id}"
             )
 
@@ -185,7 +182,10 @@ def validate_plain_text_response(
     target_ids: tuple[int, ...],
     response: str,
     state: ValidationState,
+    *,
+    subject_profile: str = SubjectProfileName.MATHEMATICS.value,
 ) -> str:
+    profile = get_subject_profile(subject_profile)
     if not isinstance(response, str):
         raise InvalidPlainTextOutputError("Модель должна вернуть обычный текст")
     normalized = response.replace("\r\n", "\n").strip()
@@ -216,6 +216,11 @@ def validate_plain_text_response(
     if _counter_added(source_formula, normalized_formula):
         raise UnsafeNormalizationResultError("В нормализованном тексте появились новые формульные токены")
 
+    source_units = extract_subject_units(semantic_source, profile.name.value)
+    normalized_units = extract_subject_units(semantic_normalized, profile.name.value)
+    if _counter_added(source_units, normalized_units):
+        raise UnsafeNormalizationResultError("В нормализованном тексте появились новые единицы измерения")
+
     for context in (segment for segment in source_segments if segment.context_only):
         context_text = context.text.strip()
         if context_text and context_text in normalized and context_text not in source_text:
@@ -243,5 +248,18 @@ def validate_plain_text_response(
         state.requires_manual_attention = True
         state.warnings.append("formula_tokens_removed")
 
-    _validate_protected_segments(targets, normalized, state)
+    removed_units = _counter_removed(source_units, normalized_units)
+    if removed_units:
+        state.subject_units_preserved = False
+        state.protected_content_preserved = False
+        raise UnsafeNormalizationResultError(
+            f"Удалены единицы профиля {profile.name.value}: " + ", ".join(removed_units)
+        )
+
+    _validate_protected_segments(
+        targets,
+        normalized,
+        state,
+        subject_profile=profile.name.value,
+    )
     return normalized
