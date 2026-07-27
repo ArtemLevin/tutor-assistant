@@ -31,6 +31,11 @@ uv run tutor-assistant filter-transcript <lesson-id>
 ручного применения. Архитектура и настройка описаны в
 [docs/educational-content-filter.md](docs/educational-content-filter.md).
 
+В GUI провайдер выбирается непосредственно над редактором транскрипта: 
+**«Локальная LLM (Ollama)»** или **«Yandex AI Studio»**. При первом выборе Yandex 
+приложение запрашивает `folder_id` и явное согласие на передачу текста в облако. 
+API-ключ читается только из переменной окружения и в YAML не сохраняется.
+
 Старые команды `normalize` и `normalization-doctor`, а также внутреннее имя
 пакета `normalization` сохранены для обратной совместимости.
 
