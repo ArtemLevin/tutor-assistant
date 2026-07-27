@@ -37,7 +37,7 @@ jobs:
       - name: Compile Python sources
         run: uv run python -m compileall -q src/tutor_assistant tests
       - name: Filtering import smoke
-        run: uv run python -c "from tutor_assistant.normalization.prompts import system_prompt; from tutor_assistant.ui.normalization_provider import provider_label; assert 'Импульс' in system_prompt('physics'); assert provider_label('ollama') == 'Локальная LLM (Ollama)'"
+        run: uv run python -c "from tutor_assistant.normalization.prompts import system_prompt; from tutor_assistant.ui.normalization_provider import provider_label; assert 'импульс' in system_prompt('physics').casefold(); assert provider_label('ollama') == 'Локальная LLM (Ollama)'"
       - name: Filtering feature contracts
         run: >-
           uv run pytest -q
