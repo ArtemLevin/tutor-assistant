@@ -15,7 +15,12 @@ from .errors import (
 from .models import NormalizedTranscript, SourceSegment
 from .service import NormalizationService, build_provider
 
+EducationalContentFilterService = NormalizationService
+FilteredTranscript = NormalizedTranscript
+
 __all__ = [
+    "EducationalContentFilterService",
+    "FilteredTranscript",
     "InvalidPlainTextOutputError",
     "InvalidStructuredOutputError",
     "NormalizationCancelledError",

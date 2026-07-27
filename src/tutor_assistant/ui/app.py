@@ -1218,7 +1218,7 @@ class MainWindow(QMainWindow):
             if self.config.normalization.provider == "yandex_ai_studio"
             else "Локальный Ollama"
         )
-        normalization_label = QLabel(provider_label)
+        normalization_label = QLabel(f"LLM-фильтр · {provider_label}")
         normalization_label.setObjectName("muted")
         normalization_controls.addWidget(normalization_label)
         self.normalization_model = QComboBox()
@@ -1233,7 +1233,7 @@ class MainWindow(QMainWindow):
         self.normalization_model.setMinimumWidth(145)
         normalization_controls.addWidget(self.normalization_model)
         self.normalize_button = set_button_kind(
-            QPushButton("Нормализовать"),
+            QPushButton("Отфильтровать учебное содержание"),
             "primary",
         )
         self.normalize_button.clicked.connect(self.normalize_current_transcript)
@@ -2135,7 +2135,7 @@ class MainWindow(QMainWindow):
         if not self.lesson:
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "Сначала откройте транскрипт занятия",
             )
             return
@@ -2144,18 +2144,18 @@ class MainWindow(QMainWindow):
         ):
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "Дождитесь завершения активной Whisper-транскрибации: оба процесса используют CPU.",
             )
             return
         if self._normalization_cancellation is not None:
-            self._set_status("Нормализация уже выполняется", "warning")
+            self._set_status("LLM-фильтрация уже выполняется", "warning")
             return
         segments = self._current_source_segments()
         if not segments:
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "В транскрипте нет сегментов",
             )
             return
@@ -2164,7 +2164,7 @@ class MainWindow(QMainWindow):
         if not model:
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "Укажите модель",
             )
             return
@@ -2173,7 +2173,7 @@ class MainWindow(QMainWindow):
         self._normalization_lesson_id = lesson_id
         self._sync_normalization_controls()
         self._set_status(
-            f"Нормализую транскрипт · {self.config.normalization.provider} · {model}",
+            f"Фильтрую учебное содержание · {self.config.normalization.provider} · {model}",
             "working",
         )
         worker = Worker(
@@ -2251,7 +2251,7 @@ class MainWindow(QMainWindow):
         warnings = len(result.transcript.quality.warnings)
         self._set_status(
             (
-                f"Нормализация готова · сохранено "
+                f"LLM-фильтрация готова · сохранено "
                 f"{result.transcript.statistics.retained_ratio * 100:.1f}%"
                 + (f" · предупреждений: {warnings}" if warnings else "")
             ),
@@ -2264,11 +2264,11 @@ class MainWindow(QMainWindow):
         )
 
     def _normalization_failed(self, details: str) -> None:
-        logging.error("Нормализация завершилась ошибкой:\n%s", details)
+        logging.error("LLM-фильтрация завершилась ошибкой:\n%s", details)
         lines = [line.strip() for line in details.splitlines() if line.strip()]
         message = lines[-1] if lines else "Неизвестная ошибка нормализации"
-        self._set_status("Ошибка нормализации", "error")
-        QMessageBox.warning(self, "Нормализация", message)
+        self._set_status("Ошибка LLM-фильтрации", "error")
+        QMessageBox.warning(self, "LLM-фильтрация", message)
 
     def _normalization_worker_finished(self, worker: Worker) -> None:
         self._normalization_cancellation = None
@@ -2297,7 +2297,7 @@ class MainWindow(QMainWindow):
         if payload is None:
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "Готовый текстовый результат не найден",
             )
             return
@@ -2309,7 +2309,7 @@ class MainWindow(QMainWindow):
         if not edited_text:
             QMessageBox.warning(
                 self,
-                "Нормализация",
+                "LLM-фильтрация",
                 "Нельзя применить пустой транскрипт",
             )
             return
@@ -2353,7 +2353,7 @@ class MainWindow(QMainWindow):
             self.approve.setEnabled(False)
             self.publish_button.setEnabled(True)
             self._sync_normalization_controls()
-        self._set_status("Нормализация применена как новая ревизия")
+        self._set_status("LLM-фильтрация применена как новая ревизия")
 
     def reject_normalization_result(self) -> None:
         if not self.lesson:
@@ -2375,7 +2375,7 @@ class MainWindow(QMainWindow):
         try:
             self.normalization_service.reject_result(run.id or 0)
         except Exception as exc:
-            QMessageBox.warning(self, "Нормализация", str(exc))
+            QMessageBox.warning(self, "LLM-фильтрация", str(exc))
             return
         self._normalization_execution = None
         self._sync_normalization_controls()

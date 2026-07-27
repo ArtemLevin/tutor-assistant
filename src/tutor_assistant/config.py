@@ -4,11 +4,13 @@ import logging
 import re
 from ipaddress import ip_address
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .atomic_io import atomic_write_text
 from .domain import Student
 
 
@@ -52,6 +54,15 @@ class RepositoryConfig(BaseModel):
     auto_create_pr: bool = True
     repository_full_name: str = "owner/private-students-repo"
     pr_base_branch: str = "main"
+    github_token_env: str = "GITHUB_TOKEN"
+    github_api_timeout_seconds: float = Field(default=30, ge=1, le=300)
+
+    @field_validator("github_token_env")
+    @classmethod
+    def validate_github_token_env(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("github_token_env должен быть именем переменной окружения")
+        return value
 
 
 class LatexConfig(BaseModel):
@@ -118,7 +129,7 @@ class NormalizationConfig(BaseModel):
     yandex_folder_id: str | None = None
     yandex_api_key_env: str = "YANDEX_AI_STUDIO_API_KEY"
     yandex_model: str = "yandexgpt-lite"
-    mode: str = "conservative"
+    mode: str = "filter_only"
     temperature: float = Field(default=0, ge=0, le=2)
     num_ctx: int = Field(default=8192, ge=1024)
     num_predict: int = Field(default=4096, ge=256)
@@ -128,7 +139,7 @@ class NormalizationConfig(BaseModel):
     request_timeout_seconds: int = Field(default=600, gt=0)
     max_attempts: int = Field(default=2, ge=1, le=5)
     retry_backoff_seconds: float = Field(default=2, ge=0, le=60)
-    require_manual_approval: bool = True
+    require_manual_approval: Literal[True] = True
     high_removal_threshold: float = Field(default=0.35, gt=0, lt=1)
 
     @field_validator("provider")
@@ -148,8 +159,10 @@ class NormalizationConfig(BaseModel):
     @field_validator("mode")
     @classmethod
     def validate_mode(cls, value: str) -> str:
-        if value != "conservative":
-            raise ValueError("Поддерживается только mode=conservative")
+        if value == "conservative":
+            return "filter_only"
+        if value != "filter_only":
+            raise ValueError("Поддерживается только mode=filter_only")
         return value
 
     @model_validator(mode="after")
@@ -220,13 +233,14 @@ class AppConfig(BaseModel):
         return cls.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(
-            yaml.safe_dump(self.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
+        atomic_write_text(
+            path,
+            yaml.safe_dump(
+                self.model_dump(mode="json"),
+                allow_unicode=True,
+                sort_keys=False,
+            ),
         )
-        temporary.replace(path)
 
 
 def load_students(path: Path) -> list[Student]:

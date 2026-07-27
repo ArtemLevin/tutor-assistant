@@ -53,6 +53,9 @@ repository:
   auto_create_pr: true
   repository_full_name: owner/private-students-repo
   pr_base_branch: main
+  # Без gh используется GitHub REST API и токен из переменной окружения.
+  github_token_env: GITHUB_TOKEN
+  github_api_timeout_seconds: 30
 
 latex:
   enabled: true
@@ -84,6 +87,7 @@ quick_start:
       auto_transcribe: true
       countdown_seconds: 3
 
+# Имя секции normalization сохранено для совместимости; публично это LLM-фильтр.
 normalization:
   enabled: true
   auto_run: false
@@ -97,7 +101,7 @@ normalization:
   yandex_folder_id: null
   yandex_api_key_env: YANDEX_AI_STUDIO_API_KEY
   yandex_model: yandexgpt-lite
-  mode: conservative
+  mode: filter_only
   temperature: 0
   num_ctx: 8192
   num_predict: 4096

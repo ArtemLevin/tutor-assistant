@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import httpx
 import pytest
 
+import tutor_assistant.normalization.yandex_client as yandex_module
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.normalization.errors import YandexAIStudioAuthenticationError
 from tutor_assistant.normalization.models import NormalizationChunkRequest
@@ -42,18 +42,18 @@ def _config() -> NormalizationConfig:
 def test_yandex_client_uses_official_responses_api_and_api_key(monkeypatch) -> None:
     captured: dict = {}
 
-    def post(url, *, headers, json, **_kwargs):
-        captured.update(url=url, headers=headers, payload=json)
+    def request(method, url, *, headers, payload, **_kwargs):
+        captured.update(method=method, url=url, headers=headers, payload=payload)
         return _Response()
 
     monkeypatch.setenv("YANDEX_AI_STUDIO_API_KEY", "secret")
-    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(yandex_module, "cancellable_request", request)
     client = YandexAIStudioClient(_config())
     response = client.normalize_chunk(
         NormalizationChunkRequest(
             lesson_id="synthetic",
             prompt_version=PROMPT_VERSION,
-            mode="conservative",
+            mode="filter_only",
             segments=[
                 {
                     "source_segment_id": 1,
@@ -65,6 +65,7 @@ def test_yandex_client_uses_official_responses_api_and_api_key(monkeypatch) -> N
     )
 
     assert response == "[П] Решаем логарифмическое неравенство."
+    assert captured["method"] == "POST"
     assert captured["url"] == "https://ai.api.cloud.yandex.net/v1/responses"
     assert captured["headers"]["Authorization"] == "Api-Key secret"
     assert captured["headers"]["OpenAI-Project"] == "folder-id"

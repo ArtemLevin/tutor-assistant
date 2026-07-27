@@ -140,7 +140,7 @@ class NormalizationService:
     ) -> NormalizationExecution:
         del include_removed_text
         if not self.config.enabled and not dry_run:
-            raise NormalizationError("Нормализация отключена в конфигурации")
+            raise NormalizationError("LLM-фильтрация учебного содержания отключена в конфигурации")
         selected_model = model or self.config.effective_model
         cancellation = cancellation or CancellationToken()
         with self.content_service.activity(
@@ -306,7 +306,7 @@ class NormalizationService:
                     frozenset({"artifacts"}),
                 )
             logging.info(
-                "event=normalization_completed lesson_id=%s provider=%s model=%s chunks=%d "
+                "event=content_filter_completed lesson_id=%s provider=%s model=%s chunks=%d "
                 "segments=%d elapsed_seconds=%.3f retained_ratio=%.3f",
                 lesson_id,
                 self.config.provider,
@@ -338,7 +338,7 @@ class NormalizationService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             logging.exception(
-                "event=normalization_failed lesson_id=%s provider=%s model=%s error_code=%s",
+                "event=content_filter_failed lesson_id=%s provider=%s model=%s error_code=%s",
                 lesson_id,
                 self.config.provider,
                 model,

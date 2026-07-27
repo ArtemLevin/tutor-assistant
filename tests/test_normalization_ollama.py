@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import httpx
-
+import tutor_assistant.normalization.ollama_client as ollama_module
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.normalization.models import NormalizationChunkRequest
 from tutor_assistant.normalization.ollama_client import OllamaClient
@@ -19,23 +18,23 @@ class _Response:
         return self.payload
 
 
-def test_ollama_client_requests_plain_text_and_disables_thinking(monkeypatch) -> None:
+def test_ollama_client_requests_filter_only_text_and_disables_thinking(monkeypatch) -> None:
     requests: list[tuple[str, str, dict | None]] = []
 
-    def request(method, url, *, json=None, **_kwargs):
-        requests.append((method, url, json))
+    def request(method, url, *, payload=None, **_kwargs):
+        requests.append((method, url, payload))
         if url.endswith("/api/tags"):
             return _Response({"models": [{"name": "qwen3:8b"}]})
         return _Response({"message": {"content": "[П] Решаем x + 2 = 5."}})
 
-    monkeypatch.setattr(httpx, "request", request)
+    monkeypatch.setattr(ollama_module, "cancellable_request", request)
     client = OllamaClient(NormalizationConfig())
     client.check_available()
     response = client.normalize_chunk(
         NormalizationChunkRequest(
             lesson_id="synthetic",
             prompt_version=PROMPT_VERSION,
-            mode="conservative",
+            mode="filter_only",
             segments=[{"source_segment_id": 1, "speaker": "П", "text": "Решаем x + 2 = 5."}],
         )
     )
@@ -47,5 +46,5 @@ def test_ollama_client_requests_plain_text_and_disables_thinking(monkeypatch) ->
     assert chat_payload["stream"] is False
     assert chat_payload["options"]["temperature"] == 0
     assert "format" not in chat_payload
-    assert "обычный нормализованный текст" in chat_payload["messages"][0]["content"]
+    assert "LLM-фильтрацию учебного содержания" in chat_payload["messages"][0]["content"]
     assert "x + 2 = 5" in chat_payload["messages"][1]["content"]
