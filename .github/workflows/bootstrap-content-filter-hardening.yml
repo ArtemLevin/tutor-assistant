@@ -1,0 +1,36 @@
+name: Bootstrap content filter hardening
+
+on:
+  push:
+    branches:
+      - agent/educational-content-filter-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/educational-content-filter-hardening
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply product changes
+        run: python scripts/apply_content_filter_hardening.py
+      - name: Commit generated changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No generated changes"
+            exit 0
+          fi
+          git commit -m "Implement educational content filtering hardening"
+          git push origin HEAD:agent/educational-content-filter-hardening
