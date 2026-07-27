@@ -40,9 +40,7 @@ replace_once(
 )
 replace_once(
     "src/tutor_assistant/normalization/service.py",
-    '''        config_hash = configuration_hash(
-            self._configuration_payload(model, subject_profile=subject_profile)
-        )
+    '''        config_hash = configuration_hash(self._configuration_payload(model, subject_profile=subject_profile))
 ''',
     '''        config_hash = configuration_hash(
             self._configuration_payload(
