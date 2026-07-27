@@ -344,6 +344,65 @@ def _resumable_normalization_chunks(db: sqlite3.Connection) -> None:
         "ON normalization_chunks(run_id, status, chunk_index)"
     )
 
+def _cloud_processing_privacy(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_processing_consents (
+            id TEXT PRIMARY KEY,
+            lesson_id TEXT NOT NULL,
+            run_id INTEGER,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            source_sha256 TEXT NOT NULL,
+            configuration_hash TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            subject_profile TEXT NOT NULL,
+            segment_count INTEGER NOT NULL CHECK(segment_count >= 0),
+            character_count INTEGER NOT NULL CHECK(character_count >= 0),
+            chunk_count INTEGER NOT NULL CHECK(chunk_count >= 0),
+            request_fingerprint TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(scope IN ('once', 'session')),
+            decision TEXT NOT NULL CHECK(decision IN ('allowed', 'denied')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES normalization_runs(id) ON DELETE SET NULL
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cloud_request_events (
+            id TEXT PRIMARY KEY,
+            consent_id TEXT NOT NULL,
+            run_id INTEGER,
+            chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            event TEXT NOT NULL CHECK(event IN (
+                'request_started', 'request_completed', 'request_failed',
+                'request_indeterminate', 'retry_confirmed'
+            )),
+            request_fingerprint TEXT NOT NULL,
+            response_sha256 TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            FOREIGN KEY(consent_id) REFERENCES cloud_processing_consents(id) ON DELETE CASCADE,
+            FOREIGN KEY(run_id) REFERENCES normalization_runs(id) ON DELETE CASCADE
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS cloud_consents_lesson_created "
+        "ON cloud_processing_consents(lesson_id, created_at DESC)"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS cloud_events_run_chunk "
+        "ON cloud_request_events(run_id, chunk_index, created_at)"
+    )
+
 
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
@@ -355,6 +414,7 @@ MIGRATIONS = (
     Migration(7, "asset_verification_cache", _asset_verification_cache),
     Migration(8, "transcript_normalization", _transcript_normalization),
     Migration(9, "resumable_normalization_chunks", _resumable_normalization_chunks),
+    Migration(10, "cloud_processing_privacy", _cloud_processing_privacy),
 )
 
 

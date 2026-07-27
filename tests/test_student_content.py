@@ -79,6 +79,7 @@ def test_migrates_legacy_database_without_losing_lessons(tmp_path: Path) -> None
         (7, "asset_verification_cache"),
         (8, "transcript_normalization"),
         (9, "resumable_normalization_chunks"),
+        (10, "cloud_processing_privacy"),
     ]
     with repository.connect() as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(lessons)")}
@@ -94,9 +95,9 @@ def test_migrations_are_idempotent(tmp_path: Path) -> None:
     StudentContentRepository(database)
     repository = StudentContentRepository(database)
 
-    assert len(repository.applied_migrations()) == 9
+    assert len(repository.applied_migrations()) == 10
     with repository.connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 9
+        assert db.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 10
 
 
 def test_filters_pagination_and_lesson_soft_delete(tmp_path: Path) -> None:

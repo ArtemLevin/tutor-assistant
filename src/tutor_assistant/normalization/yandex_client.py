@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
 from ..config import NormalizationConfig
+from ..security.cloud_consent import CloudRequestEnvelope
+from ..security.credentials import resolve_yandex_api_key
 from .errors import (
     InvalidPlainTextOutputError,
     YandexAIStudioAuthenticationError,
@@ -29,7 +30,7 @@ class YandexAIStudioClient:
 
     @property
     def api_key(self) -> str:
-        return os.getenv(self.config.yandex_api_key_env, "").strip()
+        return resolve_yandex_api_key(self.config)
 
     @property
     def model_uri(self) -> str:
@@ -39,15 +40,15 @@ class YandexAIStudioClient:
 
     def check_available(self, model: str | None = None) -> None:
         del model
-        if not self.config.allow_cloud_processing:
+        if self.config.effective_cloud_policy == "disabled":
             raise YandexAIStudioUnavailableError(
-                "Отправка в Yandex AI Studio отключена; включите allow_cloud_processing"
+                "Отправка в Yandex AI Studio отключена политикой cloud_policy"
             )
         if not self.folder_id:
             raise YandexAIStudioUnavailableError("Не указан Yandex Cloud folder ID")
         if not self.api_key:
             raise YandexAIStudioAuthenticationError(
-                f"Переменная окружения {self.config.yandex_api_key_env} не задана"
+                "API-ключ Yandex AI Studio не найден в выбранном credential source"
             )
 
     def _request(
@@ -58,7 +59,7 @@ class YandexAIStudioClient:
     ) -> httpx.Response:
         self.check_available()
         try:
-            return cancellable_request(
+            response = cancellable_request(
                 "POST",
                 f"{self.base_url}/responses",
                 headers={
@@ -69,9 +70,15 @@ class YandexAIStudioClient:
                 },
                 payload=payload,
                 timeout_seconds=self.config.request_timeout_seconds,
-                trust_env=True,
+                trust_env=self.config.cloud_trust_env,
+                follow_redirects=False,
                 cancellation=cancellation,
             )
+            if len(response.content) > self.config.cloud_max_response_bytes:
+                raise InvalidPlainTextOutputError(
+                    "Yandex AI Studio вернул ответ больше разрешённого размера"
+                )
+            return response
         except httpx.TimeoutException as exc:
             raise YandexAIStudioTimeoutError("Yandex AI Studio не ответил за отведённое время") from exc
         except httpx.HTTPStatusError as exc:
@@ -120,9 +127,11 @@ class YandexAIStudioClient:
     ) -> str:
         if cancellation:
             cancellation.raise_if_cancelled()
+        envelope = CloudRequestEnvelope.from_normalization_request(request)
+        safe_request = envelope.as_normalization_request()
         prompt = (
-            f"{system_prompt(request.subject_profile)}\n\n"
-            f"{user_prompt(request, validation_errors=validation_errors)}"
+            f"{system_prompt(safe_request.subject_profile)}\n\n"
+            f"{user_prompt(safe_request, validation_errors=validation_errors)}"
         )
         response = self._request(
             {

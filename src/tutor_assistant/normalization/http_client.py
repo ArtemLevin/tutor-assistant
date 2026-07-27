@@ -16,12 +16,13 @@ async def _request_async(
     payload: dict[str, Any] | None,
     timeout_seconds: float,
     trust_env: bool,
+    follow_redirects: bool,
     cancellation: CancellationToken | None,
 ) -> httpx.Response:
     async with httpx.AsyncClient(
         timeout=timeout_seconds,
         trust_env=trust_env,
-        follow_redirects=True,
+        follow_redirects=follow_redirects,
     ) as client:
         task = asyncio.create_task(client.request(method, url, headers=headers, json=payload))
         try:
@@ -51,6 +52,7 @@ def cancellable_request(
     payload: dict[str, Any] | None = None,
     timeout_seconds: float,
     trust_env: bool,
+    follow_redirects: bool = False,
     cancellation: CancellationToken | None = None,
 ) -> httpx.Response:
     if cancellation:
@@ -63,6 +65,7 @@ def cancellable_request(
             payload=payload,
             timeout_seconds=timeout_seconds,
             trust_env=trust_env,
+            follow_redirects=follow_redirects,
             cancellation=cancellation,
         )
     )

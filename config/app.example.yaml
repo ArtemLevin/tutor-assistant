@@ -97,6 +97,10 @@ normalization:
   model: qwen3:8b
   # Для облака установите provider: yandex_ai_studio и явно разрешите передачу текста.
   allow_cloud_processing: false
+  cloud_policy: ask_every_time
+  credential_source: auto
+  cloud_trust_env: false
+  cloud_max_response_bytes: 1000000
   yandex_base_url: https://ai.api.cloud.yandex.net/v1
   yandex_folder_id: null
   yandex_api_key_env: YANDEX_AI_STUDIO_API_KEY

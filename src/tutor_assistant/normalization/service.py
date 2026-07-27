@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import tempfile
@@ -12,6 +13,12 @@ from typing import Any
 from ..config import NormalizationConfig
 from ..content import ContentNotFoundError, StudentContentService
 from ..domain import JobStatus
+from ..security.cloud_consent import (
+    CloudAuditStore,
+    CloudConsentReceipt,
+    CloudProcessingRequest,
+    validate_cloud_consent,
+)
 from .artifacts import (
     NormalizationRunStore,
     configuration_hash,
@@ -22,6 +29,7 @@ from .artifacts import (
 from .checkpoints import NormalizationCheckpointStore
 from .chunking import chunk_segments, sort_segments
 from .errors import (
+    CloudProcessingConsentRequiredError,
     InvalidPlainTextOutputError,
     NormalizationCancelledError,
     NormalizationCheckpointMismatchError,
@@ -30,7 +38,6 @@ from .errors import (
     OllamaTimeoutError,
     SourceTranscriptChangedError,
     UnsafeNormalizationResultError,
-    YandexAIStudioTimeoutError,
 )
 from .models import (
     NormalizationChunkRequest,
@@ -57,7 +64,6 @@ RETRYABLE_OUTPUT_ERRORS = (
     InvalidPlainTextOutputError,
     UnsafeNormalizationResultError,
     OllamaTimeoutError,
-    YandexAIStudioTimeoutError,
 )
 
 
@@ -84,6 +90,7 @@ class NormalizationService:
         self.provider_factory = provider_factory
         self.runs = NormalizationRunStore(content_service.repository)
         self.checkpoints = NormalizationCheckpointStore(content_service.repository)
+        self.cloud_audit = CloudAuditStore(content_service.repository)
 
     def recover_interrupted(self) -> int:
         if self.content_service.active_activities():
@@ -129,6 +136,49 @@ class NormalizationService:
             raise NormalizationError(f"Файл исходных сегментов не найден: {path}")
         return self.load_source_segments(path), path.name
 
+    def cloud_processing_request(
+        self,
+        lesson_id: str,
+        *,
+        model: str | None = None,
+        source_segments: list[SourceSegment] | None = None,
+    ) -> CloudProcessingRequest:
+        if self.config.provider != "yandex_ai_studio":
+            raise NormalizationError("Cloud consent требуется только для Yandex AI Studio")
+        lesson = self.content_service.repository.get_lesson(lesson_id)
+        if lesson is None:
+            raise ContentNotFoundError(f"Занятие не найдено: {lesson_id}")
+        subject_profile = resolve_subject_profile(lesson.subject)
+        selected_model = model or self.config.effective_model
+        if source_segments is None:
+            source_segments, _artifact = self.lesson_source_segments(lesson_id)
+        else:
+            source_segments = sort_segments(source_segments)
+        source_hash = source_sha256(source_segments)
+        config_hash = configuration_hash(
+            self._configuration_payload(
+                selected_model,
+                lesson_subject=lesson.subject,
+                subject_profile=subject_profile,
+            )
+        )
+        chunks = chunk_segments(
+            source_segments,
+            max_segments=self.config.max_segments_per_chunk,
+            max_characters=self.config.max_input_characters,
+            overlap_segments=self.config.context_overlap_segments,
+        )
+        return CloudProcessingRequest(
+            model=selected_model,
+            source_sha256=source_hash,
+            configuration_hash=config_hash,
+            prompt_version=subject_profile.prompt_version,
+            subject_profile=subject_profile.name.value,
+            segment_count=len(source_segments),
+            character_count=sum(len(item.text) for item in source_segments),
+            chunk_count=len(chunks),
+        )
+
     def _configuration_payload(
         self,
         model: str,
@@ -157,6 +207,7 @@ class NormalizationService:
         cancellation: CancellationToken | None = None,
         progress: ProgressCallback | None = None,
         retry_indeterminate: bool = False,
+        cloud_consent: CloudConsentReceipt | None = None,
     ) -> NormalizationExecution:
         del include_removed_text
         if not self.config.enabled and not dry_run:
@@ -180,6 +231,7 @@ class NormalizationService:
                 cancellation=cancellation,
                 progress=progress,
                 retry_indeterminate=retry_indeterminate,
+                cloud_consent=cloud_consent,
             )
 
     def _normalize_locked(
@@ -195,6 +247,7 @@ class NormalizationService:
         cancellation: CancellationToken,
         progress: ProgressCallback | None,
         retry_indeterminate: bool,
+        cloud_consent: CloudConsentReceipt | None,
     ) -> NormalizationExecution:
         lesson = self.content_service.repository.get_lesson(lesson_id)
         if lesson is None:
@@ -256,13 +309,39 @@ class NormalizationService:
         started = perf_counter()
         try:
             cancellation.raise_if_cancelled()
-            provider.check_available(model)
             chunks = chunk_segments(
                 source_segments,
                 max_segments=self.config.max_segments_per_chunk,
                 max_characters=self.config.max_input_characters,
                 overlap_segments=self.config.context_overlap_segments,
             )
+            consent_id: str | None = None
+            if self.config.provider == "yandex_ai_studio":
+                request = CloudProcessingRequest(
+                    model=model,
+                    source_sha256=source_hash,
+                    configuration_hash=config_hash,
+                    prompt_version=prompt_version,
+                    subject_profile=subject_profile.name.value,
+                    segment_count=len(source_segments),
+                    character_count=sum(len(item.text) for item in source_segments),
+                    chunk_count=len(chunks),
+                )
+                try:
+                    validate_cloud_consent(
+                        request,
+                        cloud_consent,
+                        policy=self.config.effective_cloud_policy,
+                    )
+                except PermissionError as exc:
+                    raise CloudProcessingConsentRequiredError(str(exc)) from None
+                consent_id = self.cloud_audit.record_consent(
+                    cloud_consent,
+                    request,
+                    lesson_id=lesson_id,
+                    run_id=run.id if run else None,
+                )
+            provider.check_available(model)
             (
                 normalized_chunks,
                 validation,
@@ -273,6 +352,7 @@ class NormalizationService:
                 lesson_id,
                 chunks,
                 provider,
+                model,
                 run,
                 cancellation,
                 lesson_subject=lesson.subject,
@@ -280,6 +360,7 @@ class NormalizationService:
                 configuration_hash=config_hash,
                 progress=progress,
                 retry_indeterminate=retry_indeterminate,
+                consent_id=consent_id,
             )
             educational_text = "\n".join(part for part in normalized_chunks if part).strip()
             transcript = self._build_result(
@@ -430,6 +511,7 @@ class NormalizationService:
         lesson_id: str,
         chunks,
         provider: NormalizationProvider,
+        model: str,
         run: NormalizationRun | None,
         cancellation: CancellationToken,
         *,
@@ -438,6 +520,7 @@ class NormalizationService:
         configuration_hash: str,
         progress: ProgressCallback | None,
         retry_indeterminate: bool,
+        consent_id: str | None,
     ) -> tuple[list[str], ValidationState, int, int, int]:
         normalized_chunks: list[str] = []
         state = ValidationState()
@@ -471,6 +554,14 @@ class NormalizationService:
                     )
                     raise NormalizationResumeConfirmationRequired(run.id or 0, indeterminate)
                 for chunk_index in indeterminate:
+                    if consent_id and retry_indeterminate:
+                        self.cloud_audit.record_retry_confirmation(
+                            consent_id=consent_id,
+                            run_id=run.id,
+                            chunk_index=chunk_index,
+                            provider=self.config.provider,
+                            model=model,
+                        )
                     self.checkpoints.reset_indeterminate(run.id or 0, chunk_index)
                     checkpoint = self.checkpoints.get(run.id or 0, chunk_index)
                     if checkpoint is not None:
@@ -549,12 +640,32 @@ class NormalizationService:
                     total_chunks,
                     attempt + 1,
                 )
+                audit_event_id: str | None = None
+                if consent_id:
+                    request_fingerprint = hashlib.sha256(
+                        f"{consent_id}:{run.id if run else 'dry-run'}:"
+                        f"{chunk.index}:{attempt + 1}".encode("utf-8")
+                    ).hexdigest()
+                    audit_event_id = self.cloud_audit.request_started(
+                        consent_id=consent_id,
+                        run_id=run.id if run else None,
+                        chunk_index=chunk.index,
+                        provider=self.config.provider,
+                        model=model,
+                        request_fingerprint=request_fingerprint,
+                    )
                 try:
                     response = provider.normalize_chunk(
                         request,
                         validation_errors=validation_errors,
                         cancellation=cancellation,
                     )
+                    if audit_event_id:
+                        self.cloud_audit.finish_request(
+                            audit_event_id,
+                            event="request_completed",
+                            response_sha256=hashlib.sha256(response.encode("utf-8")).hexdigest(),
+                        )
                     candidate_state = ValidationState()
                     normalized = validate_plain_text_response(
                         chunk.segments,
@@ -597,10 +708,22 @@ class NormalizationService:
                     )
                     break
                 except NormalizationCancelledError:
+                    if audit_event_id:
+                        self.cloud_audit.finish_request(
+                            audit_event_id,
+                            event="request_indeterminate",
+                            error_code="NormalizationCancelledError",
+                        )
                     if run is not None:
                         self.checkpoints.reset_pending(run.id or 0, chunk.index)
                     raise
                 except RETRYABLE_OUTPUT_ERRORS as exc:
+                    if audit_event_id:
+                        self.cloud_audit.finish_request(
+                            audit_event_id,
+                            event="request_failed",
+                            error_code=type(exc).__name__,
+                        )
                     if run is not None:
                         self.checkpoints.fail(
                             run.id or 0,
@@ -621,6 +744,16 @@ class NormalizationService:
                     if self.config.retry_backoff_seconds:
                         sleep(self.config.retry_backoff_seconds)
                 except Exception as exc:
+                    if audit_event_id:
+                        self.cloud_audit.finish_request(
+                            audit_event_id,
+                            event=(
+                                "request_indeterminate"
+                                if self.config.provider == "yandex_ai_studio"
+                                else "request_failed"
+                            ),
+                            error_code=type(exc).__name__,
+                        )
                     if run is not None:
                         error = f"{type(exc).__name__}: {exc}"
                         if self.config.provider == "yandex_ai_studio":

@@ -68,3 +68,7 @@ class NormalizationResumeConfirmationRequired(NormalizationError):
             "Предыдущий облачный запрос был прерван в неопределённом состоянии. "
             f"Повторная отправка блоков {numbers} может привести к повторному списанию."
         )
+
+
+class CloudProcessingConsentRequiredError(NormalizationError):
+    pass

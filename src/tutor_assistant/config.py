@@ -125,6 +125,10 @@ class NormalizationConfig(BaseModel):
     allow_remote_endpoint: bool = False
     model: str = "qwen3:8b"
     allow_cloud_processing: bool = False
+    cloud_policy: Literal["disabled", "ask_every_time", "allow_for_session"] = "ask_every_time"
+    credential_source: Literal["auto", "environment", "system_store"] = "auto"
+    cloud_trust_env: bool = False
+    cloud_max_response_bytes: int = Field(default=1_000_000, ge=1024, le=10_000_000)
     yandex_base_url: str = "https://ai.api.cloud.yandex.net/v1"
     yandex_folder_id: str | None = None
     yandex_api_key_env: str = "YANDEX_AI_STUDIO_API_KEY"
@@ -201,8 +205,11 @@ class NormalizationConfig(BaseModel):
                 "normalization.yandex_base_url должен быть официальным https://ai.api.cloud.yandex.net/v1"
             )
         if self.provider == "yandex_ai_studio":
-            if not self.allow_cloud_processing:
-                raise ValueError("Для Yandex AI Studio явно включите normalization.allow_cloud_processing")
+            if self.effective_cloud_policy == "disabled":
+                raise ValueError(
+                    "Для Yandex AI Studio явно включите allow_cloud_processing "
+                    "и cloud_policy, отличный от disabled"
+                )
             if not (self.yandex_folder_id or "").strip():
                 raise ValueError("Для Yandex AI Studio укажите normalization.yandex_folder_id")
         if self.context_overlap_segments >= self.max_segments_per_chunk:
@@ -212,6 +219,12 @@ class NormalizationConfig(BaseModel):
     @property
     def effective_model(self) -> str:
         return self.yandex_model if self.provider == "yandex_ai_studio" else self.model
+
+    @property
+    def effective_cloud_policy(self) -> str:
+        if not self.allow_cloud_processing or self.cloud_policy == "disabled":
+            return "disabled"
+        return self.cloud_policy
 
 
 class AppConfig(BaseModel):

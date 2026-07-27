@@ -15,6 +15,7 @@ def test_resumable_normalization_migration_is_idempotent(tmp_path) -> None:
 
     versions = {int(row[0]) for row in db.execute("SELECT version FROM schema_migrations")}
     assert 9 in versions
+    assert 10 in versions
     columns = {str(row[1]) for row in db.execute("PRAGMA table_info(normalization_runs)")}
     assert {"provider", "resume_count", "last_resumed_at"} <= columns
     chunk_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(normalization_chunks)")}

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from ..config import NormalizationConfig
+from ..security.credentials import credential_status
 
 PROVIDER_LABELS = {
     "ollama": "Локальная LLM (Ollama)",
@@ -42,6 +41,8 @@ def select_provider_config(
         payload["allow_cloud_processing"] = (
             current.allow_cloud_processing if allow_cloud_processing is None else allow_cloud_processing
         )
+        if payload["allow_cloud_processing"] and payload.get("cloud_policy") == "disabled":
+            payload["cloud_policy"] = "ask_every_time"
         selected_folder = folder_id if folder_id is not None else current.yandex_folder_id
         payload["yandex_folder_id"] = (selected_folder or "").strip() or None
     return NormalizationConfig.model_validate(payload)
@@ -69,14 +70,15 @@ def with_provider_model(
 def provider_configuration_error(config: NormalizationConfig) -> str | None:
     if config.provider != "yandex_ai_studio":
         return None
-    if not config.allow_cloud_processing:
-        return "Передача транскрипта в Yandex AI Studio не разрешена"
+    if config.effective_cloud_policy == "disabled":
+        return "Передача транскрипта в Yandex AI Studio отключена"
     if not (config.yandex_folder_id or "").strip():
         return "Не указан Yandex Cloud folder ID"
-    if not os.getenv(config.yandex_api_key_env, "").strip():
+    status = credential_status(config)
+    if not status.configured:
         return (
-            f"Не задана переменная окружения {config.yandex_api_key_env}. "
-            "API-ключ не сохраняется в конфигурации приложения."
+            f"{status.detail}. API-ключ не сохраняется в YAML приложения; "
+            f"совместимая переменная окружения: {config.yandex_api_key_env}."
         )
     return None
 
@@ -85,6 +87,9 @@ def provider_hint(config: NormalizationConfig) -> str:
     if config.provider == "ollama":
         return "Локальная обработка: текст занятия не отправляется в облако."
     folder = (config.yandex_folder_id or "не указан").strip()
-    key_ready = bool(os.getenv(config.yandex_api_key_env, "").strip())
-    key_state = "ключ найден" if key_ready else f"задайте {config.yandex_api_key_env}"
-    return f"Облачная обработка · folder: {folder} · {key_state}."
+    status = credential_status(config)
+    key_state = "ключ найден" if status.configured else f"задайте ключ: {status.detail}"
+    return (
+        f"Облачная обработка · folder: {folder} · {key_state} · "
+        f"политика: {config.effective_cloud_policy}."
+    )
