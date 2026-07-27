@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   apply:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -23,6 +24,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Keep bootstrap workflow outside product commit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/apply_content_filter_hardening.py')
+          text = path.read_text(encoding='utf-8')
+          cleanup = '(ROOT / ".github/workflows/bootstrap-content-filter-hardening.yml").unlink(missing_ok=True)\n'
+          if cleanup not in text:
+              raise SystemExit('workflow cleanup fragment not found')
+          path.write_text(text.replace(cleanup, ''), encoding='utf-8')
+          PY
       - name: Apply product changes
         run: python scripts/apply_content_filter_hardening.py
       - name: Commit generated changes
