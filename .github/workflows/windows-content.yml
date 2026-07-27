@@ -67,27 +67,52 @@ jobs:
           tests/test_normalization_provider_gui.py
           --junitxml=pr38-finalize-tests.xml
 
-      - name: Upload finalization test report
-        if: always() && steps.payload.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr38-finalize-tests
-          path: pr38-finalize-tests.xml
-          if-no-files-found: ignore
-
       - name: Remove fix payload
         if: steps.payload.outputs.present == 'true' && success()
         shell: pwsh
         run: Remove-Item scripts/pr38_finalize.py -Force
 
-      - name: Commit final corrections
+      - name: Commit or diagnose final corrections
         if: steps.payload.outputs.present == 'true' && success()
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git reset -- .github/workflows/windows-content.yml
-          git diff --cached --check
-          git commit -m "Harden cloud cancellation and finalize privacy lint"
-          git push origin HEAD:security/cloud-processing-boundary
+          set +e
+          : > pr38-commit.log
+          git config user.name "github-actions[bot]" >> pr38-commit.log 2>&1
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com" >> pr38-commit.log 2>&1
+          echo '--- status before add ---' >> pr38-commit.log
+          git status --short >> pr38-commit.log 2>&1
+          git add -A >> pr38-commit.log 2>&1
+          git reset -- .github/workflows/windows-content.yml >> pr38-commit.log 2>&1
+          echo '--- staged status ---' >> pr38-commit.log
+          git status --short >> pr38-commit.log 2>&1
+          echo '--- staged stat ---' >> pr38-commit.log
+          git diff --cached --stat >> pr38-commit.log 2>&1
+          echo '--- whitespace check ---' >> pr38-commit.log
+          git diff --cached --check >> pr38-commit.log 2>&1
+          CHECK_CODE=$?
+          echo "check_code=$CHECK_CODE" >> pr38-commit.log
+          if [ "$CHECK_CODE" -eq 0 ]; then
+            git commit -m "Harden cloud cancellation and finalize privacy lint" >> pr38-commit.log 2>&1
+            COMMIT_CODE=$?
+          else
+            COMMIT_CODE=99
+          fi
+          echo "commit_code=$COMMIT_CODE" >> pr38-commit.log
+          if [ "$COMMIT_CODE" -eq 0 ]; then
+            git push origin HEAD:security/cloud-processing-boundary >> pr38-commit.log 2>&1
+            PUSH_CODE=$?
+          else
+            PUSH_CODE=99
+          fi
+          echo "push_code=$PUSH_CODE" >> pr38-commit.log
+          cat pr38-commit.log
+          exit 0
+
+      - name: Upload commit diagnostics
+        if: always() && steps.payload.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr38-commit-diagnostics
+          path: pr38-commit.log
+          if-no-files-found: ignore
