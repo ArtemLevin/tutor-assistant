@@ -3,9 +3,7 @@ name: Windows student content
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - agent/subject-aware-content-filtering
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -13,7 +11,7 @@ permissions:
 
 jobs:
   bootstrap-pr32:
-    if: github.event_name == 'push' && github.ref_name == 'agent/subject-aware-content-filtering' && github.actor != 'github-actions[bot]'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'agent/subject-aware-content-filtering' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -45,7 +43,7 @@ jobs:
           git push origin HEAD:agent/subject-aware-content-filtering
 
   content:
-    if: github.ref_name != 'agent/subject-aware-content-filtering'
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref != 'agent/subject-aware-content-filtering'
     runs-on: windows-latest
     timeout-minutes: 45
     continue-on-error: ${{ matrix.python-version == '3.14' }}
