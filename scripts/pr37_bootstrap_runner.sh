@@ -33,6 +33,16 @@ echo 'ecb5540213aa15a27172342658d567cbdab9769f0e672f3c26e168cdce57a80b  scripts/
 
 echo '== apply =='
 python scripts/pr37_bootstrap.py
+python - <<'PY'
+from pathlib import Path
+path = Path('src/tutor_assistant/ui/app.py')
+text = path.read_text(encoding='utf-8')
+old = 'str(error) + "\n\nПовторить только неопределённые блоки?"'
+new = 'str(error) + "\\n\\nПовторить только неопределённые блоки?"'
+if old not in text:
+    raise SystemExit('Generated Yandex confirmation marker not found')
+path.write_text(text.replace(old, new, 1), encoding='utf-8')
+PY
 
 echo '== lock =='
 python -m pip install --quiet uv
