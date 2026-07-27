@@ -244,6 +244,18 @@ class NormalizationCheckpointStore:
                 (self._now(), run_id, chunk_index),
             )
 
+    def mark_indeterminate(self, run_id: int, chunk_index: int, error: str) -> None:
+        now = self._now()
+        with self.repository.connect() as db:
+            db.execute(
+                """
+                UPDATE normalization_chunks
+                SET status='indeterminate', error=?, updated_at=?
+                WHERE run_id=? AND chunk_index=?
+                """,
+                (error[-2000:], now, run_id, chunk_index),
+            )
+
     def recover_interrupted(self) -> int:
         with self.repository.connect() as db:
             cursor = db.execute(

@@ -622,11 +622,23 @@ class NormalizationService:
                         sleep(self.config.retry_backoff_seconds)
                 except Exception as exc:
                     if run is not None:
-                        self.checkpoints.fail(
-                            run.id or 0,
-                            chunk.index,
-                            f"{type(exc).__name__}: {exc}",
-                        )
+                        error = f"{type(exc).__name__}: {exc}"
+                        if self.config.provider == "yandex_ai_studio":
+                            self.checkpoints.mark_indeterminate(
+                                run.id or 0,
+                                chunk.index,
+                                error,
+                            )
+                            logging.warning(
+                                "event=content_filter_chunk_indeterminate lesson_id=%s "
+                                "run_id=%s chunk_index=%d error_code=%s",
+                                lesson_id,
+                                run.id,
+                                chunk.index,
+                                type(exc).__name__,
+                            )
+                        else:
+                            self.checkpoints.fail(run.id or 0, chunk.index, error)
                     raise
             else:
                 raise InvalidPlainTextOutputError("Не удалось проверить plain-text ответ блока")

@@ -13,8 +13,13 @@ from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.normalization.errors import (
     NormalizationResumeConfirmationRequired,
     OllamaTimeoutError,
+    YandexAIStudioUnavailableError,
 )
-from tutor_assistant.normalization.models import NormalizationRunStatus, SourceSegment
+from tutor_assistant.normalization.models import (
+    NormalizationChunkStatus,
+    NormalizationRunStatus,
+    SourceSegment,
+)
 from tutor_assistant.normalization.protocol import CancellationToken, FakeNormalizationProvider
 from tutor_assistant.normalization.service import NormalizationService
 
@@ -160,4 +165,67 @@ def test_yandex_indeterminate_requires_explicit_confirmation(tmp_path: Path) -> 
         source_segments=segments,
         retry_indeterminate=True,
     )
+    assert result.transcript.statistics.provider_requests == 1
+
+
+def test_completed_chunks_finalize_without_provider_replay(tmp_path: Path, monkeypatch) -> None:
+    import tutor_assistant.normalization.service as service_module
+
+    provider = FakeNormalizationProvider(
+        default=lambda request: f"[П] {request.segments[0].text}"
+    )
+    service, _content, lesson = _setup(tmp_path, provider)
+    original_write = service_module.write_text_atomic
+    writes = 0
+
+    def fail_once(path, text):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("synthetic finalization failure")
+        return original_write(path, text)
+
+    monkeypatch.setattr(service_module, "write_text_atomic", fail_once)
+    with pytest.raises(OSError, match="synthetic finalization failure"):
+        service.normalize_lesson(lesson.lesson_id, source_segments=_segments())
+
+    provider_requests = len(provider.requests)
+    result = service.normalize_lesson(lesson.lesson_id, source_segments=_segments())
+
+    assert len(provider.requests) == provider_requests
+    assert result.transcript.statistics.reused_chunks == 3
+    assert result.transcript.statistics.provider_requests == 0
+
+
+def test_yandex_runtime_failure_requires_confirmation_before_retry(tmp_path: Path) -> None:
+    provider = FakeNormalizationProvider(
+        responses=[YandexAIStudioUnavailableError("synthetic transport failure")]
+    )
+    service, _content, lesson = _setup(
+        tmp_path,
+        provider,
+        provider_name="yandex_ai_studio",
+    )
+    segments = _segments(1)
+
+    with pytest.raises(YandexAIStudioUnavailableError):
+        service.normalize_lesson(lesson.lesson_id, source_segments=segments)
+
+    run = service.runs.latest(lesson.lesson_id)
+    assert run is not None
+    checkpoint = service.checkpoints.get(run.id or 0, 0)
+    assert checkpoint is not None
+    assert checkpoint.status == NormalizationChunkStatus.INDETERMINATE
+    request_count = len(provider.requests)
+
+    with pytest.raises(NormalizationResumeConfirmationRequired):
+        service.normalize_lesson(lesson.lesson_id, source_segments=segments)
+    assert len(provider.requests) == request_count
+
+    result = service.normalize_lesson(
+        lesson.lesson_id,
+        source_segments=segments,
+        retry_indeterminate=True,
+    )
+    assert len(provider.requests) == request_count + 1
     assert result.transcript.statistics.provider_requests == 1
