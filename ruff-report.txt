@@ -1,0 +1,660 @@
+Downloading ruff (10.9MiB)
+ Downloaded ruff
+Installed 1 package in 2ms
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/normalization/prompts.py:56:12
+   |
+55 | def render_target_text(segments: list[SourceSegment] | tuple[SourceSegment, ...]) -> str:
+56 |     return "
+   |            ^
+57 | ".join(
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+   |
+
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/normalization/prompts.py:57:1
+   |
+55 | def render_target_text(segments: list[SourceSegment] | tuple[SourceSegment, ...]) -> str:
+56 |     return "
+57 | ".join(
+   | ^^^^^^^
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+59 |         for segment in segments
+   |
+
+invalid-syntax: Unexpected indentation
+  --> src/tutor_assistant/normalization/prompts.py:58:1
+   |
+56 |     return "
+57 | ".join(
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+   | ^^^^^^^^
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+   |
+
+invalid-syntax: Expected `:`, found newline
+  --> src/tutor_assistant/normalization/prompts.py:59:32
+   |
+57 | ".join(
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+59 |         for segment in segments
+   |                                ^
+60 |         if not segment.context_only and segment.text.strip()
+61 |     )
+   |
+
+invalid-syntax: Expected an indented block after `for` statement
+  --> src/tutor_assistant/normalization/prompts.py:60:9
+   |
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+   |         ^^
+61 |     )
+   |
+
+invalid-syntax: Expected `:`, found newline
+  --> src/tutor_assistant/normalization/prompts.py:60:61
+   |
+58 |         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+   |                                                             ^
+61 |     )
+   |
+
+invalid-syntax: unindent does not match any outer indentation level
+  --> src/tutor_assistant/normalization/prompts.py:61:1
+   |
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+61 |     )
+   | ^^^^
+   |
+
+invalid-syntax: Expected a statement
+  --> src/tutor_assistant/normalization/prompts.py:61:5
+   |
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+61 |     )
+   |     ^
+   |
+
+invalid-syntax: Expected a statement
+  --> src/tutor_assistant/normalization/prompts.py:61:6
+   |
+59 |         for segment in segments
+60 |         if not segment.context_only and segment.text.strip()
+61 |     )
+   |      ^
+   |
+
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/normalization/prompts.py:81:12
+   |
+79 |         speaker = segment.speaker or "—"
+80 |         lines.append(f"{kind} id={segment.source_segment_id} speaker={speaker}: {segment.text.strip()}")
+81 |     return "
+   |            ^
+82 | ".join(lines)
+   |
+
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/normalization/prompts.py:82:1
+   |
+80 |         lines.append(f"{kind} id={segment.source_segment_id} speaker={speaker}: {segment.text.strip()}")
+81 |     return "
+82 | ".join(lines)
+   | ^^^^^^^^^^^^^
+   |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/normalization/yandex_client.py:114:16
+    |
+112 |         if not parts:
+113 |             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
+114 |         return "
+    |                ^
+115 | ".join(parts).strip()
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/normalization/yandex_client.py:115:1
+    |
+113 |             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
+114 |         return "
+115 | ".join(parts).strip()
+    | ^^^^^^^^^^^^^^^^^^^^^
+116 |
+117 |     def normalize_chunk(
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/normalization/yandex_client.py:117:1
+    |
+115 | ".join(parts).strip()
+116 |
+117 |     def normalize_chunk(
+    | ^^^^
+118 |         self,
+119 |         request: NormalizationChunkRequest,
+    |
+
+invalid-syntax: f-string: unterminated string
+   --> src/tutor_assistant/normalization/yandex_client.py:126:35
+    |
+124 |         if cancellation:
+125 |             cancellation.raise_if_cancelled()
+126 |         prompt = f"{SYSTEM_PROMPT}
+    |                                   ^
+127 |
+128 | {user_prompt(request, validation_errors=validation_errors)}"
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/normalization/yandex_client.py:128:1
+    |
+126 |         prompt = f"{SYSTEM_PROMPT}
+127 |
+128 | {user_prompt(request, validation_errors=validation_errors)}"
+    | ^
+129 |         response = self._request(
+130 |             {
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/normalization/yandex_client.py:128:60
+    |
+126 |         prompt = f"{SYSTEM_PROMPT}
+127 |
+128 | {user_prompt(request, validation_errors=validation_errors)}"
+    |                                                            ^
+129 |         response = self._request(
+130 |             {
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/normalization/yandex_client.py:129:1
+    |
+128 | {user_prompt(request, validation_errors=validation_errors)}"
+129 |         response = self._request(
+    | ^^^^^^^^
+130 |             {
+131 |                 "model": self.model_uri,
+    |
+
+invalid-syntax: unindent does not match any outer indentation level
+   --> src/tutor_assistant/normalization/yandex_client.py:148:1
+    |
+146 |         return self._response_text(payload)
+147 |
+148 |     def diagnose(self) -> NormalizationDiagnostics:
+    | ^^^^
+149 |         diagnostics = NormalizationDiagnostics(
+150 |             provider="yandex_ai_studio",
+    |
+
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/ui/normalization.py:78:16
+   |
+76 |         editor = QPlainTextEdit()
+77 |         editor.setReadOnly(True)
+78 |         diff = "
+   |                ^
+79 | ".join(
+80 |             unified_diff(
+   |
+
+invalid-syntax: missing closing quote in string literal
+  --> src/tutor_assistant/ui/normalization.py:79:1
+   |
+77 |         editor.setReadOnly(True)
+78 |         diff = "
+79 | ".join(
+   | ^^^^^^^
+80 |             unified_diff(
+81 |                 self.source_text.splitlines(),
+   |
+
+invalid-syntax: Unexpected indentation
+  --> src/tutor_assistant/ui/normalization.py:80:1
+   |
+78 |         diff = "
+79 | ".join(
+80 |             unified_diff(
+   | ^^^^^^^^^^^^
+81 |                 self.source_text.splitlines(),
+82 |                 self.transcript.educational_text.splitlines(),
+   |
+
+invalid-syntax: unindent does not match any outer indentation level
+  --> src/tutor_assistant/ui/normalization.py:87:1
+   |
+85 |                 lineterm="",
+86 |             )
+87 |         )
+   | ^^^^^^^^
+88 |         editor.setPlainText(diff or "Изменений нет")
+89 |         layout.addWidget(editor)
+   |
+
+invalid-syntax: Expected a statement
+  --> src/tutor_assistant/ui/normalization.py:87:9
+   |
+85 |                 lineterm="",
+86 |             )
+87 |         )
+   |         ^
+88 |         editor.setPlainText(diff or "Изменений нет")
+89 |         layout.addWidget(editor)
+   |
+
+invalid-syntax: Expected a statement
+  --> src/tutor_assistant/ui/normalization.py:87:10
+   |
+85 |                 lineterm="",
+86 |             )
+87 |         )
+   |          ^
+88 |         editor.setPlainText(diff or "Изменений нет")
+89 |         layout.addWidget(editor)
+   |
+
+invalid-syntax: Unexpected indentation
+  --> src/tutor_assistant/ui/normalization.py:88:1
+   |
+86 |             )
+87 |         )
+88 |         editor.setPlainText(diff or "Изменений нет")
+   | ^^^^^^^^
+89 |         layout.addWidget(editor)
+90 |         return page
+   |
+
+invalid-syntax: unindent does not match any outer indentation level
+  --> src/tutor_assistant/ui/normalization.py:92:1
+   |
+90 |         return page
+91 |
+92 |     def _source_tab(self) -> QWidget:
+   | ^^^^
+93 |         page, layout = self._page()
+94 |         editor = QPlainTextEdit()
+   |
+
+invalid-syntax: unindent does not match any outer indentation level
+   --> src/tutor_assistant/ui/normalization.py:100:1
+    |
+ 98 |         return page
+ 99 |
+100 |     def _filtered_tab(self) -> QWidget:
+    | ^^^^
+101 |         page, layout = self._page()
+102 |         hint = QLabel(
+    |
+
+invalid-syntax: unindent does not match any outer indentation level
+   --> src/tutor_assistant/ui/normalization.py:113:1
+    |
+111 |         return page
+112 |
+113 |     def _warnings_tab(self) -> QWidget:
+    | ^^^^
+114 |         page, layout = self._page()
+115 |         quality = self.transcript.quality
+    |
+
+invalid-syntax: f-string: unterminated string
+   --> src/tutor_assistant/ui/normalization.py:120:76
+    |
+118 |         box_layout.addWidget(
+119 |             QLabel(
+120 |                 f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
+    |                                                                            ^
+121 | "
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:121:1
+    |
+119 |             QLabel(
+120 |                 f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
+121 | "
+    | ^
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+123 | "
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:121:1
+    |
+119 |             QLabel(
+120 |                 f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
+121 | "
+    | ^
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+123 | "
+    |
+
+invalid-syntax: f-string: unterminated string
+   --> src/tutor_assistant/ui/normalization.py:122:97
+    |
+120 |                 f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
+121 | "
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+    |                                                                                                 ^
+123 | "
+124 |                 f"Формульные токены сохранены: "
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:123:1
+    |
+121 | "
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+123 | "
+    | ^
+124 |                 f"Формульные токены сохранены: "
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:123:1
+    |
+121 | "
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+123 | "
+    | ^
+124 |                 f"Формульные токены сохранены: "
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/ui/normalization.py:124:1
+    |
+122 |                 f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+123 | "
+124 |                 f"Формульные токены сохранены: "
+    | ^^^^^^^^^^^^^^^^
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+126 | "
+    |
+
+invalid-syntax: f-string: unterminated string
+   --> src/tutor_assistant/ui/normalization.py:125:87
+    |
+123 | "
+124 |                 f"Формульные токены сохранены: "
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+    |                                                                                       ^
+126 | "
+127 |                 f"Защищённое содержание сохранено: "
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:126:1
+    |
+124 |                 f"Формульные токены сохранены: "
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+126 | "
+    | ^
+127 |                 f"Защищённое содержание сохранено: "
+128 |                 f"{'да' if quality.protected_content_preserved else 'нет'}
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/ui/normalization.py:127:1
+    |
+125 |                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+126 | "
+127 |                 f"Защищённое содержание сохранено: "
+    | ^^^^^^^^^^^^^^^^
+128 |                 f"{'да' if quality.protected_content_preserved else 'нет'}
+129 | "
+    |
+
+invalid-syntax: f-string: unterminated string
+   --> src/tutor_assistant/ui/normalization.py:128:75
+    |
+126 | "
+127 |                 f"Защищённое содержание сохранено: "
+128 |                 f"{'да' if quality.protected_content_preserved else 'нет'}
+    |                                                                           ^
+129 | "
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:129:1
+    |
+127 |                 f"Защищённое содержание сохранено: "
+128 |                 f"{'да' if quality.protected_content_preserved else 'нет'}
+129 | "
+    | ^
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/ui/normalization.py:130:1
+    |
+128 |                 f"{'да' if quality.protected_content_preserved else 'нет'}
+129 | "
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+    | ^^^^^^^^^^^^^^^^
+131 |             )
+132 |         )
+    |
+
+invalid-syntax: unindent does not match any outer indentation level
+   --> src/tutor_assistant/ui/normalization.py:131:1
+    |
+129 | "
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+    | ^^^^^^^^^^^^
+132 |         )
+133 |         layout.addWidget(box)
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/ui/normalization.py:131:13
+    |
+129 | "
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+    |             ^
+132 |         )
+133 |         layout.addWidget(box)
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/ui/normalization.py:131:14
+    |
+129 | "
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+    |              ^
+132 |         )
+133 |         layout.addWidget(box)
+    |
+
+invalid-syntax: Unexpected indentation
+   --> src/tutor_assistant/ui/normalization.py:132:1
+    |
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+132 |         )
+    | ^^^^^^^^
+133 |         layout.addWidget(box)
+134 |         warnings = QPlainTextEdit()
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/ui/normalization.py:132:9
+    |
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+132 |         )
+    |         ^
+133 |         layout.addWidget(box)
+134 |         warnings = QPlainTextEdit()
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/ui/normalization.py:132:10
+    |
+130 |                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
+131 |             )
+132 |         )
+    |          ^
+133 |         layout.addWidget(box)
+134 |         warnings = QPlainTextEdit()
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:136:31
+    |
+134 |         warnings = QPlainTextEdit()
+135 |         warnings.setReadOnly(True)
+136 |         warnings.setPlainText("
+    |                               ^
+137 | ".join(quality.warnings) or "Предупреждений нет")
+138 |         layout.addWidget(warnings)
+    |
+
+invalid-syntax: Expected `,`, found name
+   --> src/tutor_assistant/ui/normalization.py:137:30
+    |
+135 |         warnings.setReadOnly(True)
+136 |         warnings.setPlainText("
+137 | ".join(quality.warnings) or "Предупреждений нет")
+    |                              ^^^^^^^^^^^^^^
+138 |         layout.addWidget(warnings)
+139 |         return page
+    |
+
+invalid-syntax: Expected `,`, found name
+   --> src/tutor_assistant/ui/normalization.py:137:45
+    |
+135 |         warnings.setReadOnly(True)
+136 |         warnings.setPlainText("
+137 | ".join(quality.warnings) or "Предупреждений нет")
+    |                                             ^^^
+138 |         layout.addWidget(warnings)
+139 |         return page
+    |
+
+invalid-syntax: missing closing quote in string literal
+   --> src/tutor_assistant/ui/normalization.py:137:48
+    |
+135 |         warnings.setReadOnly(True)
+136 |         warnings.setPlainText("
+137 | ".join(quality.warnings) or "Предупреждений нет")
+    |                                                ^^
+138 |         layout.addWidget(warnings)
+139 |         return page
+    |
+
+invalid-syntax: Expected `,`, found name
+   --> src/tutor_assistant/ui/normalization.py:138:9
+    |
+136 |         warnings.setPlainText("
+137 | ".join(quality.warnings) or "Предупреждений нет")
+138 |         layout.addWidget(warnings)
+    |         ^^^^^^
+139 |         return page
+    |
+
+invalid-syntax: Expected `)`, found newline
+   --> src/tutor_assistant/ui/normalization.py:138:35
+    |
+136 |         warnings.setPlainText("
+137 | ".join(quality.warnings) or "Предупреждений нет")
+138 |         layout.addWidget(warnings)
+    |                                   ^
+139 |         return page
+    |
+
+invalid-syntax: unindent does not match any outer indentation level
+   --> src/tutor_assistant/ui/normalization.py:141:1
+    |
+139 |         return page
+140 |
+141 |     @property
+    | ^^^^
+142 |     def edited_text(self) -> str:
+143 |         return self.normalized_editor.toPlainText().strip()
+    |
+
+invalid-syntax: Expected class, function definition or async function definition after decorator
+   --> src/tutor_assistant/ui/normalization.py:142:1
+    |
+141 |     @property
+142 |     def edited_text(self) -> str:
+    | ^^^^
+143 |         return self.normalized_editor.toPlainText().strip()
+    |
+
+invalid-syntax: Expected a statement
+   --> src/tutor_assistant/ui/normalization.py:146:1
+    |
+146 | NormalizationReviewDialog = ContentFilterReviewDialog
+    | ^
+    |
+
+I001 [*] Import block is un-sorted or un-formatted
+ --> tests/test_normalization_ollama.py:1:1
+  |
+1 | / from __future__ import annotations
+2 | |
+3 | | from tutor_assistant.config import NormalizationConfig
+4 | | from tutor_assistant.normalization.models import NormalizationChunkRequest
+5 | | from tutor_assistant.normalization.ollama_client import OllamaClient
+6 | | from tutor_assistant.normalization.prompts import PROMPT_VERSION
+7 | | import tutor_assistant.normalization.ollama_client as ollama_module
+  | |___________________________________________________________________^
+  |
+help: Organize imports
+  |
+2 |
+3 + import tutor_assistant.normalization.ollama_client as ollama_module
+4 | from tutor_assistant.config import NormalizationConfig
+5 | from tutor_assistant.normalization.models import NormalizationChunkRequest
+6 | from tutor_assistant.normalization.ollama_client import OllamaClient
+7 | from tutor_assistant.normalization.prompts import PROMPT_VERSION
+  - import tutor_assistant.normalization.ollama_client as ollama_module
+8 |
+  |
+
+I001 [*] Import block is un-sorted or un-formatted
+  --> tests/test_normalization_yandex.py:1:1
+   |
+ 1 | / from __future__ import annotations
+ 2 | |
+ 3 | | import pytest
+ 4 | |
+ 5 | | from tutor_assistant.config import NormalizationConfig
+ 6 | | from tutor_assistant.normalization.errors import YandexAIStudioAuthenticationError
+ 7 | | from tutor_assistant.normalization.models import NormalizationChunkRequest
+ 8 | | from tutor_assistant.normalization.prompts import PROMPT_VERSION
+ 9 | | from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
+10 | | import tutor_assistant.normalization.yandex_client as yandex_module
+   | |___________________________________________________________________^
+   |
+help: Organize imports
+   |
+4  |
+5  + import tutor_assistant.normalization.yandex_client as yandex_module
+6  | from tutor_assistant.config import NormalizationConfig
+--------------------------------------------------------------------------------
+10 | from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
+   - import tutor_assistant.normalization.yandex_client as yandex_module
+11 |
+   |
+
+Found 59 errors.
+[*] 2 fixable with the `--fix` option.
