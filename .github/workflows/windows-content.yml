@@ -14,7 +14,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.head_ref == 'fix/restore-filtering-contracts'
     runs-on: ubuntu-latest
     outputs:
-      changed: ${{ steps.apply.outputs.changed }}
+      changed: ${{ steps.commit.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,19 +25,19 @@ jobs:
           python-version: '3.12'
       - name: Install uv
         run: python -m pip install uv
-      - name: Finalize PR 34 version and workflow
-        id: apply
+      - name: Apply PR 34 final files
+        shell: bash
+        run: python scripts/finalize_pr34.py
+      - name: Refresh lock file
+        shell: bash
+        run: uv lock
+      - name: Commit PR 34 finalization
+        id: commit
         shell: bash
         run: |
-          if [[ ! -f scripts/finalize_pr34.py ]]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          python scripts/finalize_pr34.py
-          uv lock
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md pyproject.toml uv.lock .github/workflows/windows-content.yml scripts/finalize_pr34.py
+          git add -A
           if git diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
