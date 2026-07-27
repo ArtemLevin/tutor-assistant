@@ -46,7 +46,7 @@ jobs:
             printf '\nexit_status=%s\n' "$status" >> bootstrap-error.txt
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add bootstrap-error.txt
+            git add -f bootstrap-error.txt
             git commit -m "Capture PR 37 bootstrap failure"
             git push origin HEAD:${{ github.head_ref || github.ref_name }}
             cat bootstrap-error.txt
