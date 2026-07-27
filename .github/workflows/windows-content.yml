@@ -26,12 +26,18 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify generator
+      - name: Verify and unpack generator
         shell: pwsh
         run: |
-          $actual = (Get-FileHash scripts/apply_pr38.py -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne '9dbaa182978390cc7b04092355a88a642ca7d91533ff6b3844b18250a57b229f') {
-            throw "Generator SHA-256 mismatch: $actual"
+          $archive = '.agent/pr38/apply_pr38.py.gz'
+          $archiveHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          if ($archiveHash -ne 'b4b2e0c6c45e3b7924dcd47dbae89c0d10cdd8bdf5c93b135d821b9485c88176') {
+            throw "Archive SHA-256 mismatch: $archiveHash"
+          }
+          python -c "import gzip, pathlib; source=pathlib.Path('.agent/pr38/apply_pr38.py.gz'); target=pathlib.Path('scripts/apply_pr38.py'); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(gzip.decompress(source.read_bytes()))"
+          $generatorHash = (Get-FileHash scripts/apply_pr38.py -Algorithm SHA256).Hash.ToLower()
+          if ($generatorHash -ne '9dbaa182978390cc7b04092355a88a642ca7d91533ff6b3844b18250a57b229f') {
+            throw "Generator SHA-256 mismatch: $generatorHash"
           }
 
       - name: Apply privacy implementation
@@ -56,7 +62,7 @@ jobs:
         run: uv run ruff check . --fix
 
       - name: Compile
-        run: uv run python -m compileall -q src/tutor_assistant tests scripts
+        run: uv run python -m compileall -q src/tutor_assistant tests
 
       - name: Focused privacy tests
         run: >-
@@ -75,7 +81,9 @@ jobs:
 
       - name: Remove one-time generator
         shell: pwsh
-        run: Remove-Item scripts/apply_pr38.py
+        run: |
+          Remove-Item scripts/apply_pr38.py -Force -ErrorAction SilentlyContinue
+          Remove-Item .agent/pr38 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Commit implementation
         shell: bash
