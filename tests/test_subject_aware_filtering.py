@@ -9,6 +9,7 @@ import pytest
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.content import StudentContentService
 from tutor_assistant.domain import JobStatus, Lesson, Student
+from tutor_assistant.normalization.artifacts import configuration_hash
 from tutor_assistant.normalization.errors import UnsafeNormalizationResultError
 from tutor_assistant.normalization.models import SourceSegment
 from tutor_assistant.normalization.prompts import system_prompt
@@ -37,6 +38,25 @@ from tutor_assistant.normalization.validation import ValidationState, validate_p
 )
 def test_subject_aliases_resolve_to_stable_profiles(subject: str, expected: SubjectProfileName) -> None:
     assert resolve_subject_profile(subject).name == expected
+
+
+def test_configuration_hash_distinguishes_raw_subject_labels(tmp_path: Path) -> None:
+    content = StudentContentService(tmp_path / "data")
+    service = NormalizationService(NormalizationConfig(), content)
+    profile = resolve_subject_profile("physics")
+
+    base = service._configuration_payload(
+        "qwen3:8b",
+        lesson_subject="physics",
+        subject_profile=profile,
+    )
+    exam = service._configuration_payload(
+        "qwen3:8b",
+        lesson_subject="ЕГЭ физика",
+        subject_profile=profile,
+    )
+
+    assert configuration_hash(base) != configuration_hash(exam)
 
 
 def test_subject_prompts_are_versioned_and_domain_specific() -> None:

@@ -125,10 +125,12 @@ class NormalizationService:
         self,
         model: str,
         *,
+        lesson_subject: str,
         subject_profile: SubjectProfile,
     ) -> dict[str, Any]:
         payload = self.config.model_dump(mode="json")
         payload["model"] = model
+        payload["lesson_subject"] = lesson_subject.strip()
         payload["subject_profile"] = subject_profile.name.value
         payload["prompt_version"] = subject_profile.prompt_version
         return payload
@@ -198,7 +200,13 @@ class NormalizationService:
             raise NormalizationError("Исходный транскрипт содержит повторяющиеся ID сегментов")
 
         source_hash = source_sha256(source_segments)
-        config_hash = configuration_hash(self._configuration_payload(model, subject_profile=subject_profile))
+        config_hash = configuration_hash(
+            self._configuration_payload(
+                model,
+                lesson_subject=lesson.subject,
+                subject_profile=subject_profile,
+            )
+        )
         run: NormalizationRun | None = None
         if not dry_run:
             run, created = self.runs.create_or_get(
