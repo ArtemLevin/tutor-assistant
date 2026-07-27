@@ -1,6 +1,6 @@
 # Tutor Assistant
 
-Текущая версия: **0.12.0**.
+Текущая версия: **0.13.0**.
 
 Десктоп-сервис для полного цикла подготовки материалов после занятия:
 
@@ -14,27 +14,25 @@
 
 Проект рассчитан на Windows, PowerShell и локальную обработку аудио. Аудиозаписи остаются на компьютере преподавателя. В репозиторий учеников передаются подтверждённый транскрипт и метаданные задания.
 
-## Нормализация транскрипта
+## LLM-фильтрация учебного содержания
 
-После Whisper транскрипт можно консервативно нормализовать локальной моделью
-Ollama или, при явном разрешении, через Yandex AI Studio. Модель возвращает
-обычный текст, который проверяется до создания новой ревизии:
+После Whisper транскрипт можно отфильтровать локальной моделью Ollama или, при
+явном разрешении, через Yandex AI Studio. Этап удаляет только очевидно неучебные
+фрагменты и не исправляет, не перефразирует и не дополняет речь участников.
 
 ```powershell
 ollama pull qwen3:8b
-uv run tutor-assistant normalization-doctor
-uv run tutor-assistant normalize <lesson-id>
+uv run tutor-assistant content-filter-doctor
+uv run tutor-assistant filter-transcript <lesson-id>
 ```
 
-Промпт защищает школьную математическую лексику: уравнения, неравенства,
-логарифмы, функции, производные, геометрию, вероятность и другие темы.
-Основной результат сохраняется в `transcript_normalized.txt`; технические
-метаданные и предупреждения остаются в отдельном manifest.
+Числа, формулы, вопросы и ошибки ученика, домашнее задание и термины школьной
+математики защищаются детерминированной проверкой. Результат всегда требует
+ручного применения. Архитектура и настройка описаны в
+[docs/educational-content-filter.md](docs/educational-content-filter.md).
 
-Архитектура, настройка, ручная проверка и отказоустойчивость описаны в
-[docs/transcript-normalization.md](docs/transcript-normalization.md). Benchmark
-для `qwen3:8b` и `qwen3:14b` — в
-[docs/transcript-normalization-benchmark.md](docs/transcript-normalization-benchmark.md).
+Старые команды `normalize` и `normalization-doctor`, а также внутреннее имя
+пакета `normalization` сохранены для обратной совместимости.
 
 ## Возможности MVP
 
@@ -224,12 +222,23 @@ uv run tutor-assistant normalize <lesson-id>
 - API-ключ Yandex только через переменную окружения и запрет произвольного endpoint;
 - обновлённые CLI, doctor, GUI-сравнение, fake provider и интеграционные тесты.
 
+## Что добавлено в 0.13.0
+
+- публичный этап переименован в LLM-фильтрацию учебного содержания;
+- режим закреплён как `filter_only`, автоматическое применение запрещено схемой;
+- добавлены основные CLI-команды `filter-transcript` и `content-filter-doctor`;
+- Ollama и Yandex используют отменяемый async HTTP transport;
+- GitHub CLI стал необязательным: visibility и draft PR доступны через REST API;
+- LaTeX-сканирование читает занятия через `StudentContentService`, а не legacy store;
+- конфигурация сохраняется общим Windows-safe atomic writer;
+- Windows CI запускается для PR и `main` на Python 3.11–3.14.
+
 ## Требования
 
 - Windows 10/11;
 - Python 3.11–3.14;
 - `uv`;
-- локальный Ollama и `qwen3:8b` — для локальной LLM-нормализации;
+- локальный Ollama и `qwen3:8b` — для локальной LLM-фильтрации;
 - либо учётная запись Yandex Cloud, folder ID и API-ключ — для явно включённой
   облачной нормализации;
 - Git;

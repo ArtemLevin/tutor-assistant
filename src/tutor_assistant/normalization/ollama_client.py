@@ -13,6 +13,7 @@ from .errors import (
     OllamaTimeoutError,
     OllamaUnavailableError,
 )
+from .http_client import cancellable_request
 from .models import NormalizationChunkRequest, NormalizationDiagnostics
 from .prompts import PROMPT_VERSION, SYSTEM_PROMPT, user_prompt
 from .protocol import CancellationToken
@@ -31,19 +32,23 @@ class OllamaClient:
         *,
         payload: dict[str, Any] | None = None,
         timeout: float | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> httpx.Response:
         try:
-            response = httpx.request(
+            return cancellable_request(
                 method,
                 f"{self.base_url}{path}",
-                json=payload,
-                timeout=timeout or self.config.request_timeout_seconds,
+                payload=payload,
+                timeout_seconds=timeout or self.config.request_timeout_seconds,
                 trust_env=False,
+                cancellation=cancellation,
             )
-            response.raise_for_status()
-            return response
         except httpx.TimeoutException as exc:
             raise OllamaTimeoutError("Ollama не ответил за отведённое время") from exc
+        except httpx.HTTPStatusError as exc:
+            raise OllamaUnavailableError(
+                f"Ollama вернул HTTP {exc.response.status_code} по адресу {self.base_url}"
+            ) from exc
         except (httpx.HTTPError, OSError) as exc:
             raise OllamaUnavailableError(f"Ollama недоступен по адресу {self.base_url}") from exc
 
@@ -93,7 +98,7 @@ class OllamaClient:
                 "seed": 0,
             },
         }
-        response = self._request("POST", "/api/chat", payload=payload)
+        response = self._request("POST", "/api/chat", payload=payload, cancellation=cancellation)
         if cancellation:
             cancellation.raise_if_cancelled()
         try:
@@ -126,7 +131,7 @@ class OllamaClient:
             synthetic = NormalizationChunkRequest(
                 lesson_id="doctor-synthetic",
                 prompt_version=PROMPT_VERSION,
-                mode="conservative",
+                mode="filter_only",
                 segments=[
                     {
                         "source_segment_id": 1,

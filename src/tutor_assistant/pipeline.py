@@ -246,7 +246,7 @@ class LessonPipeline:
 
     def scan_remote_latex(self) -> RemoteCompilationResult | None:
         service = RemoteLatexService(self.config.repository, self.config.latex)
-        for lesson in self.store.list():
+        for lesson in self.content_service.iter_lessons():
             if not service.is_candidate(lesson):
                 continue
             probe = service.probe_lesson(lesson)

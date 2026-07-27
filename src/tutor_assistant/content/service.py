@@ -476,6 +476,26 @@ class StudentContentService:
     def list_lessons(self, filters: LessonFilters | None = None) -> LessonPage:
         return self.repository.list_lessons(filters)
 
+    def iter_lessons(
+        self,
+        *,
+        include_deleted: bool = False,
+        page_size: int = 200,
+    ) -> Iterator[Lesson]:
+        offset = 0
+        while True:
+            page = self.list_lessons(
+                LessonFilters(
+                    include_deleted=include_deleted,
+                    limit=page_size,
+                    offset=offset,
+                )
+            )
+            yield from page.items
+            offset += len(page.items)
+            if not page.items or offset >= page.total:
+                return
+
     @staticmethod
     def _directory_size(path: Path) -> int:
         if not path.is_dir():

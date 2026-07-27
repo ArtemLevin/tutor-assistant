@@ -331,7 +331,7 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
             DiagnosticCheck(
                 "Нормализация",
                 "ok",
-                "Нормализация отключена",
+                "LLM-фильтрация отключена",
                 required=False,
             )
         )

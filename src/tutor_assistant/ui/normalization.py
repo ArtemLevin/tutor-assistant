@@ -17,7 +17,7 @@ from ..normalization.models import NormalizedTranscript, SourceSegment
 from ..normalization.prompts import render_target_text
 
 
-class NormalizationReviewDialog(QDialog):
+class ContentFilterReviewDialog(QDialog):
     def __init__(
         self,
         transcript: NormalizedTranscript,
@@ -28,7 +28,7 @@ class NormalizationReviewDialog(QDialog):
         self.transcript = transcript
         self.source_segments = source_segments
         self.source_text = render_target_text(source_segments)
-        self.setWindowTitle("Проверка нормализации транскрипта")
+        self.setWindowTitle("Проверка LLM-фильтрации учебного содержания")
         self.resize(1100, 760)
         layout = QVBoxLayout(self)
         provider = transcript.normalizer.get("provider", "—")
@@ -37,15 +37,15 @@ class NormalizationReviewDialog(QDialog):
         ratio = transcript.statistics.retained_ratio * 100
         summary = QLabel(
             f"Provider: {provider} · модель: {model} · промпт: {prompt} · "
-            f"сохранено: {ratio:.1f}% · результат требует ручного применения"
+            f"сохранено учебного текста: {ratio:.1f}% · результат требует ручного применения"
         )
         summary.setWordWrap(True)
         layout.addWidget(summary)
 
         tabs = QTabWidget()
-        tabs.addTab(self._comparison_tab(), "Изменения")
+        tabs.addTab(self._comparison_tab(), "Удалённые фрагменты")
         tabs.addTab(self._source_tab(), "Исходный текст")
-        tabs.addTab(self._normalized_tab(), "Нормализованный текст")
+        tabs.addTab(self._filtered_tab(), "Учебное содержание")
         tabs.addTab(self._warnings_tab(), "Предупреждения")
         layout.addWidget(tabs, 1)
 
@@ -54,7 +54,7 @@ class NormalizationReviewDialog(QDialog):
             "Применить как новую ревизию",
             QDialogButtonBox.AcceptRole,
         )
-        apply_button.setToolTip("Перед применением можно отредактировать нормализованный текст")
+        apply_button.setToolTip("Перед применением можно отредактировать отфильтрованный текст")
         buttons.addButton("Закрыть без применения", QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -68,19 +68,20 @@ class NormalizationReviewDialog(QDialog):
     def _comparison_tab(self) -> QWidget:
         page, layout = self._page()
         hint = QLabel(
-            "Строки с «-» присутствовали в исходном тексте, строки с «+» появились "
-            "в нормализованной версии. Добавление содержательных фраз блокируется автоматически."
+            "Строки с «-» удалены LLM-фильтром. Добавление и перефразирование "
+            "содержательных фраз блокируются автоматически."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
         editor = QPlainTextEdit()
         editor.setReadOnly(True)
-        diff = "\n".join(
+        diff = "
+".join(
             unified_diff(
                 self.source_text.splitlines(),
                 self.transcript.educational_text.splitlines(),
                 fromfile="исходный текст",
-                tofile="нормализованный текст",
+                tofile="учебное содержание",
                 lineterm="",
             )
         )
@@ -96,11 +97,11 @@ class NormalizationReviewDialog(QDialog):
         layout.addWidget(editor)
         return page
 
-    def _normalized_tab(self) -> QWidget:
+    def _filtered_tab(self) -> QWidget:
         page, layout = self._page()
         hint = QLabel(
-            "Это редактируемая plain-text версия. Изменения попадут в новую ревизию только "
-            "после нажатия «Применить как новую ревизию»."
+            "Это редактируемая версия учебного содержания. Новая ревизия появится только "
+            "после явного применения преподавателем."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -116,22 +117,30 @@ class NormalizationReviewDialog(QDialog):
         box_layout = QVBoxLayout(box)
         box_layout.addWidget(
             QLabel(
-                f"Plain text: {'да' if quality.plain_text_valid else 'нет'}\n"
-                f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}\n"
+                f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
+"
+                f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
+"
                 f"Формульные токены сохранены: "
-                f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}\n"
+                f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
+"
                 f"Защищённое содержание сохранено: "
-                f"{'да' if quality.protected_content_preserved else 'нет'}\n"
+                f"{'да' if quality.protected_content_preserved else 'нет'}
+"
                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
             )
         )
         layout.addWidget(box)
         warnings = QPlainTextEdit()
         warnings.setReadOnly(True)
-        warnings.setPlainText("\n".join(quality.warnings) or "Предупреждений нет")
+        warnings.setPlainText("
+".join(quality.warnings) or "Предупреждений нет")
         layout.addWidget(warnings)
         return page
 
     @property
     def edited_text(self) -> str:
         return self.normalized_editor.toPlainText().strip()
+
+
+NormalizationReviewDialog = ContentFilterReviewDialog

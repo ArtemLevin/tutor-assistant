@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import RepositoryConfig
 from .domain import JobStatus, Lesson
+from .github_api import GitHubApiError, GitHubRepositoryGateway, GitHubRestGateway
 
 
 class GitError(RuntimeError):
@@ -103,11 +104,19 @@ def _remote_branch_exists(repo: Path, remote: str, branch: str) -> bool:
     return result.returncode == 0
 
 
-def ensure_private_repository(config: RepositoryConfig, checkout: Path) -> None:
+def ensure_private_repository(
+    config: RepositoryConfig,
+    checkout: Path,
+    gateway: GitHubRepositoryGateway | None = None,
+) -> None:
     if not config.repository_full_name.strip():
         raise GitError("Укажите repository.repository_full_name перед публикацией")
     if shutil.which("gh") is None:
-        raise GitError("Невозможно проверить приватность GitHub-репозитория: GitHub CLI не найден")
+        try:
+            (gateway or GitHubRestGateway(config)).ensure_private_repository()
+        except GitHubApiError as exc:
+            raise GitError(str(exc)) from exc
+        return
     result = _run_command(
         [
             "gh",
@@ -145,14 +154,58 @@ def publication_payload_files(lesson: Lesson) -> tuple[str, ...]:
     return tuple(files)
 
 
+def _draft_pr_copy(lesson: Lesson) -> tuple[str, str]:
+    title = f"Lesson: {lesson.student.full_name} — {lesson.topic}"
+    body = f"""## Занятие
+
+- Ученик: {lesson.student.full_name}
+- Дата: {lesson.lesson_date:%d.%m.%Y}
+- Предмет: {lesson.subject}
+- Тема: {lesson.topic}
+
+## Конвейер
+
+- [x] Подтверждённый транскрипт
+- [ ] LaTeX-пособие
+- [ ] PDF
+- [ ] Образовательный плакат
+- [ ] Web-эквивалент
+- [ ] Проверка ссылок и index.html
+
+PR создан Tutor Assistant и остаётся draft до завершения проверок.
+"""
+    return title, body
+
+
 def create_draft_pr(
-    config: RepositoryConfig, checkout: Path, lesson: Lesson, branch: str
+    config: RepositoryConfig,
+    checkout: Path,
+    lesson: Lesson,
+    branch: str,
+    gateway: GitHubRepositoryGateway | None = None,
 ) -> tuple[str | None, list[str]]:
     warnings: list[str] = []
     if not config.auto_create_pr:
         return None, warnings
+    title, body = _draft_pr_copy(lesson)
     if shutil.which("gh") is None:
-        return None, ["GitHub CLI не найден: draft PR нужно создать вручную"]
+        try:
+            api = gateway or GitHubRestGateway(config)
+            existing = api.find_open_pull_request(branch, config.pr_base_branch)
+            if existing:
+                return existing, warnings
+            return (
+                api.create_draft_pull_request(
+                    branch=branch,
+                    base_branch=config.pr_base_branch,
+                    title=title,
+                    body=body,
+                ),
+                warnings,
+            )
+        except GitHubApiError as exc:
+            warnings.append("Не удалось создать draft PR через GitHub API: " + str(exc))
+            return None, warnings
     auth = _run_command(
         ["gh", "auth", "status"],
         cwd=checkout,
@@ -178,25 +231,6 @@ def create_draft_pr(
     )
     if existing.returncode == 0 and existing.stdout.strip():
         return existing.stdout.strip(), warnings
-    title = f"Lesson: {lesson.student.full_name} — {lesson.topic}"
-    body = f"""## Занятие
-
-- Ученик: {lesson.student.full_name}
-- Дата: {lesson.lesson_date:%d.%m.%Y}
-- Предмет: {lesson.subject}
-- Тема: {lesson.topic}
-
-## Конвейер
-
-- [x] Подтверждённый транскрипт
-- [ ] LaTeX-пособие
-- [ ] PDF
-- [ ] Образовательный плакат
-- [ ] Web-эквивалент
-- [ ] Проверка ссылок и index.html
-
-PR создан Tutor Assistant и остаётся draft до завершения проверок.
-"""
     result = _run_command(
         [
             "gh",
@@ -224,8 +258,13 @@ PR создан Tutor Assistant и остаётся draft до завершен�
 
 
 class LessonPublisher:
-    def __init__(self, config: RepositoryConfig) -> None:
+    def __init__(
+        self,
+        config: RepositoryConfig,
+        github_gateway: GitHubRepositoryGateway | None = None,
+    ) -> None:
         self.config = config
+        self.github_gateway = github_gateway
 
     def _copy_job(self, lesson: Lesson, checkout: Path) -> Path:
         checkout = checkout.resolve()
@@ -265,7 +304,7 @@ class LessonPublisher:
         if not (repo / ".git").exists():
             raise GitError(f"Git-репозиторий не найден: {repo}")
         if self.config.push or self.config.auto_create_pr:
-            ensure_private_repository(self.config, repo)
+            ensure_private_repository(self.config, repo, self.github_gateway)
         run_git(repo, "fetch", self.config.remote, self.config.base_branch)
         branch = f"lesson/{lesson.student.id}-{lesson.lesson_date:%Y%m%d}-{lesson.lesson_id[:8]}"
         relative_target = Path(lesson.student.folder) / "lessons" / lesson.lesson_slug
@@ -334,7 +373,9 @@ class LessonPublisher:
             commit = run_git(checkout, "rev-parse", "HEAD")
             if self.config.push:
                 run_git(checkout, "push", "-u", self.config.remote, "HEAD")
-            pr_url, warnings = create_draft_pr(self.config, checkout, lesson, branch)
+            pr_url, warnings = create_draft_pr(
+                self.config, checkout, lesson, branch, self.github_gateway
+            )
             lesson.transition(JobStatus.PUBLISHED)
             return PublicationResult(
                 branch, str(target.relative_to(checkout)), commit, pr_url, tuple(warnings)

@@ -12,6 +12,7 @@ from .errors import (
     YandexAIStudioTimeoutError,
     YandexAIStudioUnavailableError,
 )
+from .http_client import cancellable_request
 from .models import NormalizationChunkRequest, NormalizationDiagnostics
 from .prompts import PROMPT_VERSION, SYSTEM_PROMPT, user_prompt
 from .protocol import CancellationToken
@@ -49,10 +50,16 @@ class YandexAIStudioClient:
                 f"Переменная окружения {self.config.yandex_api_key_env} не задана"
             )
 
-    def _request(self, payload: dict[str, Any]) -> httpx.Response:
+    def _request(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> httpx.Response:
         self.check_available()
         try:
-            response = httpx.post(
+            return cancellable_request(
+                "POST",
                 f"{self.base_url}/responses",
                 headers={
                     "Authorization": f"Api-Key {self.api_key}",
@@ -60,11 +67,11 @@ class YandexAIStudioClient:
                     "OpenAI-Project": self.folder_id,
                     "x-folder-id": self.folder_id,
                 },
-                json=payload,
-                timeout=self.config.request_timeout_seconds,
+                payload=payload,
+                timeout_seconds=self.config.request_timeout_seconds,
+                trust_env=True,
+                cancellation=cancellation,
             )
-            response.raise_for_status()
-            return response
         except httpx.TimeoutException as exc:
             raise YandexAIStudioTimeoutError(
                 "Yandex AI Studio не ответил за отведённое время"
@@ -104,7 +111,8 @@ class YandexAIStudioClient:
                     parts.append(part["text"])
         if not parts:
             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
-        return "\n".join(parts).strip()
+        return "
+".join(parts).strip()
 
     def normalize_chunk(
         self,
@@ -115,14 +123,17 @@ class YandexAIStudioClient:
     ) -> str:
         if cancellation:
             cancellation.raise_if_cancelled()
-        prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt(request, validation_errors=validation_errors)}"
+        prompt = f"{SYSTEM_PROMPT}
+
+{user_prompt(request, validation_errors=validation_errors)}"
         response = self._request(
             {
                 "model": self.model_uri,
                 "input": prompt,
                 "temperature": self.config.temperature,
                 "max_output_tokens": self.config.num_predict,
-            }
+            },
+            cancellation=cancellation,
         )
         if cancellation:
             cancellation.raise_if_cancelled()
@@ -147,7 +158,7 @@ class YandexAIStudioClient:
             synthetic = NormalizationChunkRequest(
                 lesson_id="doctor-synthetic",
                 prompt_version=PROMPT_VERSION,
-                mode="conservative",
+                mode="filter_only",
                 segments=[
                     {
                         "source_segment_id": 1,

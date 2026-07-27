@@ -22,7 +22,7 @@ class CancellationToken:
 
     def raise_if_cancelled(self) -> None:
         if self.cancelled:
-            raise NormalizationCancelledError("Нормализация отменена пользователем")
+            raise NormalizationCancelledError("LLM-фильтрация отменена пользователем")
 
 
 class NormalizationProvider(Protocol):

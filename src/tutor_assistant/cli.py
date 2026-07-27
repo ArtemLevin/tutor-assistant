@@ -63,34 +63,51 @@ def parser() -> argparse.ArgumentParser:
     transcribe = commands.add_parser("transcribe", help="Транскрибировать аудио")
     transcribe.add_argument("lesson_json", type=Path)
     transcribe.add_argument("audio", type=Path)
+    def add_filter_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("lesson_id")
+        command.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
+        command.add_argument("--model")
+        command.add_argument("--force", action="store_true")
+        command.add_argument("--dry-run", action="store_true")
+        command.add_argument("--output", type=Path)
+        command.add_argument(
+            "--no-apply",
+            action="store_true",
+            help="Результат всегда требует ручного применения",
+        )
+        command.add_argument(
+            "--include-removed-text",
+            action="store_true",
+            default=None,
+            help=argparse.SUPPRESS,
+        )
+
+    content_filter = commands.add_parser(
+        "filter-transcript",
+        help="Отфильтровать учебное содержание через Ollama или Yandex AI Studio",
+    )
+    add_filter_arguments(content_filter)
     normalize = commands.add_parser(
         "normalize",
-        help="Нормализовать транскрипт через Ollama или Yandex AI Studio",
+        help="Совместимый алиас команды filter-transcript",
     )
-    normalize.add_argument("lesson_id")
-    normalize.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
-    normalize.add_argument("--model")
-    normalize.add_argument("--force", action="store_true")
-    normalize.add_argument("--dry-run", action="store_true")
-    normalize.add_argument("--output", type=Path)
-    normalize.add_argument(
-        "--no-apply",
-        action="store_true",
-        help="Совместимый явный флаг: результат в любом случае требует ручного применения",
+    add_filter_arguments(normalize)
+
+    def add_filter_doctor_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
+        command.add_argument("--model")
+        command.add_argument("--json", action="store_true")
+
+    content_filter_doctor = commands.add_parser(
+        "content-filter-doctor",
+        help="Проверить LLM-фильтр на синтетическом учебном тексте",
     )
-    normalize.add_argument(
-        "--include-removed-text",
-        action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
+    add_filter_doctor_arguments(content_filter_doctor)
     normalization_doctor = commands.add_parser(
         "normalization-doctor",
-        help="Проверить provider и plain-text ответ на синтетическом тексте",
+        help="Совместимый алиас команды content-filter-doctor",
     )
-    normalization_doctor.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
-    normalization_doctor.add_argument("--model")
-    normalization_doctor.add_argument("--json", action="store_true")
+    add_filter_doctor_arguments(normalization_doctor)
     publish = commands.add_parser("publish", help="Опубликовать подтверждённое занятие")
     publish.add_argument("lesson_json", type=Path)
     commands.add_parser("latex-doctor", help="Проверить локальное LaTeX-окружение")
@@ -141,7 +158,7 @@ def main() -> None:
 
         print(json.dumps(inspect_latex_environment(config.latex).to_dict(), ensure_ascii=False, indent=2))
         return
-    if args.command == "normalization-doctor":
+    if args.command in {"content-filter-doctor", "normalization-doctor"}:
         from .config import NormalizationConfig
         from .normalization import build_provider
 
@@ -157,9 +174,9 @@ def main() -> None:
         if args.json:
             print(report.model_dump_json(indent=2))
         else:
-            status = "ГОТОВО" if report.plain_text_valid else "ТРЕБУЕТ НАСТРОЙКИ"
+            status = "ГОТОВ" if report.plain_text_valid else "ТРЕБУЕТ НАСТРОЙКИ"
             print(
-                f"Provider {report.provider}: {status}\n"
+                f"LLM-фильтр {report.provider}: {status}\n"
                 f"Endpoint: {report.endpoint}\n"
                 f"Endpoint локальный: {'да' if report.endpoint_local else 'нет'}\n"
                 f"Версия: {report.version or '—'}\n"
@@ -298,7 +315,7 @@ def main() -> None:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
         raise SystemExit(0 if result.success else 1)
     pipeline = LessonPipeline(config)
-    if args.command == "normalize":
+    if args.command in {"filter-transcript", "normalize"}:
         from .config import NormalizationConfig
         from .content import ContentBusyError, ContentNotFoundError
         from .normalization import NormalizationError, NormalizationService
@@ -364,7 +381,7 @@ def main() -> None:
 
         service = RemoteLatexService(config.repository, config.latex)
         ready = []
-        for lesson in pipeline.store.list():
+        for lesson in pipeline.content_service.iter_lessons():
             try:
                 if service.is_ready(lesson):
                     ready.append(
