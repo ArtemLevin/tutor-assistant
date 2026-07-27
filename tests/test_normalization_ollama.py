@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import tutor_assistant.normalization.ollama_client as ollama_module
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.normalization.models import NormalizationChunkRequest
 from tutor_assistant.normalization.ollama_client import OllamaClient
 from tutor_assistant.normalization.prompts import PROMPT_VERSION
-import tutor_assistant.normalization.ollama_client as ollama_module
 
 
 class _Response:
