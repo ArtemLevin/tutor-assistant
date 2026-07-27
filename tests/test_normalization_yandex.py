@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+import tutor_assistant.normalization.yandex_client as yandex_module
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.normalization.errors import YandexAIStudioAuthenticationError
 from tutor_assistant.normalization.models import NormalizationChunkRequest
 from tutor_assistant.normalization.prompts import PROMPT_VERSION
 from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
-import tutor_assistant.normalization.yandex_client as yandex_module
 
 
 class _Response:
