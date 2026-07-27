@@ -157,6 +157,8 @@ class YandexAIStudioClient:
                 lesson_id="doctor-synthetic",
                 prompt_version=PROMPT_VERSION,
                 mode="filter_only",
+                lesson_subject="mathematics",
+                subject_profile="mathematics",
                 segments=[
                     {
                         "source_segment_id": 1,

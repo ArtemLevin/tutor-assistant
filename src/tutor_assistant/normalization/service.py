@@ -331,8 +331,9 @@ class NormalizationService:
                     frozenset({"artifacts"}),
                 )
             logging.info(
-                "event=content_filter_completed lesson_id=%s provider=%s model=%s chunks=%d "
-                "segments=%d elapsed_seconds=%.3f retained_ratio=%.3f",
+                "event=content_filter_completed lesson_id=%s provider=%s model=%s "
+                "subject_profile=%s chunks=%d segments=%d elapsed_seconds=%.3f "
+                "retained_ratio=%.3f",
                 lesson_id,
                 self.config.provider,
                 model,

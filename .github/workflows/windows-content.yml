@@ -6,11 +6,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   content:
     runs-on: windows-latest
     timeout-minutes: 45
-    continue-on-error: ${{ matrix.python-version == '3.14' }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +36,15 @@ jobs:
         run: uv run ruff check .
       - name: Compile Python sources
         run: uv run python -m compileall -q src/tutor_assistant tests
+      - name: Filtering import smoke
+        run: uv run python -c "from tutor_assistant.normalization.prompts import system_prompt; from tutor_assistant.ui.normalization_provider import provider_label; assert 'импульс' in system_prompt('physics').casefold(); assert provider_label('ollama') == 'Локальная LLM (Ollama)'"
+      - name: Filtering feature contracts
+        run: >-
+          uv run pytest -q
+          tests/test_filtering_feature_contracts.py
+          tests/test_subject_aware_filtering.py
+          tests/test_subject_manifest_compatibility.py
+          tests/test_normalization_provider_gui.py
       - name: Validate patch whitespace
         if: github.event_name == 'pull_request'
         shell: bash

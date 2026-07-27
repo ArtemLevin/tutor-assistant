@@ -1222,12 +1222,7 @@ class MainWindow(QMainWindow):
         controls.addStretch()
         segments_layout.addLayout(controls)
         normalization_controls = QHBoxLayout()
-        provider_label = (
-            "Yandex AI Studio"
-            if self.config.normalization.provider == "yandex_ai_studio"
-            else "Локальный Ollama"
-        )
-        normalization_label = QLabel(f"LLM-фильтр · {provider_label}")
+        normalization_label = QLabel("LLM-фильтр")
         normalization_label.setObjectName("muted")
         normalization_controls.addWidget(normalization_label)
         self.normalization_provider = QComboBox()
@@ -2302,20 +2297,17 @@ class MainWindow(QMainWindow):
             )
             return
         lesson_id = self.lesson.lesson_id
-        model = self.normalization_model.currentText().strip()
-        if not model:
-            QMessageBox.warning(
-                self,
-                "LLM-фильтрация",
-                "Укажите модель",
-            )
+        try:
+            model = self._persist_selected_normalization_model()
+        except Exception as exc:
+            QMessageBox.warning(self, "LLM-фильтрация", str(exc))
             return
         token = CancellationToken()
         self._normalization_cancellation = token
         self._normalization_lesson_id = lesson_id
         self._sync_normalization_controls()
         self._set_status(
-            f"Фильтрую учебное содержание · {self.config.normalization.provider} · {model}",
+            f"Фильтрую учебное содержание · {provider_label(provider)} · {model}",
             "working",
         )
         worker = Worker(

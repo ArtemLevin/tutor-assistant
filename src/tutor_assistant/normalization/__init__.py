@@ -19,9 +19,6 @@ from .subjects import SubjectProfileName, resolve_subject_profile
 EducationalContentFilterService = NormalizationService
 FilteredTranscript = NormalizedTranscript
 
-EducationalContentFilterService = NormalizationService
-FilteredTranscript = NormalizedTranscript
-
 __all__ = [
     "EducationalContentFilterService",
     "FilteredTranscript",
