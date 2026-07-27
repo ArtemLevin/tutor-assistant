@@ -27,20 +27,32 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          base64 -d scripts/pr37_bootstrap.py.gz.b64 | gzip -d > scripts/pr37_bootstrap.py
-          if ! python scripts/pr37_bootstrap.py > bootstrap-error.txt 2>&1; then
+          set +e
+          {
+            echo '== decode =='
+            base64 -d scripts/pr37_bootstrap.py.gz.b64 | gzip -d > scripts/pr37_bootstrap.py
+            echo '== apply =='
+            python scripts/pr37_bootstrap.py
+            echo '== install uv =='
+            python -m pip install uv
+            echo '== lock =='
+            uv lock
+            echo '== compile =='
+            python -m compileall -q src/tutor_assistant tests
+          } > bootstrap-error.txt 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            printf '\nexit_status=%s\n' "$status" >> bootstrap-error.txt
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
             git add bootstrap-error.txt
             git commit -m "Capture PR 37 bootstrap failure"
             git push origin HEAD:${{ github.head_ref || github.ref_name }}
             cat bootstrap-error.txt
-            exit 1
+            exit "$status"
           fi
           rm -f bootstrap-error.txt
-          python -m pip install uv
-          uv lock
-          python -m compileall -q src/tutor_assistant tests
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add README.md docs pyproject.toml uv.lock src tests
