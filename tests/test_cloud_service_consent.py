@@ -9,7 +9,12 @@ import pytest
 from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.content import StudentContentService
 from tutor_assistant.domain import JobStatus, Lesson, Student
-from tutor_assistant.normalization.errors import CloudProcessingConsentRequiredError
+from tutor_assistant.normalization.errors import (
+    CloudProcessingConsentRequiredError,
+    NormalizationCancelledError,
+    NormalizationResumeConfirmationRequired,
+)
+from tutor_assistant.normalization.models import NormalizationChunkStatus
 from tutor_assistant.normalization.protocol import FakeNormalizationProvider
 from tutor_assistant.normalization.service import NormalizationService
 from tutor_assistant.security.cloud_consent import CloudConsentReceipt
@@ -88,3 +93,22 @@ def test_cloud_service_records_consent_and_request_metadata(tmp_path: Path) -> N
     assert consent["request_fingerprint"] == request.fingerprint
     assert event["event"] == "request_completed"
     assert "Приватное имя" not in repr(dict(consent))
+
+
+def test_cancelled_cloud_request_requires_explicit_retry_confirmation(tmp_path: Path) -> None:
+    service, _content, lesson, provider = _setup(tmp_path)
+    provider.responses.append(NormalizationCancelledError("cancelled after request dispatch"))
+    request = service.cloud_processing_request(lesson.lesson_id)
+    receipt = CloudConsentReceipt.grant(request)
+
+    with pytest.raises(NormalizationCancelledError):
+        service.normalize_lesson(lesson.lesson_id, cloud_consent=receipt)
+
+    run = service.runs.latest(lesson.lesson_id)
+    assert run is not None
+    checkpoint = service.checkpoints.get(run.id or 0, 0)
+    assert checkpoint is not None
+    assert checkpoint.status == NormalizationChunkStatus.INDETERMINATE
+
+    with pytest.raises(NormalizationResumeConfirmationRequired):
+        service.normalize_lesson(lesson.lesson_id, cloud_consent=receipt)

@@ -644,7 +644,7 @@ class NormalizationService:
                 if consent_id:
                     request_fingerprint = hashlib.sha256(
                         f"{consent_id}:{run.id if run else 'dry-run'}:"
-                        f"{chunk.index}:{attempt + 1}".encode("utf-8")
+                        f"{chunk.index}:{attempt + 1}".encode()
                     ).hexdigest()
                     audit_event_id = self.cloud_audit.request_started(
                         consent_id=consent_id,
@@ -707,7 +707,7 @@ class NormalizationService:
                         ),
                     )
                     break
-                except NormalizationCancelledError:
+                except NormalizationCancelledError as exc:
                     if audit_event_id:
                         self.cloud_audit.finish_request(
                             audit_event_id,
@@ -715,7 +715,14 @@ class NormalizationService:
                             error_code="NormalizationCancelledError",
                         )
                     if run is not None:
-                        self.checkpoints.reset_pending(run.id or 0, chunk.index)
+                        if self.config.provider == "yandex_ai_studio":
+                            self.checkpoints.mark_indeterminate(
+                                run.id or 0,
+                                chunk.index,
+                                f"{type(exc).__name__}: {exc}",
+                            )
+                        else:
+                            self.checkpoints.reset_pending(run.id or 0, chunk.index)
                     raise
                 except RETRYABLE_OUTPUT_ERRORS as exc:
                     if audit_event_id:

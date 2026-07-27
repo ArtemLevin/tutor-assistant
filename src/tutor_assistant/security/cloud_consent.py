@@ -332,7 +332,7 @@ class CloudAuditStore:
                     provider,
                     model,
                     hashlib.sha256(
-                        f"{consent_id}:{run_id}:{chunk_index}:retry".encode("utf-8")
+                        f"{consent_id}:{run_id}:{chunk_index}:retry".encode()
                     ).hexdigest(),
                     timestamp,
                     timestamp,

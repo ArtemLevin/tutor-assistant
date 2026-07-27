@@ -57,15 +57,6 @@ from ..normalization.models import (
     NormalizedTranscript,
 )
 from ..normalization.protocol import CancellationToken
-from ..security.cloud_consent import (
-    CloudConsentReceipt,
-    CloudConsentScope,
-    CloudConsentSession,
-)
-from ..security.credentials import (
-    delete_yandex_api_key,
-    save_yandex_api_key,
-)
 from ..pipeline import LessonPipeline
 from ..playback import PlaybackController, PlaybackSegment
 from ..publisher import publication_payload_files
@@ -77,6 +68,15 @@ from ..recording import (
     list_input_devices,
     list_system_audio_sources,
     recover_recording,
+)
+from ..security.cloud_consent import (
+    CloudConsentReceipt,
+    CloudConsentScope,
+    CloudConsentSession,
+)
+from ..security.credentials import (
+    delete_yandex_api_key,
+    save_yandex_api_key,
 )
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue

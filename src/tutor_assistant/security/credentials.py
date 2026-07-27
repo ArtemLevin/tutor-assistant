@@ -3,9 +3,10 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from collections.abc import Mapping
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import Protocol
 
 from ..config import NormalizationConfig
 
