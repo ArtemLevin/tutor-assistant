@@ -19,6 +19,7 @@ jobs:
         with:
           ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
+          show-progress: false
       - id: state
         shell: bash
         run: |
@@ -27,7 +28,16 @@ jobs:
             exit 0
           fi
           base64 -d scripts/pr37_bootstrap.py.gz.b64 | gzip -d > scripts/pr37_bootstrap.py
-          python scripts/pr37_bootstrap.py
+          if ! python scripts/pr37_bootstrap.py > bootstrap-error.txt 2>&1; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add bootstrap-error.txt
+            git commit -m "Capture PR 37 bootstrap failure"
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            cat bootstrap-error.txt
+            exit 1
+          fi
+          rm -f bootstrap-error.txt
           python -m pip install uv
           uv lock
           python -m compileall -q src/tutor_assistant tests
