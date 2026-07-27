@@ -26,6 +26,8 @@ class NormalizationChunkRequest(BaseModel):
     prompt_version: str
     mode: str
     segments: list[SourceSegment] = Field(min_length=1)
+    lesson_subject: str = "generic"
+    subject_profile: str = "generic"
 
     @model_validator(mode="after")
     def validate_segment_ids(self) -> NormalizationChunkRequest:
@@ -50,6 +52,7 @@ class NormalizationQuality(BaseModel):
     protected_content_preserved: bool
     requires_manual_attention: bool
     warnings: list[str] = Field(default_factory=list)
+    subject_units_preserved: bool = True
 
 
 class NormalizedTranscript(BaseModel):
@@ -105,6 +108,8 @@ class NormalizationManifest(BaseModel):
     status: NormalizationRunStatus
     statistics: NormalizationStatistics
     quality: NormalizationQuality
+    lesson_subject: str = "generic"
+    subject_profile: str = "generic"
 
 
 class NormalizationExecution(BaseModel):

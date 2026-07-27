@@ -15,7 +15,7 @@ from .errors import (
 )
 from .http_client import cancellable_request
 from .models import NormalizationChunkRequest, NormalizationDiagnostics
-from .prompts import PROMPT_VERSION, SYSTEM_PROMPT, user_prompt
+from .prompts import PROMPT_VERSION, system_prompt, user_prompt
 from .protocol import CancellationToken
 
 
@@ -85,7 +85,7 @@ class OllamaClient:
             "stream": False,
             "think": False,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt(request.subject_profile)},
                 {
                     "role": "user",
                     "content": user_prompt(request, validation_errors=validation_errors),

@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -72,6 +73,14 @@ from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
 from .normalization import NormalizationReviewDialog
+from .normalization_provider import (
+    provider_configuration_error,
+    provider_hint,
+    provider_label,
+    provider_models,
+    select_provider_config,
+    with_provider_model,
+)
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
 from .student_content import StudentContentPage
@@ -1221,15 +1230,17 @@ class MainWindow(QMainWindow):
         normalization_label = QLabel(f"LLM-фильтр · {provider_label}")
         normalization_label.setObjectName("muted")
         normalization_controls.addWidget(normalization_label)
+        self.normalization_provider = QComboBox()
+        for provider in ("ollama", "yandex_ai_studio"):
+            self.normalization_provider.addItem(provider_label(provider), provider)
+        self.normalization_provider.setCurrentIndex(
+            self.normalization_provider.findData(self.config.normalization.provider)
+        )
+        self.normalization_provider.setMinimumWidth(205)
+        self.normalization_provider.currentIndexChanged.connect(self._normalization_provider_changed)
+        normalization_controls.addWidget(self.normalization_provider)
         self.normalization_model = QComboBox()
         self.normalization_model.setEditable(True)
-        models = (
-            ["yandexgpt-lite", "yandexgpt"]
-            if self.config.normalization.provider == "yandex_ai_studio"
-            else ["qwen3:8b", "qwen3:14b"]
-        )
-        self.normalization_model.addItems(models)
-        self.normalization_model.setCurrentText(self.config.normalization.effective_model)
         self.normalization_model.setMinimumWidth(145)
         normalization_controls.addWidget(self.normalization_model)
         self.normalize_button = set_button_kind(
@@ -1270,6 +1281,11 @@ class MainWindow(QMainWindow):
         normalization_controls.addWidget(self.reject_normalization_button)
         normalization_controls.addStretch()
         segments_layout.addLayout(normalization_controls)
+        self.normalization_provider_hint = QLabel()
+        self.normalization_provider_hint.setObjectName("muted")
+        self.normalization_provider_hint.setWordWrap(True)
+        segments_layout.addWidget(self.normalization_provider_hint)
+        self._sync_normalization_provider_ui()
         summary = QGroupBox("Сводный текст")
         summary_layout = QVBoxLayout(summary)
         self.transcript = QPlainTextEdit()
@@ -2082,18 +2098,141 @@ class MainWindow(QMainWindow):
             )
         return segments
 
+    def _selected_normalization_provider(self) -> str:
+        if not hasattr(self, "normalization_provider"):
+            return self.config.normalization.provider
+        return str(self.normalization_provider.currentData() or "ollama")
+
+    def _set_normalization_provider_combo(self, provider: str) -> None:
+        if not hasattr(self, "normalization_provider"):
+            return
+        self.normalization_provider.blockSignals(True)
+        self.normalization_provider.setCurrentIndex(self.normalization_provider.findData(provider))
+        self.normalization_provider.blockSignals(False)
+
+    def _replace_normalization_config(self, config) -> None:
+        self.config.normalization = config
+        self.config.save(self.config_path)
+        self.normalization_service = NormalizationService(
+            config,
+            self.content_service,
+        )
+
+    def _sync_normalization_provider_ui(self) -> None:
+        if not hasattr(self, "normalization_provider"):
+            return
+        provider = self._selected_normalization_provider()
+        configured_model = (
+            self.config.normalization.yandex_model
+            if provider == "yandex_ai_studio"
+            else self.config.normalization.model
+        )
+        models = list(provider_models(provider))
+        if configured_model and configured_model not in models:
+            models.insert(0, configured_model)
+        self.normalization_model.blockSignals(True)
+        self.normalization_model.clear()
+        self.normalization_model.addItems(models)
+        self.normalization_model.setCurrentText(configured_model)
+        self.normalization_model.blockSignals(False)
+        self.normalization_provider_hint.setText(provider_hint(self.config.normalization))
+        error = provider_configuration_error(self.config.normalization)
+        tooltip = error or provider_hint(self.config.normalization)
+        self.normalization_provider.setToolTip(tooltip)
+        self.normalization_model.setToolTip(tooltip)
+
+    def _normalization_provider_changed(self, _index: int) -> None:
+        selected = self._selected_normalization_provider()
+        current = self.config.normalization.provider
+        if selected == current:
+            self._sync_normalization_provider_ui()
+            return
+        if self._normalization_cancellation is not None:
+            self._set_normalization_provider_combo(current)
+            QMessageBox.warning(
+                self,
+                "LLM-фильтрация",
+                "Нельзя менять провайдера во время выполняющейся фильтрации.",
+            )
+            return
+
+        folder_id = self.config.normalization.yandex_folder_id
+        allow_cloud_processing = self.config.normalization.allow_cloud_processing
+        if selected == "yandex_ai_studio":
+            if not allow_cloud_processing:
+                answer = QMessageBox.question(
+                    self,
+                    "Облачная обработка транскрипта",
+                    "Текст занятия будет передан в Yandex AI Studio. "
+                    "Аудиозапись не отправляется. Разрешить облачную обработку?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    self._set_normalization_provider_combo(current)
+                    return
+                allow_cloud_processing = True
+            if not (folder_id or "").strip():
+                folder_id, accepted = QInputDialog.getText(
+                    self,
+                    "Yandex AI Studio",
+                    "Yandex Cloud folder ID:",
+                    text="",
+                )
+                if not accepted or not folder_id.strip():
+                    self._set_normalization_provider_combo(current)
+                    return
+
+        try:
+            updated = select_provider_config(
+                self.config.normalization,
+                selected,
+                folder_id=folder_id,
+                allow_cloud_processing=allow_cloud_processing,
+            )
+            self._replace_normalization_config(updated)
+        except Exception as exc:
+            self._set_normalization_provider_combo(current)
+            QMessageBox.warning(self, "LLM-фильтрация", str(exc))
+            return
+
+        self._sync_normalization_provider_ui()
+        self._sync_normalization_controls()
+        error = provider_configuration_error(updated)
+        if error:
+            QMessageBox.information(
+                self,
+                "Настройка Yandex AI Studio",
+                error + "\n\nЗадайте API-ключ в переменной окружения и перезапустите приложение.",
+            )
+        else:
+            self._set_status(f"Провайдер LLM-фильтрации: {provider_label(selected)}")
+
+    def _persist_selected_normalization_model(self) -> str:
+        provider = self._selected_normalization_provider()
+        model = self.normalization_model.currentText().strip()
+        updated = with_provider_model(self.config.normalization, provider, model)
+        if updated != self.config.normalization:
+            self._replace_normalization_config(updated)
+            self._sync_normalization_provider_ui()
+        return updated.effective_model
+
     def _sync_normalization_controls(self) -> None:
         if not hasattr(self, "normalize_button"):
             return
         run = self.normalization_service.runs.latest(self.lesson.lesson_id) if self.lesson else None
         task_running = self._normalization_cancellation is not None
+        provider_error = provider_configuration_error(self.config.normalization)
         can_start = bool(
             self.lesson
             and self.config.normalization.enabled
             and self.segment_table.rowCount()
             and not task_running
+            and not provider_error
         )
+        self.normalization_provider.setEnabled(not task_running)
         self.normalize_button.setEnabled(can_start)
+        self.normalize_button.setToolTip(provider_error or "Запустить LLM-фильтрацию")
         self.cancel_normalization_button.setEnabled(task_running)
         self.retry_normalization_button.setEnabled(
             can_start
@@ -2139,9 +2278,12 @@ class MainWindow(QMainWindow):
                 "Сначала откройте транскрипт занятия",
             )
             return
-        if self.config.normalization.provider == "ollama" and (
-            self.transcription_worker.busy or self.transcription_queue.active
-        ):
+        provider = self._selected_normalization_provider()
+        configuration_error = provider_configuration_error(self.config.normalization)
+        if configuration_error:
+            QMessageBox.warning(self, "LLM-фильтрация", configuration_error)
+            return
+        if provider == "ollama" and (self.transcription_worker.busy or self.transcription_queue.active):
             QMessageBox.warning(
                 self,
                 "LLM-фильтрация",

@@ -34,8 +34,11 @@ class ContentFilterReviewDialog(QDialog):
         provider = transcript.normalizer.get("provider", "—")
         model = transcript.normalizer.get("model", "—")
         prompt = transcript.normalizer.get("prompt_version", "—")
+        subject = transcript.source.get("subject", "—")
+        subject_profile = transcript.normalizer.get("subject_profile", "generic")
         ratio = transcript.statistics.retained_ratio * 100
         summary = QLabel(
+            f"Предмет: {subject} · профиль: {subject_profile} · "
             f"Provider: {provider} · модель: {model} · промпт: {prompt} · "
             f"сохранено учебного текста: {ratio:.1f}% · результат требует ручного применения"
         )
@@ -122,6 +125,8 @@ class ContentFilterReviewDialog(QDialog):
                 f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}\n"
                 "Защищённое содержание сохранено: "
                 f"{'да' if quality.protected_content_preserved else 'нет'}\n"
+                "Предметные единицы сохранены: "
+                f"{'да' if quality.subject_units_preserved else 'нет'}\n"
                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
             )
         )
