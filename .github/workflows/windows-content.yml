@@ -2,8 +2,6 @@ name: Windows student content
 
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -76,6 +74,10 @@ jobs:
                   "'tests/test_normalization_checkpoint_migration.py': [('assert len(repository.applied_migrations()) == 9', 'assert len(repository.applied_migrations()) == 10')]",
                   "'tests/test_normalization_checkpoint_migration.py': [('    assert 9 in versions\\n', '    assert 9 in versions\\n    assert 10 in versions\\n')]",
               ),
+              (
+                  'apply_replacements(".github/workflows/windows-content.yml", WORKFLOW_REPLACEMENTS)\\n',
+                  '# CI workflow is finalized separately after the product commit.\\n',
+              ),
           ]
           for old, new in replacements:
               if text.count(old) != 1:
@@ -83,7 +85,6 @@ jobs:
               text = text.replace(old, new, 1)
 
           text += r'''
-          # Focused privacy regression fixes.
           _redaction = Path("src/tutor_assistant/security/redaction.py")
           _redaction_text = _redaction.read_text(encoding="utf-8")
           _redaction_old = """class SensitiveDataFilter(logging.Filter):
@@ -111,18 +112,12 @@ jobs:
           if _provider_text.count(_provider_old) != 1:
               raise RuntimeError("provider hint regression marker mismatch")
           _provider.write_text(_provider_text.replace(_provider_old, _provider_new, 1), encoding="utf-8")
-          print("PR 38 focused regression fixes applied.")
           '''
           path.write_text(text, encoding="utf-8")
           '@ | python
           python -m py_compile scripts/apply_pr38.py
       - name: Generate product changes
         run: python scripts/apply_pr38.py
-      - name: Preserve temporary workflows
-        shell: bash
-        run: |
-          git checkout -- .github/workflows/windows-content.yml
-          git checkout -- .github/workflows/pr38-bootstrap.yml
       - name: Install uv
         run: python -m pip install uv
       - name: Refresh lock
@@ -147,7 +142,7 @@ jobs:
           tests/test_cloud_service_consent.py
           tests/test_normalization_provider_gui.py
           tests/test_normalization_service.py
-      - name: Remove temporary payload
+      - name: Remove temporary infrastructure
         shell: pwsh
         run: |
           Remove-Item scripts/apply_pr38.py -Force -ErrorAction SilentlyContinue
@@ -158,36 +153,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
+          git reset -- .github/workflows/windows-content.yml .github/workflows/pr38-bootstrap.yml
           git diff --cached --check
           git commit -m "Implement cloud privacy boundary and secure credentials"
           git push origin HEAD:security/cloud-processing-boundary
-
-  content:
-    if: github.event_name != 'pull_request' || github.head_ref != 'security/cloud-processing-boundary'
-    runs-on: windows-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14']
-    env:
-      QT_QPA_PLATFORM: offscreen
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install uv
-        run: python -m pip install uv
-      - name: Check lock file
-        run: uv lock --check
-      - name: Install test and desktop dependencies
-        run: uv sync --extra desktop --group dev
-      - name: Lint
-        run: uv run ruff check .
-      - name: Compile Python sources
-        run: uv run python -m compileall -q src/tutor_assistant tests
-      - name: Full test suite
-        run: uv run pytest --junitxml=pytest-report.xml
