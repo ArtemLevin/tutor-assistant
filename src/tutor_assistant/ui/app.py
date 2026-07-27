@@ -73,6 +73,7 @@ from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
 from .normalization import NormalizationReviewDialog
+from .normalization_worker import NormalizationWorker
 from .normalization_provider import (
     provider_configuration_error,
     provider_hint,
@@ -167,6 +168,7 @@ class MainWindow(QMainWindow):
         self._normalization_cancellation: CancellationToken | None = None
         self._normalization_execution: NormalizationExecution | None = None
         self._normalization_lesson_id: str | None = None
+        self._retry_indeterminate_after_worker = False
         self._pending_auto_normalizations: list[str] = []
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
@@ -1251,10 +1253,10 @@ class MainWindow(QMainWindow):
         self.cancel_normalization_button.clicked.connect(self.cancel_normalization)
         normalization_controls.addWidget(self.cancel_normalization_button)
         self.retry_normalization_button = set_button_kind(
-            QPushButton("Повторить"),
+            QPushButton("Продолжить"),
             "ghost",
         )
-        self.retry_normalization_button.clicked.connect(lambda: self.normalize_current_transcript(force=True))
+        self.retry_normalization_button.clicked.connect(self.normalize_current_transcript)
         normalization_controls.addWidget(self.retry_normalization_button)
         self.open_normalization_button = set_button_kind(
             QPushButton("Открыть результат"),
@@ -1280,6 +1282,14 @@ class MainWindow(QMainWindow):
         self.normalization_provider_hint.setObjectName("muted")
         self.normalization_provider_hint.setWordWrap(True)
         segments_layout.addWidget(self.normalization_provider_hint)
+        self.normalization_progress_label = QLabel("LLM-фильтрация не запущена")
+        self.normalization_progress_label.setObjectName("muted")
+        segments_layout.addWidget(self.normalization_progress_label)
+        self.normalization_progress = QProgressBar()
+        self.normalization_progress.setRange(0, 1)
+        self.normalization_progress.setValue(0)
+        self.normalization_progress.setTextVisible(True)
+        segments_layout.addWidget(self.normalization_progress)
         self._sync_normalization_provider_ui()
         summary = QGroupBox("Сводный текст")
         summary_layout = QVBoxLayout(summary)
@@ -2264,6 +2274,7 @@ class MainWindow(QMainWindow):
         _checked: bool = False,
         *,
         force: bool = False,
+        retry_indeterminate: bool = False,
     ) -> None:
         del _checked
         if not self.lesson:
@@ -2310,15 +2321,19 @@ class MainWindow(QMainWindow):
             f"Фильтрую учебное содержание · {provider_label(provider)} · {model}",
             "working",
         )
-        worker = Worker(
-            lambda: self.normalization_service.normalize_lesson(
-                lesson_id,
-                model=model,
-                force=force,
-                source_segments=segments,
-                source_artifact="review-buffer",
-                cancellation=token,
-            )
+        worker = NormalizationWorker(
+            self.normalization_service,
+            lesson_id=lesson_id,
+            model=model,
+            force=force,
+            source_segments=segments,
+            source_artifact="review-buffer",
+            cancellation=token,
+            retry_indeterminate=retry_indeterminate,
+        )
+        worker.progress.connect(self._normalization_progress_updated)
+        worker.resume_confirmation_required.connect(
+            self._normalization_resume_confirmation_required
         )
         worker.succeeded.connect(
             lambda result, expected=lesson_id: self._normalization_ready(
@@ -2347,11 +2362,14 @@ class MainWindow(QMainWindow):
         self._normalization_cancellation = token
         self._normalization_lesson_id = lesson_id
         self._sync_normalization_controls()
-        worker = Worker(
-            lambda: self.normalization_service.normalize_lesson(
-                lesson_id,
-                cancellation=token,
-            )
+        worker = NormalizationWorker(
+            self.normalization_service,
+            lesson_id=lesson_id,
+            cancellation=token,
+        )
+        worker.progress.connect(self._normalization_progress_updated)
+        worker.resume_confirmation_required.connect(
+            self._normalization_resume_confirmation_required
         )
         worker.succeeded.connect(
             lambda result, expected=lesson_id: self._normalization_ready(
@@ -2363,6 +2381,34 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda: self._normalization_worker_finished(worker))
         self.workers.append(worker)
         worker.start()
+
+    def _normalization_progress_updated(self, progress) -> None:
+        total = max(1, progress.total_chunks)
+        self.normalization_progress.setRange(0, total)
+        self.normalization_progress.setValue(progress.completed_chunks)
+        current = (
+            f"Блок {progress.current_chunk + 1} из {progress.total_chunks}"
+            if progress.current_chunk is not None and progress.total_chunks
+            else "Подготовка блоков"
+        )
+        self.normalization_progress_label.setText(
+            f"{current} · готово {progress.completed_chunks} · "
+            f"восстановлено {progress.reused_chunks} · запросов {progress.provider_requests}"
+        )
+
+    def _normalization_resume_confirmation_required(self, error) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Повторный облачный запрос",
+            str(error) + "\n\nПовторить только неопределённые блоки?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        self._retry_indeterminate_after_worker = answer == QMessageBox.Yes
+        self._set_status(
+            "Требуется подтверждение повторного облачного запроса",
+            "warning",
+        )
 
     def cancel_normalization(self) -> None:
         if self._normalization_cancellation is None:
@@ -2387,6 +2433,7 @@ class MainWindow(QMainWindow):
             (
                 f"LLM-фильтрация готова · сохранено "
                 f"{result.transcript.statistics.retained_ratio * 100:.1f}%"
+                f" · восстановлено блоков: {result.transcript.statistics.reused_chunks}"
                 + (f" · предупреждений: {warnings}" if warnings else "")
             ),
             "warning" if result.transcript.quality.requires_manual_attention else "success",
@@ -2410,7 +2457,14 @@ class MainWindow(QMainWindow):
         self._worker_finished(worker)
         self._sync_normalization_controls()
         self._pump_transcription_queue()
-        QTimer.singleShot(0, self._pump_auto_normalization)
+        if self._retry_indeterminate_after_worker:
+            self._retry_indeterminate_after_worker = False
+            QTimer.singleShot(
+                0,
+                lambda: self.normalize_current_transcript(retry_indeterminate=True),
+            )
+        else:
+            QTimer.singleShot(0, self._pump_auto_normalization)
 
     def _normalization_payload(
         self,

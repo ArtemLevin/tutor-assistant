@@ -82,6 +82,7 @@ class NormalizationRunStore:
         lesson_id: str,
         source_hash: str,
         model: str,
+        provider: str,
         prompt_version: str,
         config_hash: str,
         force: bool,
@@ -126,10 +127,10 @@ class NormalizationRunStore:
                 """
                 INSERT INTO normalization_runs (
                     lesson_id, source_sha256, model, prompt_version,
-                    configuration_hash, status, attempts, created_at
-                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
+                    configuration_hash, provider, status, attempts, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)
                 """,
-                (*logical, now),
+                (*logical, provider, now),
             )
             row = db.execute(
                 "SELECT * FROM normalization_runs WHERE id=?",
@@ -168,16 +169,19 @@ class NormalizationRunStore:
             ).fetchall()
         return [self._from_row(row) for row in rows]
 
-    def mark_running(self, run_id: int) -> NormalizationRun:
+    def mark_running(self, run_id: int, *, resumed: bool = False) -> NormalizationRun:
+        now = datetime.now(UTC).isoformat()
         with self.repository.connect() as db:
             db.execute(
                 """
                 UPDATE normalization_runs
                 SET status='running', started_at=?, completed_at=NULL,
-                    approved_at=NULL, artifact_path=NULL, error=NULL
+                    approved_at=NULL, artifact_path=NULL, error=NULL,
+                    resume_count=resume_count + ?,
+                    last_resumed_at=CASE WHEN ?=1 THEN ? ELSE last_resumed_at END
                 WHERE id=?
                 """,
-                (datetime.now(UTC).isoformat(), run_id),
+                (now, int(resumed), int(resumed), now, run_id),
             )
         return self._required(run_id)
 

@@ -53,3 +53,18 @@ class UnsafeNormalizationResultError(NormalizationError):
 
 class NormalizationCancelledError(NormalizationError):
     pass
+
+
+class NormalizationCheckpointMismatchError(NormalizationError):
+    pass
+
+
+class NormalizationResumeConfirmationRequired(NormalizationError):
+    def __init__(self, run_id: int, chunk_indices: tuple[int, ...]) -> None:
+        self.run_id = run_id
+        self.chunk_indices = chunk_indices
+        numbers = ", ".join(str(index + 1) for index in chunk_indices)
+        super().__init__(
+            "Предыдущий облачный запрос был прерван в неопределённом состоянии. "
+            f"Повторная отправка блоков {numbers} может привести к повторному списанию."
+        )
