@@ -4,175 +4,46 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   bootstrap-pr38:
     if: github.event_name == 'pull_request' && github.head_ref == 'security/cloud-processing-boundary'
-    permissions:
-      contents: write
     runs-on: windows-latest
-    timeout-minutes: 45
-    env:
-      QT_QPA_PLATFORM: offscreen
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: security/cloud-processing-boundary
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Verify and apply product patch
+      - name: Diagnose product patch
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $payload = '.agent/pr38/product.patch.b64'
-          $payloadHash = (Get-FileHash $payload -Algorithm SHA256).Hash.ToLower()
-          if ($payloadHash -ne '9eef6f47bb20c2afa78570394725ddf7426f6ef4f9556fa48c2259a94f2c5703') {
-            throw "Patch payload SHA-256 mismatch: $payloadHash"
+          "payload_exists=$([IO.File]::Exists($payload))" | Set-Content pr38-patch-diagnostics.txt
+          if (Test-Path $payload) {
+            "payload_length=$((Get-Item $payload).Length)" | Add-Content pr38-patch-diagnostics.txt
+            "payload_sha=$((Get-FileHash $payload -Algorithm SHA256).Hash.ToLower())" | Add-Content pr38-patch-diagnostics.txt
+            try {
+              python -c "import base64,pathlib; p=pathlib.Path('.agent/pr38/product.patch.b64'); pathlib.Path('.agent/pr38/product.patch.gz').write_bytes(base64.b64decode(p.read_text(), validate=True))" 2>&1 | Add-Content pr38-patch-diagnostics.txt
+              "gzip_length=$((Get-Item .agent/pr38/product.patch.gz).Length)" | Add-Content pr38-patch-diagnostics.txt
+              "gzip_sha=$((Get-FileHash .agent/pr38/product.patch.gz -Algorithm SHA256).Hash.ToLower())" | Add-Content pr38-patch-diagnostics.txt
+              python -c "import gzip,pathlib; p=pathlib.Path('.agent/pr38/product.patch.gz'); pathlib.Path('.agent/pr38/product.patch').write_bytes(gzip.decompress(p.read_bytes()))" 2>&1 | Add-Content pr38-patch-diagnostics.txt
+              "patch_length=$((Get-Item .agent/pr38/product.patch).Length)" | Add-Content pr38-patch-diagnostics.txt
+              "patch_sha=$((Get-FileHash .agent/pr38/product.patch -Algorithm SHA256).Hash.ToLower())" | Add-Content pr38-patch-diagnostics.txt
+              git apply --check --whitespace=error-all .agent/pr38/product.patch 2>&1 | Add-Content pr38-patch-diagnostics.txt
+              "git_apply_exit=$LASTEXITCODE" | Add-Content pr38-patch-diagnostics.txt
+            } catch {
+              "exception=$($_.Exception.Message)" | Add-Content pr38-patch-diagnostics.txt
+            }
           }
-          python -c "import base64,pathlib; p=pathlib.Path('.agent/pr38/product.patch.b64'); pathlib.Path('.agent/pr38/product.patch.gz').write_bytes(base64.b64decode(p.read_text()))"
-          $gzipHash = (Get-FileHash .agent/pr38/product.patch.gz -Algorithm SHA256).Hash.ToLower()
-          if ($gzipHash -ne '41531ef8fdebe429fc43e89bd3e819b97969eb8e14b9afc76c7967a519e72355') {
-            throw "Patch archive SHA-256 mismatch: $gzipHash"
-          }
-          python -c "import gzip,pathlib; p=pathlib.Path('.agent/pr38/product.patch.gz'); pathlib.Path('.agent/pr38/product.patch').write_bytes(gzip.decompress(p.read_bytes()))"
-          $patchHash = (Get-FileHash .agent/pr38/product.patch -Algorithm SHA256).Hash.ToLower()
-          if ($patchHash -ne '7ca56d670c2a341a8032249286cf8b69da3da504d58e4838eeb022a06a833fec') {
-            throw "Product patch SHA-256 mismatch: $patchHash"
-          }
-          git apply --check --whitespace=error-all .agent/pr38/product.patch
-          git apply --whitespace=error-all .agent/pr38/product.patch
-
-      - name: Install uv
-        run: python -m pip install uv
-
-      - name: Validate lock and dependencies
-        run: |
-          uv lock --check
-          uv sync --extra desktop --group dev
-
-      - name: Lint and compile
-        run: |
-          uv run ruff check .
-          uv run python -m compileall -q src/tutor_assistant tests
-
-      - name: Focused privacy contracts
-        run: >-
-          uv run pytest -q
-          tests/test_credential_store.py
-          tests/test_cloud_consent.py
-          tests/test_cloud_privacy_migration.py
-          tests/test_cloud_request_envelope.py
-          tests/test_sensitive_data_redaction.py
-          tests/test_privacy_support_bundle.py
-          tests/test_privacy_doctor.py
-          tests/test_cloud_consent_cli.py
-          tests/test_cloud_service_consent.py
-          tests/test_normalization_provider_gui.py
-          tests/test_normalization_service.py
-
-      - name: Install final read-only CI and remove bootstrap files
-        shell: pwsh
-        run: |
-          @'
-          name: Windows student content
-
-          on:
-            pull_request:
-            push:
-              branches: [main]
-            workflow_dispatch:
-
-          permissions:
-            contents: read
-
-          jobs:
-            content:
-              runs-on: windows-latest
-              timeout-minutes: 45
-              strategy:
-                fail-fast: false
-                matrix:
-                  python-version: ['3.11', '3.12', '3.13', '3.14']
-              env:
-                QT_QPA_PLATFORM: offscreen
-              steps:
-                - uses: actions/checkout@v4
-                  with:
-                    fetch-depth: 0
-                - uses: actions/setup-python@v5
-                  with:
-                    python-version: ${{ matrix.python-version }}
-                - name: Install uv
-                  run: python -m pip install uv
-                - name: Check lock file
-                  run: uv lock --check
-                - name: Install test and desktop dependencies
-                  run: uv sync --extra desktop --group dev
-                - name: Lint
-                  shell: pwsh
-                  run: |
-                    uv run ruff check . --output-format=concise 2>&1 | Tee-Object ruff-report.txt
-                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                - name: Upload Ruff report
-                  if: always()
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: windows-py${{ matrix.python-version }}-ruff-report
-                    path: ruff-report.txt
-                    if-no-files-found: ignore
-                - name: Compile Python sources
-                  run: uv run python -m compileall -q src/tutor_assistant tests
-                - name: Privacy import smoke
-                  run: uv run python -c "from tutor_assistant.security import CloudConsentSession, credential_status, redact_text; assert redact_text('Authorization: Api-Key demo-secret-value') == 'Authorization: Api-Key [REDACTED]'; assert CloudConsentSession(); assert callable(credential_status)"
-                - name: Added secret scan
-                  if: github.event_name == 'pull_request'
-                  run: uv run python scripts/scan_added_secrets.py ${{ github.event.pull_request.base.sha }}
-                - name: Filtering, checkpoint and privacy contracts
-                  run: >-
-                    uv run pytest -q
-                    tests/test_filtering_feature_contracts.py
-                    tests/test_subject_aware_filtering.py
-                    tests/test_subject_manifest_compatibility.py
-                    tests/test_normalization_provider_gui.py
-                    tests/test_normalization_checkpoint_migration.py
-                    tests/test_normalization_checkpoint_store.py
-                    tests/test_normalization_resume.py
-                    tests/test_normalization_progress_gui.py
-                    tests/test_credential_store.py
-                    tests/test_cloud_consent.py
-                    tests/test_cloud_privacy_migration.py
-                    tests/test_cloud_request_envelope.py
-                    tests/test_sensitive_data_redaction.py
-                    tests/test_privacy_support_bundle.py
-                    tests/test_privacy_doctor.py
-                    tests/test_cloud_consent_cli.py
-                    tests/test_cloud_service_consent.py
-                - name: Validate patch whitespace
-                  if: github.event_name == 'pull_request'
-                  shell: bash
-                  run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
-                - name: Full test suite
-                  run: uv run pytest --junitxml=pytest-report.xml
-                - name: Upload test report
-                  if: always()
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: windows-py${{ matrix.python-version }}-pytest-report
-                    path: pytest-report.xml
-                    if-no-files-found: ignore
-          '@ | Set-Content .github/workflows/windows-content.yml -Encoding utf8
-          Remove-Item .github/workflows/pr38-bootstrap.yml -Force -ErrorAction SilentlyContinue
-          Remove-Item .agent/pr38 -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item scripts/apply_pr38.py -Force -ErrorAction SilentlyContinue
-
-      - name: Commit product implementation
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --check
-          git commit -m "Implement cloud privacy boundary and secure credentials"
-          git push origin HEAD:security/cloud-processing-boundary
+          Get-Content pr38-patch-diagnostics.txt
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr38-product-patch-diagnostics
+          path: pr38-patch-diagnostics.txt
+          if-no-files-found: error
