@@ -1,0 +1,87 @@
+name: PR 38 privacy bootstrap
+
+on:
+  push:
+    branches: [security/cloud-processing-boundary]
+    paths:
+      - scripts/apply_pr38.py
+      - .github/workflows/pr38-bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: security/cloud-processing-boundary
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify generator
+        shell: pwsh
+        run: |
+          $actual = (Get-FileHash scripts/apply_pr38.py -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne '9dbaa182978390cc7b04092355a88a642ca7d91533ff6b3844b18250a57b229f') {
+            throw "Generator SHA-256 mismatch: $actual"
+          }
+
+      - name: Apply privacy implementation
+        run: python scripts/apply_pr38.py
+
+      - name: Keep main CI workflow read-only for bootstrap push
+        shell: bash
+        run: git checkout -- .github/workflows/windows-content.yml
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Refresh lock
+        run: uv lock
+
+      - name: Install dependencies
+        run: uv sync --extra desktop --group dev
+
+      - name: Ruff autofix
+        run: uv run ruff check . --fix
+
+      - name: Compile
+        run: uv run python -m compileall -q src/tutor_assistant tests scripts
+
+      - name: Focused privacy tests
+        run: >-
+          uv run pytest -q
+          tests/test_credential_store.py
+          tests/test_cloud_consent.py
+          tests/test_cloud_privacy_migration.py
+          tests/test_cloud_request_envelope.py
+          tests/test_sensitive_data_redaction.py
+          tests/test_privacy_support_bundle.py
+          tests/test_privacy_doctor.py
+          tests/test_cloud_consent_cli.py
+          tests/test_cloud_service_consent.py
+          tests/test_normalization_provider_gui.py
+          tests/test_normalization_service.py
+
+      - name: Remove one-time generator
+        shell: pwsh
+        run: Remove-Item scripts/apply_pr38.py
+
+      - name: Commit implementation
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Implement cloud privacy boundary and secure credentials"
+          git push origin HEAD:security/cloud-processing-boundary
