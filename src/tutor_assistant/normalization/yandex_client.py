@@ -111,8 +111,7 @@ class YandexAIStudioClient:
                     parts.append(part["text"])
         if not parts:
             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
-        return "
-".join(parts).strip()
+        return "\n".join(parts).strip()
 
     def normalize_chunk(
         self,
@@ -123,9 +122,7 @@ class YandexAIStudioClient:
     ) -> str:
         if cancellation:
             cancellation.raise_if_cancelled()
-        prompt = f"{SYSTEM_PROMPT}
-
-{user_prompt(request, validation_errors=validation_errors)}"
+        prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt(request, validation_errors=validation_errors)}"
         response = self._request(
             {
                 "model": self.model_uri,
