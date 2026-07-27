@@ -28,6 +28,29 @@ jobs:
           set +e
           python scripts/apply_pr32_subject_profiles.py > apply-pr32.log 2>&1
           status=$?
+          if [ "$status" -ne 0 ] && grep -q "Expected block not found in README.md" apply-pr32.log; then
+            python - <<'PY'
+          from pathlib import Path
+          path = Path("README.md")
+          text = path.read_text(encoding="utf-8")
+          old = """API-ключ читается только из переменной окружения и в YAML не сохраняется.
+
+Старые команды `normalize` и `normalization-doctor`, а также внутреннее имя
+"""
+          new = """API-ключ читается только из переменной окружения и в YAML не сохраняется.
+
+Фильтр автоматически выбирает профиль по предмету занятия: математика, физика,
+химия или общий консервативный режим. Предметные термины, формулы и единицы
+защищаются отдельными словарями, а профиль и версия промпта сохраняются в manifest.
+
+Старые команды `normalize` и `normalization-doctor`, а также внутреннее имя
+"""
+          if old not in text:
+              raise RuntimeError("README subject-profile insertion point not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+            status=$?
+          fi
           git diff > apply-pr32.patch
           cat apply-pr32.log
           exit $status
