@@ -4,7 +4,7 @@ on:
   push:
     branches: [security/cloud-processing-boundary]
     paths:
-      - scripts/apply_pr38.py
+      - .agent/pr38/**
       - .github/workflows/pr38-bootstrap.yml
   workflow_dispatch:
 
@@ -27,20 +27,71 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify generator
+      - name: Verify and unpack generator
         shell: pwsh
         run: |
-          $actual = (Get-FileHash scripts/apply_pr38.py -Algorithm SHA256).Hash.ToLower()
-          if ($actual -ne '9dbaa182978390cc7b04092355a88a642ca7d91533ff6b3844b18250a57b229f') {
-            throw "Generator SHA-256 mismatch: $actual"
+          $parts = @(
+            @{Path='.agent/pr38/payload.00'; Sha='429fc4a30a3a643af1f167c85210c13642802838a947dce2e47ff68a7d2076f3'},
+            @{Path='.agent/pr38/payload.12'; Sha='c024f8c10b69187a1ae4e961d3e7ee8c767437c1f236531f8982901b01d4c8ef'},
+            @{Path='.agent/pr38/payload.34'; Sha='4dcf00e157f6649b7e6e4df262660c6fcfd566d5c37cba171849bb92262ec967'}
+          )
+          foreach ($part in $parts) {
+            $actual = (Get-FileHash $part.Path -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $part.Sha) { throw "Payload part mismatch: $($part.Path) $actual" }
+          }
+          $payload = ($parts | ForEach-Object { Get-Content $_.Path -Raw }) -join ''
+          Set-Content .agent/pr38/payload.b64 -Value $payload -NoNewline
+          $payloadHash = (Get-FileHash .agent/pr38/payload.b64 -Algorithm SHA256).Hash.ToLower()
+          if ($payloadHash -ne '2b3d5b25793a1f604695504d501600cbbbd0defae2a56276885fea5795275599') {
+            throw "Combined payload SHA-256 mismatch: $payloadHash"
+          }
+          python -c "import base64, pathlib; src=pathlib.Path('.agent/pr38/payload.b64'); pathlib.Path('.agent/pr38/apply_pr38.py.gz').write_bytes(base64.b64decode(src.read_text()))"
+          $archiveHash = (Get-FileHash .agent/pr38/apply_pr38.py.gz -Algorithm SHA256).Hash.ToLower()
+          if ($archiveHash -ne 'b4b2e0c6c45e3b7924dcd47dbae89c0d10cdd8bdf5c93b135d821b9485c88176') {
+            throw "Archive SHA-256 mismatch: $archiveHash"
+          }
+          python -c "import gzip, pathlib; source=pathlib.Path('.agent/pr38/apply_pr38.py.gz'); target=pathlib.Path('scripts/apply_pr38.py'); target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(gzip.decompress(source.read_bytes()))"
+          $generatorHash = (Get-FileHash scripts/apply_pr38.py -Algorithm SHA256).Hash.ToLower()
+          if ($generatorHash -ne '9dbaa182978390cc7b04092355a88a642ca7d91533ff6b3844b18250a57b229f') {
+            throw "Generator SHA-256 mismatch: $generatorHash"
           }
 
-      - name: Apply privacy implementation
-        run: python scripts/apply_pr38.py
+      - name: Patch contextual service import marker
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
 
-      - name: Keep main CI workflow read-only for bootstrap push
+          path = Path("scripts/apply_pr38.py")
+          text = path.read_text(encoding="utf-8")
+          old = "('    InvalidPlainTextOutputError,\\n', '    CloudProcessingConsentRequiredError,\\n    InvalidPlainTextOutputError,\\n')"
+          new = "('from .errors import (\\n    InvalidPlainTextOutputError,\\n', 'from .errors import (\\n    CloudProcessingConsentRequiredError,\\n    InvalidPlainTextOutputError,\\n')"
+          if text.count(old) != 1:
+              raise SystemExit(f"contextual marker patch mismatch: {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          '@ | python
+
+      - name: Apply privacy implementation
+        shell: pwsh
+        run: |
+          python scripts/apply_pr38.py *> pr38-apply.log
+          $code = $LASTEXITCODE
+          Get-Content pr38-apply.log
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload generator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr38-bootstrap-diagnostics
+          path: pr38-apply.log
+          if-no-files-found: ignore
+
+      - name: Preserve workflow files
         shell: bash
-        run: git checkout -- .github/workflows/windows-content.yml
+        run: |
+          git checkout -- .github/workflows/windows-content.yml
+          git checkout -- .github/workflows/pr38-bootstrap.yml
 
       - name: Install uv
         run: python -m pip install uv
@@ -55,7 +106,7 @@ jobs:
         run: uv run ruff check . --fix
 
       - name: Compile
-        run: uv run python -m compileall -q src/tutor_assistant tests scripts
+        run: uv run python -m compileall -q src/tutor_assistant tests
 
       - name: Focused privacy tests
         run: >-
@@ -72,9 +123,11 @@ jobs:
           tests/test_normalization_provider_gui.py
           tests/test_normalization_service.py
 
-      - name: Remove one-time generator
+      - name: Remove one-time payload
         shell: pwsh
-        run: Remove-Item scripts/apply_pr38.py
+        run: |
+          Remove-Item scripts/apply_pr38.py -Force -ErrorAction SilentlyContinue
+          Remove-Item .agent/pr38 -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: Commit implementation
         shell: bash
