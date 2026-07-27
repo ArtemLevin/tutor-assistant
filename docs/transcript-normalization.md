@@ -1,113 +1,160 @@
 # Transcript Normalization
 
-`Transcript Normalization` — необязательный локальный этап после Whisper. Он
-классифицирует исходные сегменты через Ollama, создаёт отдельный проверяемый JSON
-и никогда не заменяет подтверждённый транскрипт без действия преподавателя.
+`Transcript Normalization` — необязательный этап после Whisper. Provider получает
+блок транскрипта и возвращает обычный текст без JSON и Markdown. Результат
+сохраняется отдельно и применяется только после проверки преподавателем.
 
-## Границы безопасности
+Поддерживаются:
 
-- По умолчанию разрешён только `http://127.0.0.1:11434`.
-- Внешние LLM API не используются.
-- Запросы к Ollama выполняются последовательно и с `temperature=0`.
-- Текст транскрипта, промпт и ответ модели не записываются в журнал.
-- `keep` всегда берёт исходный текст; временные границы и роли не приходят от LLM.
-- Новый номер или новый формульный токен в `trim` блокирует блок целиком.
-- Потеря номера или формульного токена требует ручного внимания.
-- Результат получает статус `review_required`; применение создаёт append-only
-  ревизию с `created_by=ollama:<model>`.
-- Несовпадение `source_sha256` блокирует применение.
+- локальный Ollama — provider по умолчанию;
+- Yandex AI Studio Responses API — явный облачный opt-in.
 
-## Подготовка Ollama на Windows
+## Контракт plain text
+
+Модель возвращает только нормализованные целевые реплики:
+
+```text
+[П] Сегодня рассмотрим свойства логарифмов.
+[У] Я не понимаю, почему основание должно быть положительным.
+```
+
+Приложение отклоняет JSON, кодовые блоки, новый текст, новые числа и новые
+формульные токены. Потеря числа, части формулы или необычно большой объём
+удаления создают предупреждение для ручной проверки.
+
+Промпт `transcript-normalizer.v2` отдельно защищает термины школьной математики:
+логарифмы, уравнения и неравенства, функции и графики, производные, интегралы,
+прогрессии, тригонометрию, планиметрию, стереометрию, вероятность, статистику,
+текстовые задачи, ОГЭ/ЕГЭ, условия и домашнее задание.
+
+## Локальный Ollama
+
+Конфигурация по умолчанию:
+
+```yaml
+normalization:
+  enabled: true
+  provider: ollama
+  base_url: http://127.0.0.1:11434
+  allow_remote_endpoint: false
+  model: qwen3:8b
+```
+
+Подготовка Windows:
 
 ```powershell
 ollama pull qwen3:8b
 ollama serve
-uv sync --all-extras
+uv run tutor-assistant normalization-doctor
 ```
 
-Проверка без реального транскрипта:
+Удалённый Ollama запрещён по умолчанию.
+
+## Yandex AI Studio
+
+Облачный режим отправляет транскрипт в Yandex Cloud. Он включается только
+явной конфигурацией:
+
+```yaml
+normalization:
+  enabled: true
+  provider: yandex_ai_studio
+  allow_cloud_processing: true
+  yandex_base_url: https://ai.api.cloud.yandex.net/v1
+  yandex_folder_id: <folder-id>
+  yandex_api_key_env: YANDEX_AI_STUDIO_API_KEY
+  yandex_model: yandexgpt-lite
+```
+
+API-ключ хранится только в переменной окружения:
 
 ```powershell
-uv run tutor-assistant normalization-doctor
-uv run tutor-assistant normalization-doctor --model qwen3:14b --json
+$env:YANDEX_AI_STUDIO_API_KEY = "<API-key>"
+uv run tutor-assistant normalization-doctor --provider yandex_ai_studio
 ```
 
-Doctor использует короткий синтетический фрагмент, проверяет endpoint, модель,
-JSON Schema и Pydantic-валидацию structured output.
+Сервисному аккаунту требуется роль `ai.languageModels.user`, ключу — scope
+`yc.ai.languageModels.execute` или совместимый `yc.ai.foundationModels.execute`.
+Ключ, промпт и текст ответа в логи не записываются.
+
+Используется официальный Responses API:
+
+```text
+POST https://ai.api.cloud.yandex.net/v1/responses
+Authorization: Api-Key <API-key>
+model: gpt://<folder-id>/<model>
+```
 
 ## CLI
 
 ```powershell
 uv run tutor-assistant normalize <lesson-id>
 uv run tutor-assistant normalize <lesson-id> --model qwen3:14b
+uv run tutor-assistant normalize <lesson-id> --provider yandex_ai_studio
 uv run tutor-assistant normalize <lesson-id> --force
 uv run tutor-assistant normalize <lesson-id> --dry-run
-uv run tutor-assistant normalize <lesson-id> --output .\result.json --dry-run
-uv run tutor-assistant normalize <lesson-id> --include-removed-text
+uv run tutor-assistant normalize <lesson-id> --output .\result.txt --dry-run
 ```
 
-CLI не применяет результат автоматически. `--dry-run` создаёт JSON во временной
-или указанной директории, но не создаёт `normalization_runs`, не меняет занятие и
-не обновляет ревизию.
+Команда печатает нормализованный текст. `--dry-run` создаёт временный или
+указанный TXT, не создаёт `normalization_runs`, не меняет занятие и ревизию.
 
 ## GUI
 
-На вкладке «Транскрипт»:
+На вкладке «Транскрипт» отображается provider из конфигурации.
 
-1. Выберите `qwen3:8b` или `qwen3:14b`.
-2. Нажмите «Нормализовать локально».
-3. Откройте результат после завершения.
-4. Проверьте вкладки «Сравнение», «Исходный текст», «Нормализованный текст»,
-   «Удалённые фрагменты» и «Предупреждения».
-5. При необходимости исправьте нормализованный текст.
-6. Примените его как новую ревизию либо закройте/отклоните.
+1. Выберите модель.
+2. Нажмите «Нормализовать».
+3. Проверьте вкладки «Изменения», «Исходный текст», «Нормализованный текст» и
+   «Предупреждения».
+4. При необходимости отредактируйте результат.
+5. Примените его как новую ревизию или отклоните.
 
-Открытие результата фонового занятия не переключает активное занятие. Во время
-активной Whisper-транскрибации нормализация не запускается, поскольку оба
-процесса используют CPU.
+Ollama не запускается одновременно с активной Whisper-транскрибацией на CPU.
+Облачный provider не занимает локальный CPU этим ограничением.
 
-## Хранение
-
-Основные файлы:
+## Хранение и восстановление
 
 ```text
-data/lessons/<lesson_id>/transcript/transcript_normalized.json
+data/lessons/<lesson_id>/transcript/transcript_normalized.txt
 data/lessons/<lesson_id>/transcript/normalization_manifest.json
 ```
 
-Таблица `normalization_runs` хранит идемпотентный ключ
+TXT содержит только результат. Manifest содержит provider, модель, prompt
+version, SHA-256 источника, configuration hash, статистику и предупреждения.
+
+Таблица `normalization_runs` сохраняет идемпотентный ключ
 `lesson_id + source_sha256 + model + prompt_version + configuration_hash`.
-`running` после перезапуска восстанавливается как `pending`. Повтор с
-неизменными параметрами возвращает готовый результат; `--force` переводит
-предыдущий логический запуск в `stale`.
+Состояние `running` после перезапуска восстанавливается как `pending`.
+Несовпадение `source_sha256` блокирует применение.
 
 ## Ручной smoke-test
 
-1. Создайте обезличенное тестовое занятие и завершите Whisper-транскрибацию.
-2. Скопируйте SHA-256 и размер `00_raw_segments.json`.
-3. Запустите нормализацию `qwen3:8b`.
-4. Убедитесь, что исходный файл и `transcript_verified.txt` не изменились.
-5. Откройте сравнение: приветствие должно быть `drop`, учебные формулы,
-   вопросы и ошибки ученика — сохранены.
-6. Измените одну цифру в сегменте после запуска и проверьте, что применение
-   блокируется сообщением об изменившемся исходном транскрипте.
-7. Верните исходный текст, повторите нормализацию и примените результат.
-8. Проверьте новую строку `transcript_revisions`, `created_by`, статус
-   `approved`, возможность отката и stale-флаги производных материалов.
-9. Остановите Ollama во время тестового запуска: занятие должно остаться
-   доступным для обычной ручной проверки.
-10. Перезапустите приложение с искусственным `normalization_runs.status=running`
-    и убедитесь, что run восстановлен как `pending`.
+1. Создайте обезличенное занятие и завершите транскрибацию.
+2. Сохраните SHA-256 и размер `00_raw_segments.json`.
+3. Запустите normalization doctor выбранного provider.
+4. Выполните нормализацию и проверьте `transcript_normalized.txt`.
+5. Убедитесь, что приветствия удалены, формулы, логарифмы, неравенства, вопрос
+   и ошибка ученика, условие и домашнее задание сохранены.
+6. Проверьте предупреждения о числах, формулах и высокой доле удаления.
+7. Измените исходный сегмент после запуска: применение должно блокироваться.
+8. Повторите запуск и примените результат как новую ревизию.
+9. Для Ollama остановите сервер во время запроса. Для Yandex временно удалите
+   переменную API-ключа. Оба отказа должны оставить занятие доступным.
 
 ## Тесты
 
 ```powershell
 uv run ruff check .
 uv run pytest
+
 $env:TUTOR_ASSISTANT_OLLAMA_TEST = "1"
-$env:TUTOR_ASSISTANT_OLLAMA_MODEL = "qwen3:8b"
 uv run pytest -m ollama
+
+$env:TUTOR_ASSISTANT_YANDEX_TEST = "1"
+$env:YANDEX_FOLDER_ID = "<folder-id>"
+$env:YANDEX_AI_STUDIO_API_KEY = "<API-key>"
+uv run pytest -m yandex
 ```
 
-Обычный `pytest` не требует Ollama. Интеграционная группа использует только
-локальный endpoint и синтетический русский текст.
+Обычный `pytest` не требует Ollama и облачных credentials.

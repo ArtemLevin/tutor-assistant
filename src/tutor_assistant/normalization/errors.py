@@ -17,7 +17,25 @@ class OllamaTimeoutError(NormalizationError):
     pass
 
 
+class YandexAIStudioUnavailableError(NormalizationError):
+    pass
+
+
+class YandexAIStudioAuthenticationError(NormalizationError):
+    pass
+
+
+class YandexAIStudioTimeoutError(NormalizationError):
+    pass
+
+
+class InvalidPlainTextOutputError(NormalizationError):
+    pass
+
+
 class InvalidStructuredOutputError(NormalizationError):
+    """Deprecated compatibility name for pre-v2 structured responses."""
+
     pass
 
 

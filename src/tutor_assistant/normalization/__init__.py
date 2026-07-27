@@ -1,5 +1,5 @@
 from .errors import (
-    IncompleteSegmentClassificationError,
+    InvalidPlainTextOutputError,
     InvalidStructuredOutputError,
     NormalizationCancelledError,
     NormalizationError,
@@ -8,12 +8,15 @@ from .errors import (
     OllamaUnavailableError,
     SourceTranscriptChangedError,
     UnsafeNormalizationResultError,
+    YandexAIStudioAuthenticationError,
+    YandexAIStudioTimeoutError,
+    YandexAIStudioUnavailableError,
 )
 from .models import NormalizedTranscript, SourceSegment
-from .service import NormalizationService
+from .service import NormalizationService, build_provider
 
 __all__ = [
-    "IncompleteSegmentClassificationError",
+    "InvalidPlainTextOutputError",
     "InvalidStructuredOutputError",
     "NormalizationCancelledError",
     "NormalizationError",
@@ -25,4 +28,8 @@ __all__ = [
     "SourceSegment",
     "SourceTranscriptChangedError",
     "UnsafeNormalizationResultError",
+    "YandexAIStudioAuthenticationError",
+    "YandexAIStudioTimeoutError",
+    "YandexAIStudioUnavailableError",
+    "build_provider",
 ]

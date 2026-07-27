@@ -5,7 +5,8 @@ from threading import Event
 from typing import Protocol
 
 from .errors import NormalizationCancelledError
-from .models import NormalizationChunkRequest, NormalizationChunkResponse
+from .models import NormalizationChunkRequest, NormalizationDiagnostics
+from .prompts import render_target_text
 
 
 class CancellationToken:
@@ -33,44 +34,30 @@ class NormalizationProvider(Protocol):
         *,
         validation_errors: tuple[str, ...] = (),
         cancellation: CancellationToken | None = None,
-    ) -> NormalizationChunkResponse: ...
+    ) -> str: ...
+
+    def diagnose(self) -> NormalizationDiagnostics: ...
 
 
-FakeResponse = (
-    NormalizationChunkResponse | Exception | Callable[[NormalizationChunkRequest], NormalizationChunkResponse]
-)
+FakeResponse = str | Exception | Callable[[NormalizationChunkRequest], str]
 
 
 class FakeNormalizationProvider:
-    """Scriptable provider used by unit tests; it never contacts Ollama."""
+    """Scriptable plain-text provider used by unit tests."""
 
     def __init__(
         self,
         responses: Iterable[FakeResponse] = (),
         *,
-        default: Callable[[NormalizationChunkRequest], NormalizationChunkResponse] | None = None,
+        default: Callable[[NormalizationChunkRequest], str] | None = None,
     ) -> None:
         self.responses = list(responses)
         self.default = default or self._keep_all
         self.requests: list[NormalizationChunkRequest] = []
 
     @staticmethod
-    def _keep_all(request: NormalizationChunkRequest) -> NormalizationChunkResponse:
-        from .models import SegmentDecision
-
-        return NormalizationChunkResponse(
-            decisions=[
-                SegmentDecision(
-                    source_segment_id=segment.source_segment_id,
-                    action="keep",
-                    normalized_text=None,
-                    category="educational",
-                    reason_code="conservative_keep",
-                )
-                for segment in request.segments
-                if not segment.context_only
-            ]
-        )
+    def _keep_all(request: NormalizationChunkRequest) -> str:
+        return render_target_text(request.segments)
 
     def check_available(self, model: str) -> None:
         if not model:
@@ -82,7 +69,7 @@ class FakeNormalizationProvider:
         *,
         validation_errors: tuple[str, ...] = (),
         cancellation: CancellationToken | None = None,
-    ) -> NormalizationChunkResponse:
+    ) -> str:
         del validation_errors
         if cancellation:
             cancellation.raise_if_cancelled()
@@ -91,3 +78,13 @@ class FakeNormalizationProvider:
         if isinstance(response, Exception):
             raise response
         return response(request) if callable(response) else response
+
+    def diagnose(self) -> NormalizationDiagnostics:
+        return NormalizationDiagnostics(
+            provider="fake",
+            endpoint="memory",
+            endpoint_local=True,
+            reachable=True,
+            model_available=True,
+            plain_text_valid=True,
+        )

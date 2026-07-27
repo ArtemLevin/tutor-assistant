@@ -65,9 +65,10 @@ def parser() -> argparse.ArgumentParser:
     transcribe.add_argument("audio", type=Path)
     normalize = commands.add_parser(
         "normalize",
-        help="Локально нормализовать транскрипт занятия через Ollama",
+        help="Нормализовать транскрипт через Ollama или Yandex AI Studio",
     )
     normalize.add_argument("lesson_id")
+    normalize.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
     normalize.add_argument("--model")
     normalize.add_argument("--force", action="store_true")
     normalize.add_argument("--dry-run", action="store_true")
@@ -81,11 +82,13 @@ def parser() -> argparse.ArgumentParser:
         "--include-removed-text",
         action="store_true",
         default=None,
+        help=argparse.SUPPRESS,
     )
     normalization_doctor = commands.add_parser(
         "normalization-doctor",
-        help="Проверить локальный Ollama и structured output на синтетическом тексте",
+        help="Проверить provider и plain-text ответ на синтетическом тексте",
     )
+    normalization_doctor.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
     normalization_doctor.add_argument("--model")
     normalization_doctor.add_argument("--json", action="store_true")
     publish = commands.add_parser("publish", help="Опубликовать подтверждённое занятие")
@@ -139,26 +142,33 @@ def main() -> None:
         print(json.dumps(inspect_latex_environment(config.latex).to_dict(), ensure_ascii=False, indent=2))
         return
     if args.command == "normalization-doctor":
-        from .normalization.ollama_client import OllamaClient
+        from .config import NormalizationConfig
+        from .normalization import build_provider
 
-        report = OllamaClient(
-            config.normalization,
-            model=args.model or config.normalization.model,
+        normalization_config = config.normalization
+        if args.provider:
+            normalization_config = NormalizationConfig.model_validate(
+                {**normalization_config.model_dump(), "provider": args.provider}
+            )
+        report = build_provider(
+            normalization_config,
+            model=args.model or normalization_config.effective_model,
         ).diagnose()
         if args.json:
             print(report.model_dump_json(indent=2))
         else:
-            status = "ГОТОВО" if report.structured_output_valid else "ТРЕБУЕТ НАСТРОЙКИ"
+            status = "ГОТОВО" if report.plain_text_valid else "ТРЕБУЕТ НАСТРОЙКИ"
             print(
-                f"Ollama: {status}\n"
+                f"Provider {report.provider}: {status}\n"
+                f"Endpoint: {report.endpoint}\n"
                 f"Endpoint локальный: {'да' if report.endpoint_local else 'нет'}\n"
                 f"Версия: {report.version or '—'}\n"
                 f"Модель доступна: {'да' if report.model_available else 'нет'}\n"
-                f"Structured output: {'да' if report.structured_output_valid else 'нет'}"
+                f"Plain text: {'да' if report.plain_text_valid else 'нет'}"
             )
             for error in report.errors:
                 print(f"- {error}")
-        raise SystemExit(0 if report.structured_output_valid else 1)
+        raise SystemExit(0 if report.plain_text_valid else 1)
     if args.command == "content-index":
         from .content import StudentContentService
 
@@ -289,10 +299,16 @@ def main() -> None:
         raise SystemExit(0 if result.success else 1)
     pipeline = LessonPipeline(config)
     if args.command == "normalize":
+        from .config import NormalizationConfig
         from .content import ContentBusyError, ContentNotFoundError
         from .normalization import NormalizationError, NormalizationService
 
-        service = NormalizationService(config.normalization, pipeline.content_service)
+        normalization_config = config.normalization
+        if args.provider:
+            normalization_config = NormalizationConfig.model_validate(
+                {**normalization_config.model_dump(), "provider": args.provider}
+            )
+        service = NormalizationService(normalization_config, pipeline.content_service)
         try:
             result = service.normalize_lesson(
                 args.lesson_id,
@@ -304,24 +320,7 @@ def main() -> None:
             )
         except (NormalizationError, ContentBusyError, ContentNotFoundError) as exc:
             raise SystemExit(str(exc)) from None
-        print(
-            json.dumps(
-                {
-                    "lesson_id": args.lesson_id,
-                    "run_id": result.run.id if result.run else None,
-                    "status": result.run.status if result.run else "dry_run",
-                    "artifact": result.artifact_path,
-                    "manifest": result.manifest_path,
-                    "retained_ratio": result.transcript.statistics.retained_ratio,
-                    "requires_manual_attention": (result.transcript.quality.requires_manual_attention),
-                    "warnings": result.transcript.quality.warnings,
-                    "reused": result.reused,
-                    "applied": False,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        print(result.transcript.educational_text)
         return
     if args.command == "create":
         students = {item.id: item for item in load_students(config.students_file)}

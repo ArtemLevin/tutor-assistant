@@ -3,37 +3,16 @@ from __future__ import annotations
 import pytest
 
 from tutor_assistant.normalization.errors import (
-    IncompleteSegmentClassificationError,
-    InvalidStructuredOutputError,
+    InvalidPlainTextOutputError,
     UnsafeNormalizationResultError,
 )
-from tutor_assistant.normalization.models import (
-    NormalizationChunkResponse,
-    SegmentDecision,
-    SourceSegment,
-)
+from tutor_assistant.normalization.models import SourceSegment
 from tutor_assistant.normalization.validation import (
     ValidationState,
     extract_formula_tokens,
     extract_numbers,
-    validate_chunk_response,
+    validate_plain_text_response,
 )
-
-
-def _decision(
-    source_id: int,
-    *,
-    action: str = "keep",
-    text: str | None = None,
-    category: str = "educational",
-) -> SegmentDecision:
-    return SegmentDecision(
-        source_segment_id=source_id,
-        action=action,
-        normalized_text=text,
-        category=category,
-        reason_code="test",
-    )
 
 
 def test_number_and_formula_extractors_cover_educational_tokens() -> None:
@@ -43,107 +22,134 @@ def test_number_and_formula_extractors_cover_educational_tokens() -> None:
     assert {"x", "^", "+", "/", "≥", "√", "%", "c", "2", "h", "6"} <= set(extract_formula_tokens(text))
 
 
-def test_trim_that_adds_number_is_blocked() -> None:
-    source = (SourceSegment(source_segment_id=1, text="Решаем x + 2 = 5."),)
-    response = NormalizationChunkResponse(decisions=[_decision(1, action="trim", text="Решаем x + 2 = 6.")])
+def test_plain_text_that_adds_number_is_blocked() -> None:
+    source = (SourceSegment(source_segment_id=1, speaker="П", text="Решаем x + 2 = 5."),)
 
     with pytest.raises(UnsafeNormalizationResultError, match="новые числа"):
-        validate_chunk_response(source, (1,), response, ValidationState())
+        validate_plain_text_response(
+            source,
+            (1,),
+            "[П] Решаем x + 2 = 6.",
+            ValidationState(),
+        )
 
 
-def test_trim_cannot_add_or_paraphrase_regular_words() -> None:
-    source = (SourceSegment(source_segment_id=1, text="Ну, сегодня решаем задачу."),)
-    response = NormalizationChunkResponse(
-        decisions=[
-            _decision(
-                1,
-                action="trim",
-                text="Сегодня быстро решаем задачу.",
-            )
-        ]
-    )
+def test_plain_text_cannot_add_or_paraphrase_regular_words() -> None:
+    source = (SourceSegment(source_segment_id=1, speaker="П", text="Ну, сегодня решаем задачу."),)
 
-    with pytest.raises(UnsafeNormalizationResultError, match="перефразировал"):
-        validate_chunk_response(source, (1,), response, ValidationState())
+    with pytest.raises(UnsafeNormalizationResultError, match="перефразировала"):
+        validate_plain_text_response(
+            source,
+            (1,),
+            "[П] Сегодня быстро решаем задачу.",
+            ValidationState(),
+        )
 
 
-def test_trim_that_removes_number_requires_manual_attention() -> None:
+def test_removed_number_requires_manual_attention() -> None:
     source = (
         SourceSegment(
             source_segment_id=1,
+            speaker="П",
             text="Ну, решаем задачу № 12.",
         ),
     )
-    response = NormalizationChunkResponse(decisions=[_decision(1, action="trim", text="Решаем задачу.")])
     state = ValidationState()
 
-    validate_chunk_response(source, (1,), response, state)
+    result = validate_plain_text_response(
+        source,
+        (1,),
+        "[П] Решаем задачу.",
+        state,
+    )
 
+    assert result == "[П] Решаем задачу."
     assert state.numbers_preserved is False
     assert state.requires_manual_attention is True
-    assert state.warnings == ["numbers_removed:1"]
+    assert state.warnings == ["numbers_removed"]
 
 
-def test_drop_with_formula_or_student_difficulty_is_blocked() -> None:
+def test_formula_and_school_math_terms_cannot_be_dropped_wholly() -> None:
     formula = (SourceSegment(source_segment_id=1, speaker="П", text="x + 2 = 5"),)
-    response = NormalizationChunkResponse(
-        decisions=[_decision(1, action="drop", category="other_non_educational")]
-    )
-    with pytest.raises(UnsafeNormalizationResultError):
-        validate_chunk_response(formula, (1,), response, ValidationState())
+    with pytest.raises(UnsafeNormalizationResultError, match="формульный"):
+        validate_plain_text_response(formula, (1,), "", ValidationState())
 
-    difficulty = (
+    logarithm = (
         SourceSegment(
             source_segment_id=2,
+            speaker="П",
+            text="Рассмотрим свойства логарифмов.",
+        ),
+    )
+    with pytest.raises(UnsafeNormalizationResultError, match="термин школьного курса"):
+        validate_plain_text_response(logarithm, (2,), "", ValidationState())
+
+
+def test_student_question_and_difficulty_are_protected() -> None:
+    source = (
+        SourceSegment(
+            source_segment_id=1,
             speaker="У",
             text="Я не понимаю, почему знак меняется.",
         ),
     )
-    response = NormalizationChunkResponse(
-        decisions=[_decision(2, action="drop", category="other_non_educational")]
-    )
-    with pytest.raises(UnsafeNormalizationResultError):
-        validate_chunk_response(difficulty, (2,), response, ValidationState())
+
+    with pytest.raises(UnsafeNormalizationResultError, match="защищённый"):
+        validate_plain_text_response(source, (1,), "", ValidationState())
 
 
-def test_context_unknown_duplicate_and_missing_ids_are_rejected() -> None:
+def test_context_text_and_json_are_rejected() -> None:
     source = (
-        SourceSegment(source_segment_id=1, text="Цель", context_only=False),
-        SourceSegment(source_segment_id=2, text="Контекст", context_only=True),
+        SourceSegment(source_segment_id=1, speaker="П", text="Целевой текст."),
+        SourceSegment(
+            source_segment_id=2,
+            speaker="П",
+            text="Только контекст.",
+            context_only=True,
+        ),
     )
-    with pytest.raises(InvalidStructuredOutputError, match="контекстного"):
-        validate_chunk_response(
+
+    with pytest.raises(InvalidPlainTextOutputError, match="контекстный"):
+        validate_plain_text_response(
             source,
             (1,),
-            NormalizationChunkResponse(decisions=[_decision(2)]),
+            "[П] Только контекст.",
             ValidationState(),
         )
-    with pytest.raises(InvalidStructuredOutputError, match="Неизвестный"):
-        validate_chunk_response(
+    with pytest.raises(InvalidPlainTextOutputError, match="JSON"):
+        validate_plain_text_response(
             source,
             (1,),
-            NormalizationChunkResponse(decisions=[_decision(999)]),
-            ValidationState(),
-        )
-    with pytest.raises(InvalidStructuredOutputError, match="Повторное"):
-        validate_chunk_response(
-            source,
-            (1,),
-            NormalizationChunkResponse(decisions=[_decision(1), _decision(1)]),
-            ValidationState(),
-        )
-    with pytest.raises(IncompleteSegmentClassificationError, match="Пропущены"):
-        validate_chunk_response(
-            source,
-            (1,),
-            NormalizationChunkResponse(decisions=[]),
+            '{"text":"Целевой текст"}',
             ValidationState(),
         )
 
 
-def test_keep_cannot_rewrite_source_text() -> None:
-    source = (SourceSegment(source_segment_id=1, text="Ошибка ученика: 2 + 2 = 5"),)
-    response = NormalizationChunkResponse(decisions=[_decision(1, text="Исправлено: 2 + 2 = 4")])
+def test_greeting_may_be_removed_to_empty_text() -> None:
+    source = (SourceSegment(source_segment_id=1, speaker="П", text="Здравствуйте, меня слышно?"),)
 
-    with pytest.raises(InvalidStructuredOutputError, match="keep изменил"):
-        validate_chunk_response(source, (1,), response, ValidationState())
+    assert validate_plain_text_response(source, (1,), "", ValidationState()) == ""
+
+
+def test_each_retained_line_requires_speaker_label() -> None:
+    source = (SourceSegment(source_segment_id=1, speaker="П", text="Решаем задачу."),)
+
+    with pytest.raises(InvalidPlainTextOutputError, match="метку говорящего"):
+        validate_plain_text_response(source, (1,), "Решаем задачу.", ValidationState())
+
+
+def test_plain_text_supports_custom_and_missing_source_speakers() -> None:
+    source = (
+        SourceSegment(source_segment_id=1, speaker="Teacher", text="Решаем задачу."),
+        SourceSegment(source_segment_id=2, text="Ответ равен пяти."),
+    )
+
+    assert (
+        validate_plain_text_response(
+            source,
+            (1, 2),
+            "[Teacher] Решаем задачу.\n[—] Ответ равен пяти.",
+            ValidationState(),
+        )
+        == "[Teacher] Решаем задачу.\n[—] Ответ равен пяти."
+    )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -112,6 +113,11 @@ class NormalizationConfig(BaseModel):
     base_url: str = "http://127.0.0.1:11434"
     allow_remote_endpoint: bool = False
     model: str = "qwen3:8b"
+    allow_cloud_processing: bool = False
+    yandex_base_url: str = "https://ai.api.cloud.yandex.net/v1"
+    yandex_folder_id: str | None = None
+    yandex_api_key_env: str = "YANDEX_AI_STUDIO_API_KEY"
+    yandex_model: str = "yandexgpt-lite"
     mode: str = "conservative"
     temperature: float = Field(default=0, ge=0, le=2)
     num_ctx: int = Field(default=8192, ge=1024)
@@ -122,15 +128,21 @@ class NormalizationConfig(BaseModel):
     request_timeout_seconds: int = Field(default=600, gt=0)
     max_attempts: int = Field(default=2, ge=1, le=5)
     retry_backoff_seconds: float = Field(default=2, ge=0, le=60)
-    include_removed_text: bool = False
     require_manual_approval: bool = True
     high_removal_threshold: float = Field(default=0.35, gt=0, lt=1)
 
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, value: str) -> str:
-        if value != "ollama":
-            raise ValueError("Поддерживается только локальный provider=ollama")
+        if value not in {"ollama", "yandex_ai_studio"}:
+            raise ValueError("provider должен быть ollama или yandex_ai_studio")
+        return value
+
+    @field_validator("yandex_api_key_env")
+    @classmethod
+    def validate_yandex_api_key_env(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError("yandex_api_key_env должен быть именем переменной окружения")
         return value
 
     @field_validator("mode")
@@ -149,7 +161,7 @@ class NormalizationConfig(BaseModel):
             raise ValueError("normalization.base_url не должен содержать credentials, query или fragment")
         if parsed.path not in {"", "/"}:
             raise ValueError("normalization.base_url не должен содержать путь")
-        if not self.allow_remote_endpoint:
+        if self.provider == "ollama" and not self.allow_remote_endpoint:
             host = parsed.hostname.casefold()
             is_local = host == "localhost"
             if not is_local:
@@ -162,9 +174,31 @@ class NormalizationConfig(BaseModel):
                     "Удалённый Ollama endpoint запрещён; используйте 127.0.0.1 "
                     "или включите allow_remote_endpoint"
                 )
+        yandex = urlsplit(self.yandex_base_url)
+        if (
+            yandex.scheme != "https"
+            or yandex.hostname != "ai.api.cloud.yandex.net"
+            or yandex.path.rstrip("/") != "/v1"
+            or yandex.username
+            or yandex.password
+            or yandex.query
+            or yandex.fragment
+        ):
+            raise ValueError(
+                "normalization.yandex_base_url должен быть официальным https://ai.api.cloud.yandex.net/v1"
+            )
+        if self.provider == "yandex_ai_studio":
+            if not self.allow_cloud_processing:
+                raise ValueError("Для Yandex AI Studio явно включите normalization.allow_cloud_processing")
+            if not (self.yandex_folder_id or "").strip():
+                raise ValueError("Для Yandex AI Studio укажите normalization.yandex_folder_id")
         if self.context_overlap_segments >= self.max_segments_per_chunk:
             raise ValueError("context_overlap_segments должен быть меньше max_segments_per_chunk")
         return self
+
+    @property
+    def effective_model(self) -> str:
+        return self.yandex_model if self.provider == "yandex_ai_studio" else self.model
 
 
 class AppConfig(BaseModel):
