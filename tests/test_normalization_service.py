@@ -265,4 +265,4 @@ def test_logs_do_not_contain_transcript_text(tmp_path: Path, caplog) -> None:
         service.normalize_lesson(lesson.lesson_id)
 
     assert "Я не понимаю, почему знак меняется" not in caplog.text
-    assert "event=normalization_completed" in caplog.text
+    assert "event=content_filter_completed" in caplog.text

@@ -85,7 +85,7 @@ def test_plain_text_request_has_no_response_schema() -> None:
     )
 
     assert "response" not in request.model_dump()
-    assert PROMPT_VERSION == "transcript-normalizer.v2"
+    assert PROMPT_VERSION == "educational-content-filter.v1"
     assert "логариф" in SYSTEM_PROMPT.casefold()
     assert "неравен" in SYSTEM_PROMPT.casefold()
     assert "JSON" in SYSTEM_PROMPT
