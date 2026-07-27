@@ -56,7 +56,20 @@ jobs:
           }
 
       - name: Apply privacy implementation
-        run: python scripts/apply_pr38.py
+        shell: pwsh
+        run: |
+          python scripts/apply_pr38.py *> pr38-apply.log
+          $code = $LASTEXITCODE
+          Get-Content pr38-apply.log
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload generator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr38-apply-diagnostics
+          path: pr38-apply.log
+          if-no-files-found: ignore
 
       - name: Preserve temporary workflow files
         shell: bash
