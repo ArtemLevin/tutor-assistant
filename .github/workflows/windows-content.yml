@@ -23,7 +23,22 @@ jobs:
         with:
           python-version: '3.12'
       - name: Apply subject profiles
-        run: python scripts/apply_pr32_subject_profiles.py
+        shell: bash
+        run: |
+          set +e
+          python scripts/apply_pr32_subject_profiles.py > apply-pr32.log 2>&1
+          status=$?
+          git diff > apply-pr32.patch
+          cat apply-pr32.log
+          exit $status
+      - name: Upload apply diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr32-apply-diagnostics
+          path: |
+            apply-pr32.log
+            apply-pr32.patch
       - name: Format modified sources
         run: |
           python -m pip install ruff
