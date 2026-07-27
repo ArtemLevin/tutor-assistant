@@ -86,9 +86,11 @@ def run_privacy_diagnostics(
         )
     )
 
+    sample_one = "placeholder-privacy-doctor-key"
+    sample_two = "placeholder-privacy-doctor-secret"
     redaction_sample = (
-        "Authorization: Api-Key placeholder-privacy-doctor-key "
-        "YANDEX_AI_STUDIO_API_KEY=placeholder-privacy-doctor-secret"
+        f"Authorization: Api-Key {sample_one} "
+        f"YANDEX_AI_STUDIO_API_KEY={sample_two}"
     )
     redacted = redact_text(redaction_sample)
     checks.append(
