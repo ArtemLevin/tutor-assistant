@@ -24,11 +24,11 @@ dependencies = [
 [project.optional-dependencies]
 desktop = ["PySide6>=6.8,<7"]
 transcription = ["faster-whisper>=1.1,<2"]
-dev = ["pytest>=8.3,<9", "ruff>=0.9,<1"]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
 all = ["PySide6>=6.8,<7", "faster-whisper>=1.1,<2"]
 
 [dependency-groups]
-dev = ["pytest>=8.3,<9", "ruff>=0.9,<1"]
+dev = ["pytest>=8.3,<9", "ruff>=0.9,<1", "jsonschema>=4.23,<5"]
 
 [project.scripts]
 tutor-assistant = "tutor_assistant.cli:main"
