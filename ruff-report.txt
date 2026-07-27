@@ -1,92 +1,6 @@
 Downloading ruff (10.9MiB)
  Downloaded ruff
-Installed 1 package in 2ms
-invalid-syntax: missing closing quote in string literal
-   --> src/tutor_assistant/normalization/yandex_client.py:114:16
-    |
-112 |         if not parts:
-113 |             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
-114 |         return "
-    |                ^
-115 | ".join(parts).strip()
-    |
-
-invalid-syntax: missing closing quote in string literal
-   --> src/tutor_assistant/normalization/yandex_client.py:115:1
-    |
-113 |             raise InvalidPlainTextOutputError("Yandex AI Studio не вернул текст ответа")
-114 |         return "
-115 | ".join(parts).strip()
-    | ^^^^^^^^^^^^^^^^^^^^^
-116 |
-117 |     def normalize_chunk(
-    |
-
-invalid-syntax: Unexpected indentation
-   --> src/tutor_assistant/normalization/yandex_client.py:117:1
-    |
-115 | ".join(parts).strip()
-116 |
-117 |     def normalize_chunk(
-    | ^^^^
-118 |         self,
-119 |         request: NormalizationChunkRequest,
-    |
-
-invalid-syntax: f-string: unterminated string
-   --> src/tutor_assistant/normalization/yandex_client.py:126:35
-    |
-124 |         if cancellation:
-125 |             cancellation.raise_if_cancelled()
-126 |         prompt = f"{SYSTEM_PROMPT}
-    |                                   ^
-127 |
-128 | {user_prompt(request, validation_errors=validation_errors)}"
-    |
-
-invalid-syntax: Expected a statement
-   --> src/tutor_assistant/normalization/yandex_client.py:128:1
-    |
-126 |         prompt = f"{SYSTEM_PROMPT}
-127 |
-128 | {user_prompt(request, validation_errors=validation_errors)}"
-    | ^
-129 |         response = self._request(
-130 |             {
-    |
-
-invalid-syntax: missing closing quote in string literal
-   --> src/tutor_assistant/normalization/yandex_client.py:128:60
-    |
-126 |         prompt = f"{SYSTEM_PROMPT}
-127 |
-128 | {user_prompt(request, validation_errors=validation_errors)}"
-    |                                                            ^
-129 |         response = self._request(
-130 |             {
-    |
-
-invalid-syntax: Unexpected indentation
-   --> src/tutor_assistant/normalization/yandex_client.py:129:1
-    |
-128 | {user_prompt(request, validation_errors=validation_errors)}"
-129 |         response = self._request(
-    | ^^^^^^^^
-130 |             {
-131 |                 "model": self.model_uri,
-    |
-
-invalid-syntax: unindent does not match any outer indentation level
-   --> src/tutor_assistant/normalization/yandex_client.py:148:1
-    |
-146 |         return self._response_text(payload)
-147 |
-148 |     def diagnose(self) -> NormalizationDiagnostics:
-    | ^^^^
-149 |         diagnostics = NormalizationDiagnostics(
-150 |             provider="yandex_ai_studio",
-    |
-
+Installed 1 package in 1ms
 invalid-syntax: missing closing quote in string literal
   --> src/tutor_assistant/ui/normalization.py:78:16
    |
@@ -547,5 +461,5 @@ help: Organize imports
 11 |
    |
 
-Found 48 errors.
+Found 40 errors.
 [*] 2 fixable with the `--fix` option.
