@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import tutor_assistant.normalization.yandex_client as yandex_module
@@ -13,10 +15,8 @@ from tutor_assistant.normalization.yandex_client import YandexAIStudioClient
 class _Response:
     status_code = 200
 
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict:
+    @staticmethod
+    def _payload() -> dict:
         return {
             "output": [
                 {
@@ -30,11 +30,23 @@ class _Response:
             ]
         }
 
+    @property
+    def content(self) -> bytes:
+        return json.dumps(self._payload(), ensure_ascii=False).encode("utf-8")
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload()
+
 
 def _config() -> NormalizationConfig:
     return NormalizationConfig(
         provider="yandex_ai_studio",
         allow_cloud_processing=True,
+        cloud_policy="ask_every_time",
+        credential_source="environment",
         yandex_folder_id="folder-id",
     )
 
@@ -42,8 +54,14 @@ def _config() -> NormalizationConfig:
 def test_yandex_client_uses_official_responses_api_and_api_key(monkeypatch) -> None:
     captured: dict = {}
 
-    def request(method, url, *, headers, payload, **_kwargs):
-        captured.update(method=method, url=url, headers=headers, payload=payload)
+    def request(method, url, *, headers, payload, **kwargs):
+        captured.update(
+            method=method,
+            url=url,
+            headers=headers,
+            payload=payload,
+            kwargs=kwargs,
+        )
         return _Response()
 
     monkeypatch.setenv("YANDEX_AI_STUDIO_API_KEY", "secret")
@@ -72,10 +90,12 @@ def test_yandex_client_uses_official_responses_api_and_api_key(monkeypatch) -> N
     assert captured["payload"]["model"] == "gpt://folder-id/yandexgpt-lite"
     assert captured["payload"]["temperature"] == 0
     assert "логарифм" in captured["payload"]["input"].casefold()
+    assert captured["kwargs"]["follow_redirects"] is False
+    assert captured["kwargs"]["trust_env"] is False
 
 
-def test_yandex_client_requires_key_from_environment(monkeypatch) -> None:
+def test_yandex_client_requires_key_from_selected_credential_source(monkeypatch) -> None:
     monkeypatch.delenv("YANDEX_AI_STUDIO_API_KEY", raising=False)
 
-    with pytest.raises(YandexAIStudioAuthenticationError, match="Переменная окружения"):
+    with pytest.raises(YandexAIStudioAuthenticationError, match="credential source"):
         YandexAIStudioClient(_config()).check_available()
