@@ -29,8 +29,23 @@ jobs:
       - name: Verify and unpack generator
         shell: pwsh
         run: |
-          $archive = '.agent/pr38/apply_pr38.py.gz'
-          $archiveHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          $parts = @(
+            @{Path='.agent/pr38/payload.00'; Sha='429fc4a30a3a643af1f167c85210c13642802838a947dce2e47ff68a7d2076f3'},
+            @{Path='.agent/pr38/payload.12'; Sha='c024f8c10b69187a1ae4e961d3e7ee8c767437c1f236531f8982901b01d4c8ef'},
+            @{Path='.agent/pr38/payload.34'; Sha='4dcf00e157f6649b7e6e4df262660c6fcfd566d5c37cba171849bb92262ec967'}
+          )
+          foreach ($part in $parts) {
+            $actual = (Get-FileHash $part.Path -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $part.Sha) { throw "Payload part mismatch: $($part.Path) $actual" }
+          }
+          $payload = ($parts | ForEach-Object { Get-Content $_.Path -Raw }) -join ''
+          Set-Content .agent/pr38/payload.b64 -Value $payload -NoNewline
+          $payloadHash = (Get-FileHash .agent/pr38/payload.b64 -Algorithm SHA256).Hash.ToLower()
+          if ($payloadHash -ne '2b3d5b25793a1f604695504d501600cbbbd0defae2a56276885fea5795275599') {
+            throw "Combined payload SHA-256 mismatch: $payloadHash"
+          }
+          python -c "import base64, pathlib; src=pathlib.Path('.agent/pr38/payload.b64'); pathlib.Path('.agent/pr38/apply_pr38.py.gz').write_bytes(base64.b64decode(src.read_text()))"
+          $archiveHash = (Get-FileHash .agent/pr38/apply_pr38.py.gz -Algorithm SHA256).Hash.ToLower()
           if ($archiveHash -ne 'b4b2e0c6c45e3b7924dcd47dbae89c0d10cdd8bdf5c93b135d821b9485c88176') {
             throw "Archive SHA-256 mismatch: $archiveHash"
           }
