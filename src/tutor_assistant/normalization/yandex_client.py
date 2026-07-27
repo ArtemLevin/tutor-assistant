@@ -14,7 +14,7 @@ from .errors import (
 )
 from .http_client import cancellable_request
 from .models import NormalizationChunkRequest, NormalizationDiagnostics
-from .prompts import PROMPT_VERSION, SYSTEM_PROMPT, user_prompt
+from .prompts import PROMPT_VERSION, system_prompt, user_prompt
 from .protocol import CancellationToken
 
 
@@ -73,9 +73,7 @@ class YandexAIStudioClient:
                 cancellation=cancellation,
             )
         except httpx.TimeoutException as exc:
-            raise YandexAIStudioTimeoutError(
-                "Yandex AI Studio не ответил за отведённое время"
-            ) from exc
+            raise YandexAIStudioTimeoutError("Yandex AI Studio не ответил за отведённое время") from exc
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {401, 403}:
                 raise YandexAIStudioAuthenticationError(
@@ -122,7 +120,10 @@ class YandexAIStudioClient:
     ) -> str:
         if cancellation:
             cancellation.raise_if_cancelled()
-        prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt(request, validation_errors=validation_errors)}"
+        prompt = (
+            f"{system_prompt(request.subject_profile)}\n\n"
+            f"{user_prompt(request, validation_errors=validation_errors)}"
+        )
         response = self._request(
             {
                 "model": self.model_uri,
@@ -156,6 +157,8 @@ class YandexAIStudioClient:
                 lesson_id="doctor-synthetic",
                 prompt_version=PROMPT_VERSION,
                 mode="filter_only",
+                lesson_subject="mathematics",
+                subject_profile="mathematics",
                 segments=[
                     {
                         "source_segment_id": 1,
