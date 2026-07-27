@@ -33,7 +33,17 @@ jobs:
       - name: Install test and desktop dependencies
         run: uv sync --extra desktop --group dev
       - name: Lint
-        run: uv run ruff check .
+        shell: pwsh
+        run: |
+          uv run ruff check . --output-format=concise 2>&1 | Tee-Object ruff-report.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Ruff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-ruff-report
+          path: ruff-report.txt
+          if-no-files-found: ignore
       - name: Compile Python sources
         run: uv run python -m compileall -q src/tutor_assistant tests
       - name: Filtering import smoke
