@@ -20,6 +20,7 @@ jobs:
           cd repo
           git checkout --quiet "$HEAD_BRANCH"
           python scripts/pr37_finalize.py
+          git checkout HEAD -- .github/workflows/windows-content.yml .github/workflows/pr37-bootstrap.yml
           python -m compileall -q src/tutor_assistant tests
           git diff --check
           git config user.name github-actions[bot]
