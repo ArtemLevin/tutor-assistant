@@ -31,8 +31,12 @@ jobs:
           set +e
           (
             set -e
+            echo '== assemble =='
+            cat scripts/pr37_bootstrap.part.* | tr -d '\r\n' > scripts/pr37_bootstrap.py.gz.b64.assembled
+            echo '4284f0f7c91b6ca122214f85d5ddcf7974d306b1c62492590f1c5ffcc571cfae  scripts/pr37_bootstrap.py.gz.b64.assembled' | sha256sum -c -
             echo '== decode =='
-            base64 -d scripts/pr37_bootstrap.py.gz.b64 | gzip -d > scripts/pr37_bootstrap.py
+            base64 -d scripts/pr37_bootstrap.py.gz.b64.assembled | gzip -d > scripts/pr37_bootstrap.py
+            echo 'ecb5540213aa15a27172342658d567cbdab9769f0e672f3c26e168cdce57a80b  scripts/pr37_bootstrap.py' | sha256sum -c -
             echo '== apply =='
             python scripts/pr37_bootstrap.py
             echo '== install uv =='
