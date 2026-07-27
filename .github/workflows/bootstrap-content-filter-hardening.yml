@@ -25,6 +25,7 @@ jobs:
       - name: Commit generated changes
         shell: bash
         run: |
+          # This second push ensures the workflow is active before bootstrap execution.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
