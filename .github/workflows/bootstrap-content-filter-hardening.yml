@@ -28,7 +28,6 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import re
           from pathlib import Path
 
           path = Path('scripts/apply_content_filter_hardening.py')
@@ -37,15 +36,13 @@ jobs:
           if cleanup not in text:
               raise SystemExit('workflow cleanup fragment not found')
           text = text.replace(cleanup, '')
-          pattern = r"# CI on pull requests and merged main, with the declared Python compatibility range\.\nwrite\(\n    \"\.github/workflows/windows-content\.yml\",.*?\n\)\n\n# Provider tests now intercept the shared cancellable transport\."
-          text, count = re.subn(
-              pattern,
-              '# Provider tests now intercept the shared cancellable transport.',
-              text,
-              flags=re.S,
-          )
-          if count != 1:
-              raise SystemExit(f'windows workflow patch block count={count}')
+          start_marker = '# CI on pull requests and merged main, with the declared Python compatibility range.\n'
+          end_marker = '# Provider tests now intercept the shared cancellable transport.\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit(f'workflow patch markers not found: start={start}, end={end}')
+          text = text[:start] + text[end:]
           path.write_text(text, encoding='utf-8')
           PY
       - name: Apply product changes
