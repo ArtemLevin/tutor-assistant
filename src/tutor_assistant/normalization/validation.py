@@ -156,7 +156,7 @@ def _validate_protected_segments(
         if missing_terms:
             state.protected_content_preserved = False
             raise UnsafeNormalizationResultError(
-                f"Удалён термин профиля {profile.name.value}: " + ", ".join(missing_terms)
+                f"Удалён термин школьного курса профиля {profile.name.value}: " + ", ".join(missing_terms)
             )
 
         protected_statement = any(marker in source for marker in PROTECTED_MARKERS)
