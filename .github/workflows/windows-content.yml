@@ -32,6 +32,7 @@ jobs:
           (
             set -e
             echo '== assemble =='
+            sha256sum scripts/pr37_bootstrap.part.*
             cat scripts/pr37_bootstrap.part.* | tr -d '\r\n' > scripts/pr37_bootstrap.py.gz.b64.assembled
             echo '4284f0f7c91b6ca122214f85d5ddcf7974d306b1c62492590f1c5ffcc571cfae  scripts/pr37_bootstrap.py.gz.b64.assembled' | sha256sum -c -
             echo '== decode =='
