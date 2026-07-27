@@ -75,8 +75,7 @@ class ContentFilterReviewDialog(QDialog):
         layout.addWidget(hint)
         editor = QPlainTextEdit()
         editor.setReadOnly(True)
-        diff = "
-".join(
+        diff = "\n".join(
             unified_diff(
                 self.source_text.splitlines(),
                 self.transcript.educational_text.splitlines(),
@@ -117,24 +116,19 @@ class ContentFilterReviewDialog(QDialog):
         box_layout = QVBoxLayout(box)
         box_layout.addWidget(
             QLabel(
-                f"Plain text: {'да' if quality.plain_text_valid else 'нет'}
-"
-                f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}
-"
-                f"Формульные токены сохранены: "
-                f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}
-"
-                f"Защищённое содержание сохранено: "
-                f"{'да' if quality.protected_content_preserved else 'нет'}
-"
+                f"Plain text: {'да' if quality.plain_text_valid else 'нет'}\n"
+                f"Числа сохранены: {'да' if quality.numbers_preserved else 'требуется проверка'}\n"
+                "Формульные токены сохранены: "
+                f"{'да' if quality.formula_tokens_preserved else 'требуется проверка'}\n"
+                "Защищённое содержание сохранено: "
+                f"{'да' if quality.protected_content_preserved else 'нет'}\n"
                 f"Ручное внимание: {'да' if quality.requires_manual_attention else 'нет'}"
             )
         )
         layout.addWidget(box)
         warnings = QPlainTextEdit()
         warnings.setReadOnly(True)
-        warnings.setPlainText("
-".join(quality.warnings) or "Предупреждений нет")
+        warnings.setPlainText("\n".join(quality.warnings) or "Предупреждений нет")
         layout.addWidget(warnings)
         return page
 
