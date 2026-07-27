@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = Path(path)
+    content = target.read_text(encoding="utf-8")
+    if content.count(old) != 1:
+        raise RuntimeError(f"Expected exactly one occurrence in {path}: {old!r}")
+    target.write_text(content.replace(old, new, 1), encoding="utf-8")
+
+
+FINAL_WORKFLOW = """name: Windows student content
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  content:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Check lock file
+        run: uv lock --check
+      - name: Install test and desktop dependencies
+        run: uv sync --extra desktop --group dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Compile Python sources
+        run: uv run python -m compileall -q src/tutor_assistant tests
+      - name: Filtering import smoke
+        run: uv run python -c "from tutor_assistant.normalization.prompts import system_prompt; from tutor_assistant.ui.normalization_provider import provider_label; assert 'Импульс' in system_prompt('physics'); assert provider_label('ollama') == 'Локальная LLM (Ollama)'"
+      - name: Filtering feature contracts
+        run: >-
+          uv run pytest -q
+          tests/test_filtering_feature_contracts.py
+          tests/test_subject_aware_filtering.py
+          tests/test_subject_manifest_compatibility.py
+          tests/test_normalization_provider_gui.py
+      - name: Validate patch whitespace
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
+      - name: Full test suite
+        run: uv run pytest --junitxml=pytest-report.xml
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore
+"""
+
+
+replace_once("pyproject.toml", 'version = "0.13.0"', 'version = "0.13.1"')
+replace_once("README.md", "Текущая версия: **0.13.0**.", "Текущая версия: **0.13.1**.")
+Path(".github/workflows/windows-content.yml").write_text(FINAL_WORKFLOW, encoding="utf-8")
+Path(__file__).unlink()
