@@ -53,8 +53,7 @@ def _speaker_prefix(segment: SourceSegment) -> str:
 
 
 def render_target_text(segments: list[SourceSegment] | tuple[SourceSegment, ...]) -> str:
-    return "
-".join(
+    return "\n".join(
         f"{_speaker_prefix(segment)}{segment.text.strip()}".strip()
         for segment in segments
         if not segment.context_only and segment.text.strip()
@@ -78,5 +77,4 @@ def user_prompt(
         kind = "КОНТЕКСТ" if segment.context_only else "ЦЕЛЬ"
         speaker = segment.speaker or "—"
         lines.append(f"{kind} id={segment.source_segment_id} speaker={speaker}: {segment.text.strip()}")
-    return "
-".join(lines)
+    return "\n".join(lines)
