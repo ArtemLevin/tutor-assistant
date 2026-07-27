@@ -15,14 +15,15 @@ jobs:
     outputs:
       changed: ${{ steps.state.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref || github.ref_name }}
-          fetch-depth: 0
-          show-progress: false
       - id: state
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+          cd repo
+          git checkout --quiet "$HEAD_BRANCH"
           if grep -q 'version = "0.14.0"' pyproject.toml; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -34,7 +35,7 @@ jobs:
             echo '== apply =='
             python scripts/pr37_bootstrap.py
             echo '== install uv =='
-            python -m pip install uv
+            python -m pip install --quiet uv
             echo '== lock =='
             uv lock
             echo '== compile =='
@@ -42,22 +43,17 @@ jobs:
           } > bootstrap-error.txt 2>&1
           status=$?
           set -e
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           if [ "$status" -ne 0 ]; then
             printf '\nexit_status=%s\n' "$status" >> bootstrap-error.txt
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add -f bootstrap-error.txt
-            git commit -m "Capture PR 37 bootstrap failure"
-            git push origin HEAD:${{ github.head_ref || github.ref_name }}
             cat bootstrap-error.txt
             exit "$status"
           fi
           rm -f bootstrap-error.txt
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add README.md docs pyproject.toml uv.lock src tests
           git commit -m "Add durable resumable normalization checkpoints"
-          git push origin HEAD:${{ github.head_ref || github.ref_name }}
+          git push --quiet origin "HEAD:${HEAD_BRANCH}"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
   content:
