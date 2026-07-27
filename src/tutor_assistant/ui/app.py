@@ -73,7 +73,6 @@ from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
 from .normalization import NormalizationReviewDialog
-from .normalization_worker import NormalizationWorker
 from .normalization_provider import (
     provider_configuration_error,
     provider_hint,
@@ -82,6 +81,7 @@ from .normalization_provider import (
     select_provider_config,
     with_provider_model,
 )
+from .normalization_worker import NormalizationWorker
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
 from .student_content import StudentContentPage
