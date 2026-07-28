@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QApplication
 
 from tutor_assistant.normalization.errors import NormalizationResumeConfirmationRequired
 from tutor_assistant.normalization.models import NormalizationProgress
 from tutor_assistant.ui.normalization_worker import NormalizationWorker
 
+_APPLICATION: QApplication | None = None
 
-def _application() -> QCoreApplication:
-    return QCoreApplication.instance() or QCoreApplication([])
+
+def _application() -> QApplication:
+    global _APPLICATION
+    existing = QApplication.instance()
+    if isinstance(existing, QApplication):
+        _APPLICATION = existing
+    elif _APPLICATION is None:
+        _APPLICATION = QApplication([])
+    return _APPLICATION
 
 
 def test_normalization_worker_forwards_progress_and_result() -> None:

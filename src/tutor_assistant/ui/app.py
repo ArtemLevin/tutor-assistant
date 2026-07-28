@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -35,9 +34,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
-    QSplitter,
     QStackedWidget,
-    QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
@@ -96,6 +93,10 @@ from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
 from .student_content import StudentContentPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
+from .transcript_workspace import (
+    NormalizationSettingsDialog,
+    TranscriptWorkspace,
+)
 
 
 class Worker(QThread):
@@ -1197,169 +1198,84 @@ class MainWindow(QMainWindow):
 
     def _transcript_tab(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(2, 4, 2, 4)
-        layout.setSpacing(12)
-        layout.addWidget(
-            self._page_heading(
-                "Проверьте транскрипт",
-                "Исправьте формулы, числа и имена. Двойной клик по строке воспроизводит фрагмент аудио.",
-            )
-        )
+        workspace = TranscriptWorkspace(page)
+        self.transcript_workspace = workspace
 
-        segments = QGroupBox("Сегменты распознавания")
-        segments_layout = QVBoxLayout(segments)
-        segments_layout.setSpacing(10)
-        self.segment_table = QTableWidget(0, 5)
-        self.segment_table.setHorizontalHeaderLabels(["Начало", "Конец", "Говорящий", "Текст", "Уверенность"])
-        self.segment_table.horizontalHeader().setStretchLastSection(False)
-        self.segment_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.segment_table.verticalHeader().setVisible(False)
-        self.segment_table.setShowGrid(False)
-        self.segment_table.setAlternatingRowColors(True)
+        self.segment_table = workspace.segment_table
+        self.play_segment_button = workspace.play_segment_button
+        self.playback_speed = workspace.playback_speed
+        self.transcript = workspace.transcript_editor
+        self.approve = workspace.approve_button
+
         self.segment_table.doubleClicked.connect(self.play_selected_segment)
         self.segment_table.itemChanged.connect(lambda _item: self._schedule_draft_save())
-        segments_layout.addWidget(self.segment_table, 4)
-        controls = QHBoxLayout()
-        self.play_segment_button = set_button_kind(QPushButton("▶  Воспроизвести сегмент"), "ghost")
         self.play_segment_button.clicked.connect(self.play_selected_segment)
-        self.playback_speed = QComboBox()
-        self.playback_speed.setFixedWidth(92)
-        for label, value in [("0,75×", 0.75), ("1×", 1.0), ("1,25×", 1.25)]:
-            self.playback_speed.addItem(label, value)
-        controls.addWidget(self.play_segment_button)
-        speed_label = QLabel("Скорость")
-        speed_label.setObjectName("muted")
-        controls.addWidget(speed_label)
-        controls.addWidget(self.playback_speed)
-        controls.addStretch()
-        segments_layout.addLayout(controls)
-        normalization_controls = QHBoxLayout()
-        normalization_label = QLabel("LLM-фильтр")
-        normalization_label.setObjectName("muted")
-        normalization_controls.addWidget(normalization_label)
-        self.normalization_provider = QComboBox()
+        self.transcript.textChanged.connect(self._summary_changed)
+        self.approve.setShortcut(QKeySequence("Ctrl+Return"))
+        self.approve.setToolTip("Подтвердить транскрипт · Ctrl+Enter")
+        self.approve.setEnabled(False)
+        self.approve.clicked.connect(self.approve_transcript)
+
+        workspace.settings_button.clicked.connect(self._show_normalization_settings)
+        workspace.primary_action_button.clicked.connect(
+            self._handle_transcript_primary_action
+        )
+        workspace.open_review_action.triggered.connect(self.open_normalization_result)
+        workspace.restart_action.triggered.connect(
+            lambda: self.normalize_current_transcript(force=True)
+        )
+        workspace.open_artifact_action.triggered.connect(
+            self._open_normalization_artifact
+        )
+        workspace.show_warnings_action.triggered.connect(
+            self.open_normalization_result
+        )
+        workspace.reject_action.triggered.connect(self.reject_normalization_result)
+
+        compatibility = QWidget(page)
+        compatibility.hide()
+        self._normalization_compatibility_controls = compatibility
+
+        self.normalization_provider = QComboBox(compatibility)
         for provider in ("ollama", "yandex_ai_studio"):
             self.normalization_provider.addItem(provider_label(provider), provider)
         self.normalization_provider.setCurrentIndex(
             self.normalization_provider.findData(self.config.normalization.provider)
         )
-        self.normalization_provider.setMinimumWidth(205)
-        self.normalization_provider.currentIndexChanged.connect(self._normalization_provider_changed)
-        normalization_controls.addWidget(self.normalization_provider)
-        self.normalization_model = QComboBox()
+        self.normalization_provider.currentIndexChanged.connect(
+            self._normalization_provider_changed
+        )
+
+        self.normalization_model = QComboBox(compatibility)
         self.normalization_model.setEditable(True)
-        self.normalization_model.setMinimumWidth(145)
-        normalization_controls.addWidget(self.normalization_model)
-        retry_label = QLabel("Повторных запросов")
-        retry_label.setObjectName("muted")
-        normalization_controls.addWidget(retry_label)
-        self.normalization_retry_requests = QSpinBox()
+
+        self.normalization_retry_requests = QSpinBox(compatibility)
         self.normalization_retry_requests.setRange(0, 3)
         self.normalization_retry_requests.setValue(
             self.config.normalization.retry_requests
         )
-        self.normalization_retry_requests.setToolTip(
-            "Количество дополнительных запросов после отклонённого ответа модели"
-        )
         self.normalization_retry_requests.valueChanged.connect(
             self._normalization_retry_requests_changed
         )
-        normalization_controls.addWidget(self.normalization_retry_requests)
-        self.normalize_button = set_button_kind(
-            QPushButton("Отфильтровать учебное содержание"),
-            "primary",
-        )
-        self.normalize_button.clicked.connect(self.normalize_current_transcript)
-        normalization_controls.addWidget(self.normalize_button)
-        self.cancel_normalization_button = set_button_kind(
-            QPushButton("Отменить нормализацию"),
-            "ghost",
-        )
-        self.cancel_normalization_button.clicked.connect(self.cancel_normalization)
-        normalization_controls.addWidget(self.cancel_normalization_button)
-        self.retry_normalization_button = set_button_kind(
-            QPushButton("Запустить заново"),
-            "ghost",
-        )
-        self.retry_normalization_button.clicked.connect(
-            lambda: self.normalize_current_transcript(force=True)
-        )
-        normalization_controls.addWidget(self.retry_normalization_button)
-        self.open_normalization_button = set_button_kind(
-            QPushButton("Открыть результат"),
-            "ghost",
-        )
-        self.open_normalization_button.clicked.connect(self.open_normalization_result)
-        normalization_controls.addWidget(self.open_normalization_button)
-        self.apply_normalization_button = set_button_kind(
-            QPushButton("Применить результат"),
-            "ghost",
-        )
-        self.apply_normalization_button.clicked.connect(self.open_normalization_result)
-        normalization_controls.addWidget(self.apply_normalization_button)
-        self.reject_normalization_button = set_button_kind(
-            QPushButton("Отклонить результат"),
-            "danger",
-        )
-        self.reject_normalization_button.clicked.connect(self.reject_normalization_result)
-        normalization_controls.addWidget(self.reject_normalization_button)
-        normalization_controls.addStretch()
-        segments_layout.addLayout(normalization_controls)
-        self.normalization_provider_hint = QLabel()
-        self.normalization_provider_hint.setObjectName("muted")
-        self.normalization_provider_hint.setWordWrap(True)
-        segments_layout.addWidget(self.normalization_provider_hint)
-        credential_controls = QHBoxLayout()
-        self.save_yandex_key_button = set_button_kind(
-            QPushButton("Сохранить ключ безопасно"),
-            "ghost",
-        )
-        self.save_yandex_key_button.clicked.connect(self._configure_yandex_key)
-        self.delete_yandex_key_button = set_button_kind(
-            QPushButton("Удалить сохранённый ключ"),
-            "ghost",
-        )
-        self.delete_yandex_key_button.clicked.connect(self._delete_yandex_key)
-        credential_controls.addWidget(self.save_yandex_key_button)
-        credential_controls.addWidget(self.delete_yandex_key_button)
-        credential_controls.addStretch()
-        segments_layout.addLayout(credential_controls)
-        self.normalization_progress_label = QLabel("LLM-фильтрация не запущена")
-        self.normalization_progress_label.setObjectName("muted")
-        segments_layout.addWidget(self.normalization_progress_label)
-        self.normalization_progress = QProgressBar()
-        self.normalization_progress.setRange(0, 1)
-        self.normalization_progress.setValue(0)
-        self.normalization_progress.setTextVisible(True)
-        segments_layout.addWidget(self.normalization_progress)
+
+        self.normalization_provider_hint = QLabel(compatibility)
+        self.save_yandex_key_button = QPushButton(compatibility)
+        self.delete_yandex_key_button = QPushButton(compatibility)
+
+        self.normalize_button = workspace.primary_action_button
+        self.cancel_normalization_button = workspace.primary_action_button
+        self.retry_normalization_button = workspace.primary_action_button
+        self.open_normalization_button = workspace.primary_action_button
+        self.apply_normalization_button = workspace.primary_action_button
+        self.reject_normalization_button = workspace.overflow_button
+        self.normalization_progress_label = workspace.process_detail
+        self.normalization_progress = workspace.progress
+
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(workspace)
+        self._transcript_primary_action = "start"
         self._sync_normalization_provider_ui()
-        summary = QGroupBox("Сводный текст")
-        summary_layout = QVBoxLayout(summary)
-        self.transcript = QPlainTextEdit()
-        self.transcript.setPlaceholderText("Здесь появится распознанный текст занятия")
-        self.transcript.setMinimumHeight(210)
-        self.transcript.textChanged.connect(self._summary_changed)
-        summary_layout.addWidget(self.transcript, 1)
-        approve_row = QHBoxLayout()
-        hint = QLabel("Подтверждённая версия будет опубликована в папке ученика")
-        hint.setObjectName("muted")
-        approve_row.addWidget(hint, 1)
-        self.approve = set_button_kind(QPushButton("Подтвердить транскрипт"), "primary")
-        self.approve.setShortcut(QKeySequence("Ctrl+Return"))
-        self.approve.setToolTip("Подтвердить транскрипт · Ctrl+Enter")
-        self.approve.setEnabled(False)
-        self.approve.clicked.connect(self.approve_transcript)
-        approve_row.addWidget(self.approve)
-        summary_layout.addLayout(approve_row)
-        transcript_splitter = QSplitter(Qt.Vertical)
-        transcript_splitter.setChildrenCollapsible(False)
-        transcript_splitter.addWidget(segments)
-        transcript_splitter.addWidget(summary)
-        transcript_splitter.setStretchFactor(0, 3)
-        transcript_splitter.setStretchFactor(1, 2)
-        transcript_splitter.setSizes([390, 290])
-        layout.addWidget(transcript_splitter, 1)
         self._sync_normalization_controls()
         return page
 
@@ -2035,6 +1951,8 @@ class MainWindow(QMainWindow):
             self.segment_table.setItem(row, 3, text_item)
             self.segment_table.setItem(row, 4, confidence_item)
         self._loading_segments = was_loading
+        if hasattr(self, "transcript_workspace"):
+            self.transcript_workspace.set_segment_count(len(segments))
 
     def _summary_changed(self) -> None:
         if self._loading_segments or not self.lesson:
@@ -2145,6 +2063,150 @@ class MainWindow(QMainWindow):
                 )
             )
         return segments
+
+    def _show_normalization_settings(self) -> None:
+        if self._normalization_cancellation is not None:
+            QMessageBox.warning(
+                self,
+                "LLM-фильтрация",
+                "Нельзя менять настройки во время выполняющейся фильтрации.",
+            )
+            return
+        dialog = NormalizationSettingsDialog(
+            provider=self.config.normalization.provider,
+            model=self.config.normalization.effective_model,
+            retry_requests=self.config.normalization.retry_requests,
+            parent=self,
+        )
+        dialog.save_key_button.clicked.connect(self._configure_yandex_key)
+        dialog.delete_key_button.clicked.connect(self._delete_yandex_key)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        selected_provider = dialog.selected_provider
+        provider_index = self.normalization_provider.findData(selected_provider)
+        self.normalization_provider.setCurrentIndex(provider_index)
+        if self._selected_normalization_provider() != selected_provider:
+            return
+
+        self.normalization_model.setCurrentText(dialog.selected_model)
+        self.normalization_retry_requests.setValue(dialog.retry_requests)
+        try:
+            self._persist_selected_normalization_model()
+        except Exception as exc:
+            QMessageBox.warning(self, "LLM-фильтрация", str(exc))
+            return
+        self._sync_normalization_provider_ui()
+        self._sync_normalization_controls()
+        self._set_status("Настройки LLM-фильтрации сохранены")
+
+    def _normalization_settings_summary(self) -> str:
+        retries = self.config.normalization.retry_requests
+        retry_label = {
+            0: "без повторов",
+            1: "1 повтор",
+            2: "2 повтора",
+            3: "3 повтора",
+        }[retries]
+        return (
+            f"{provider_label(self.config.normalization.provider)} · "
+            f"{self.config.normalization.effective_model} · {retry_label}"
+        )
+
+    def _handle_transcript_primary_action(self) -> None:
+        action = getattr(self, "_transcript_primary_action", "start")
+        if action == "settings":
+            self._show_normalization_settings()
+        elif action == "cancel":
+            self.cancel_normalization()
+        elif action == "review":
+            self.open_normalization_result()
+        elif action == "retry":
+            self.normalize_current_transcript(force=True)
+        else:
+            self.normalize_current_transcript()
+
+    def _open_normalization_artifact(self) -> None:
+        if not self.lesson:
+            return
+        run = self.normalization_service.runs.latest(self.lesson.lesson_id)
+        if not run or not run.artifact_path:
+            QMessageBox.warning(
+                self,
+                "LLM-фильтрация",
+                "Текстовый файл результата не найден",
+            )
+            return
+        artifact = self.content_service.workspace / run.artifact_path
+        if not artifact.is_file():
+            QMessageBox.warning(
+                self,
+                "LLM-фильтрация",
+                f"Файл результата отсутствует: {artifact}",
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(artifact.resolve())))
+
+    def _sync_transcript_workspace_context(self) -> None:
+        if not hasattr(self, "transcript_workspace"):
+            return
+        if not self.lesson:
+            self.transcript_workspace.set_context(
+                "Откройте занятие из очереди обработки или архива материалов.",
+                "Нет занятия",
+                "neutral",
+            )
+            return
+        status_labels = {
+            JobStatus.REVIEW_REQUIRED: ("Требует проверки", "warning"),
+            JobStatus.READY: ("Подтверждён", "success"),
+            JobStatus.PUBLISHED: ("Опубликован", "success"),
+            JobStatus.FAILED: ("Ошибка", "error"),
+        }
+        status, tone = status_labels.get(
+            self.lesson.status,
+            (self.lesson.status.value, "neutral"),
+        )
+        detail = (
+            f"{self.lesson.student.full_name} · {self.lesson.subject} · "
+            f"{self.lesson.lesson_date:%d.%m.%Y} · {self.lesson.topic}"
+        )
+        self.transcript_workspace.set_context(detail, status, tone)
+        self.transcript_workspace.set_segment_count(self.segment_table.rowCount())
+
+    def _normalization_preview(self, run):
+        if (
+            run is None
+            or run.status not in {
+                NormalizationRunStatus.REVIEW_REQUIRED,
+                NormalizationRunStatus.APPROVED,
+            }
+            or not run.artifact_path
+        ):
+            self.transcript_workspace.clear_result()
+            return None
+        artifact = self.content_service.workspace / run.artifact_path
+        if not artifact.is_file():
+            self.transcript_workspace.clear_result()
+            return None
+        try:
+            transcript = self.normalization_service.load_result(run)
+        except Exception:
+            logging.exception("Не удалось загрузить preview результата LLM-фильтрации")
+            self.transcript_workspace.clear_result()
+            return None
+        statistics = transcript.statistics
+        summary = (
+            f"Сохранено {statistics.retained_ratio * 100:.1f}% текста · "
+            f"fallback-блоков: {statistics.source_fallback_chunks} · "
+            f"запросов к модели: {statistics.provider_requests}"
+        )
+        self.transcript_workspace.set_result_preview(
+            transcript.educational_text,
+            summary=summary,
+            warnings=transcript.quality.warnings,
+        )
+        return transcript
 
     def _selected_normalization_provider(self) -> str:
         if not hasattr(self, "normalization_provider"):
@@ -2360,9 +2422,18 @@ class MainWindow(QMainWindow):
         return updated.effective_model
 
     def _sync_normalization_controls(self) -> None:
-        if not hasattr(self, "normalize_button"):
+        if not hasattr(self, "transcript_workspace"):
             return
-        run = self.normalization_service.runs.latest(self.lesson.lesson_id) if self.lesson else None
+        self._sync_transcript_workspace_context()
+        self.transcript_workspace.set_config_summary(
+            self._normalization_settings_summary()
+        )
+
+        run = (
+            self.normalization_service.runs.latest(self.lesson.lesson_id)
+            if self.lesson
+            else None
+        )
         task_running = self._normalization_cancellation is not None
         provider_error = provider_configuration_error(self.config.normalization)
         can_start = bool(
@@ -2372,39 +2443,158 @@ class MainWindow(QMainWindow):
             and not task_running
             and not provider_error
         )
-        self.normalization_provider.setEnabled(not task_running)
-        self.normalize_button.setEnabled(can_start)
-        self.normalize_button.setToolTip(provider_error or "Запустить LLM-фильтрацию")
-        self.cancel_normalization_button.setEnabled(task_running)
-        self.retry_normalization_button.setEnabled(
-            can_start
-            and bool(
-                run
-                and run.status
-                in {
-                    NormalizationRunStatus.REVIEW_REQUIRED,
-                    NormalizationRunStatus.FAILED,
-                    NormalizationRunStatus.CANCELLED,
-                }
-            )
-        )
         artifact_ready = bool(
-            run and run.artifact_path and (self.content_service.workspace / run.artifact_path).is_file()
+            run
+            and run.artifact_path
+            and (self.content_service.workspace / run.artifact_path).is_file()
         )
-        self.open_normalization_button.setEnabled(artifact_ready)
-        review_ready = bool(run and run.status == NormalizationRunStatus.REVIEW_REQUIRED)
-        self.apply_normalization_button.setEnabled(review_ready and artifact_ready)
-        self.reject_normalization_button.setEnabled(
-            bool(
-                run
-                and run.status
-                in {
-                    NormalizationRunStatus.PENDING,
-                    NormalizationRunStatus.RUNNING,
-                    NormalizationRunStatus.REVIEW_REQUIRED,
-                    NormalizationRunStatus.FAILED,
-                }
+        preview = self._normalization_preview(run)
+
+        self.normalization_provider.setEnabled(not task_running)
+        self.transcript_workspace.settings_button.setEnabled(not task_running)
+        reject_enabled = bool(
+            run
+            and run.status
+            in {
+                NormalizationRunStatus.PENDING,
+                NormalizationRunStatus.RUNNING,
+                NormalizationRunStatus.REVIEW_REQUIRED,
+                NormalizationRunStatus.FAILED,
+            }
+        )
+        self.transcript_workspace.set_menu_state(
+            open_result=artifact_ready,
+            restart=can_start and run is not None,
+            open_artifact=artifact_ready,
+            show_warnings=artifact_ready,
+            reject=reject_enabled,
+        )
+
+        if task_running:
+            self._transcript_primary_action = "cancel"
+            self.transcript_workspace.set_primary_action(
+                "Отменить",
+                enabled=True,
+                kind="danger",
             )
+            detail = self.transcript_workspace.process_detail.text()
+            if not detail or detail.startswith("Проверьте"):
+                detail = "Подготовка блоков и запуск первого запроса к модели."
+            self.transcript_workspace.set_process_state(
+                "LLM-фильтрация выполняется",
+                detail,
+                tone="working",
+                show_progress=True,
+            )
+            return
+
+        if provider_error:
+            self._transcript_primary_action = "settings"
+            self.transcript_workspace.set_primary_action(
+                "Настроить LLM",
+                enabled=True,
+                kind="primary",
+            )
+            self.transcript_workspace.set_process_state(
+                "LLM-фильтр требует настройки",
+                provider_error,
+                tone="warning",
+            )
+            return
+
+        if not self.lesson:
+            self._transcript_primary_action = "start"
+            self.transcript_workspace.set_primary_action(
+                "Запустить фильтрацию",
+                enabled=False,
+            )
+            self.transcript_workspace.set_process_state(
+                "LLM-фильтрация недоступна",
+                "Сначала откройте транскрипт занятия.",
+            )
+            return
+
+        if not self.segment_table.rowCount():
+            self._transcript_primary_action = "start"
+            self.transcript_workspace.set_primary_action(
+                "Запустить фильтрацию",
+                enabled=False,
+            )
+            self.transcript_workspace.set_process_state(
+                "Нет сегментов для фильтрации",
+                "Дождитесь завершения транскрибации или загрузите сегменты занятия.",
+                tone="warning",
+            )
+            return
+
+        if run and run.status == NormalizationRunStatus.REVIEW_REQUIRED and artifact_ready:
+            self._transcript_primary_action = "review"
+            self.transcript_workspace.set_primary_action(
+                "Проверить результат",
+                enabled=True,
+            )
+            fallback_chunks = (
+                preview.statistics.source_fallback_chunks if preview else 0
+            )
+            warnings = len(preview.quality.warnings) if preview else 0
+            self.transcript_workspace.set_process_state(
+                "Фильтрация завершена · требуется проверка",
+                (
+                    f"Fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
+                    "Результат не будет применён без вашего подтверждения."
+                ),
+                tone="warning" if fallback_chunks or warnings else "success",
+            )
+            return
+
+        if run and run.status == NormalizationRunStatus.APPROVED and artifact_ready:
+            self._transcript_primary_action = "review"
+            self.transcript_workspace.set_primary_action(
+                "Открыть результат",
+                enabled=True,
+                kind="ghost",
+            )
+            self.transcript_workspace.set_process_state(
+                "Результат фильтрации применён",
+                "Новая ревизия транскрипта создана и готова к дальнейшей работе.",
+                tone="success",
+            )
+            return
+
+        if run and run.status == NormalizationRunStatus.FAILED:
+            self._transcript_primary_action = "retry"
+            self.transcript_workspace.set_primary_action(
+                "Повторить",
+                enabled=can_start,
+            )
+            self.transcript_workspace.set_process_state(
+                "Фильтрация завершилась ошибкой",
+                "Проверьте доступность провайдера и повторите запуск.",
+                tone="error",
+            )
+            return
+
+        if run and run.status == NormalizationRunStatus.CANCELLED:
+            self._transcript_primary_action = "retry"
+            self.transcript_workspace.set_primary_action(
+                "Запустить заново",
+                enabled=can_start,
+            )
+            self.transcript_workspace.set_process_state(
+                "Фильтрация отменена",
+                "Можно начать новый запуск с текущими настройками.",
+                tone="warning",
+            )
+            return
+
+        self._transcript_primary_action = "start"
+        self.transcript_workspace.set_primary_action(
+            "Запустить фильтрацию",
+            enabled=can_start,
+        )
+        self.transcript_workspace.set_process_state(
+            "LLM-фильтрация не запускалась",
+            "Проверьте транскрипт и запустите фильтрацию, когда будете готовы.",
         )
 
     def normalize_current_transcript(
@@ -2545,17 +2735,32 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _normalization_progress_updated(self, progress) -> None:
-        total = max(1, progress.total_chunks)
-        self.normalization_progress.setRange(0, total)
-        self.normalization_progress.setValue(progress.completed_chunks)
         current = (
             f"Блок {progress.current_chunk + 1} из {progress.total_chunks}"
             if progress.current_chunk is not None and progress.total_chunks
             else "Подготовка блоков"
         )
-        self.normalization_progress_label.setText(
+        attempt = (
+            f" · попытка {progress.current_attempt}"
+            if progress.current_attempt is not None
+            else ""
+        )
+        detail = (
             f"{current} · готово {progress.completed_chunks} · "
-            f"восстановлено {progress.reused_chunks} · запросов {progress.provider_requests}"
+            f"восстановлено {progress.reused_chunks} · "
+            f"запросов {progress.provider_requests}{attempt}"
+        )
+        self._transcript_primary_action = "cancel"
+        self.transcript_workspace.set_primary_action(
+            "Отменить",
+            enabled=True,
+            kind="danger",
+        )
+        self.transcript_workspace.set_progress(
+            total=progress.total_chunks,
+            completed=progress.completed_chunks,
+            title="LLM-фильтрация выполняется",
+            detail=detail,
         )
 
     def _normalization_resume_confirmation_required(self, error) -> None:
@@ -2576,7 +2781,13 @@ class MainWindow(QMainWindow):
         if self._normalization_cancellation is None:
             return
         self._normalization_cancellation.cancel()
-        self.cancel_normalization_button.setEnabled(False)
+        self.transcript_workspace.primary_action_button.setEnabled(False)
+        self.transcript_workspace.set_process_state(
+            "Отмена фильтрации…",
+            "Текущий запрос будет корректно завершён или помечен как неопределённый.",
+            tone="warning",
+            show_progress=True,
+        )
         self._set_status("Отмена нормализации запрошена…", "warning")
 
     def _normalization_ready(
@@ -2590,8 +2801,31 @@ class MainWindow(QMainWindow):
             and result.transcript.lesson_id == expected_lesson_id
         ):
             self._normalization_execution = result
+            statistics = result.transcript.statistics
+            self.transcript_workspace.set_result_preview(
+                result.transcript.educational_text,
+                summary=(
+                    f"Сохранено {statistics.retained_ratio * 100:.1f}% текста · "
+                    f"fallback-блоков: {statistics.source_fallback_chunks} · "
+                    f"запросов к модели: {statistics.provider_requests}"
+                ),
+                warnings=result.transcript.quality.warnings,
+                select=True,
+            )
         warnings = len(result.transcript.quality.warnings)
         fallback_chunks = result.transcript.statistics.source_fallback_chunks
+        self.transcript_workspace.set_process_state(
+            "Фильтрация завершена · требуется проверка",
+            (
+                f"Fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
+                "Проверьте результат перед применением."
+            ),
+            tone=(
+                "warning"
+                if result.transcript.quality.requires_manual_attention
+                else "success"
+            ),
+        )
         self._set_status(
             (
                 (
@@ -2617,6 +2851,16 @@ class MainWindow(QMainWindow):
         logging.error("LLM-фильтрация завершилась ошибкой:\n%s", details)
         lines = [line.strip() for line in details.splitlines() if line.strip()]
         message = lines[-1] if lines else "Неизвестная ошибка нормализации"
+        self._transcript_primary_action = "retry"
+        self.transcript_workspace.set_primary_action(
+            "Повторить",
+            enabled=True,
+        )
+        self.transcript_workspace.set_process_state(
+            "Фильтрация завершилась ошибкой",
+            message,
+            tone="error",
+        )
         self._set_status("Ошибка LLM-фильтрации", "error")
         QMessageBox.warning(self, "LLM-фильтрация", message)
 
@@ -2714,6 +2958,7 @@ class MainWindow(QMainWindow):
             self.approve.setEnabled(False)
             self.publish_button.setEnabled(True)
             self._sync_normalization_controls()
+            self.transcript_workspace.select_summary()
         self._set_status("LLM-фильтрация применена как новая ревизия")
 
     def reject_normalization_result(self) -> None:
@@ -2740,6 +2985,7 @@ class MainWindow(QMainWindow):
             return
         self._normalization_execution = None
         self._sync_normalization_controls()
+        self.transcript_workspace.select_summary()
         self._set_status("Результат нормализации отклонён", "warning")
 
     def approve_transcript(self) -> None:

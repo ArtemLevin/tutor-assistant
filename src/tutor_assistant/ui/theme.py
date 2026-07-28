@@ -503,6 +503,125 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
+QFrame#transcriptHeader {
+    background: #FFFFFF;
+    border: 1px solid #E4E9F0;
+    border-radius: 14px;
+}
+
+QFrame#transcriptToolBar {
+    background: #F8FAFD;
+    border: 1px solid #E4E9F0;
+    border-radius: 10px;
+}
+
+QFrame#normalizationProcessCard {
+    background: #FFFFFF;
+    border: 1px solid #DCE4ED;
+    border-radius: 14px;
+}
+
+QFrame#normalizationProcessCard[tone="working"] {
+    background: #F0F5FF;
+    border-color: #CFE0FA;
+}
+
+QFrame#normalizationProcessCard[tone="warning"] {
+    background: #FFF9ED;
+    border-color: #F3DDAA;
+}
+
+QFrame#normalizationProcessCard[tone="error"] {
+    background: #FFF3F3;
+    border-color: #F3CCCC;
+}
+
+QFrame#normalizationProcessCard[tone="success"] {
+    background: #F0FAF5;
+    border-color: #CDEDDD;
+}
+
+QFrame#normalizationResultHeader {
+    background: #F0F5FF;
+    border: 1px solid #DCE7FA;
+    border-radius: 11px;
+}
+
+QLabel#transcriptStatusChip {
+    color: #526174;
+    background: #EEF2F6;
+    border: 1px solid #DCE4ED;
+    border-radius: 12px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 650;
+}
+
+QLabel#transcriptStatusChip[tone="success"] {
+    color: #216E50;
+    background: #E8F7F0;
+    border-color: #C6EBD9;
+}
+
+QLabel#transcriptStatusChip[tone="warning"] {
+    color: #8A5A00;
+    background: #FFF7E6;
+    border-color: #F3DDAA;
+}
+
+QLabel#transcriptStatusChip[tone="error"] {
+    color: #A33636;
+    background: #FFF0F0;
+    border-color: #F3CCCC;
+}
+
+QLabel#normalizationStateTitle {
+    color: #243348;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+QLabel#normalizationConfigSummary {
+    color: #526174;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton#transcriptPrimaryAction {
+    min-width: 190px;
+}
+
+QPushButton#transcriptOverflowButton {
+    min-width: 40px;
+    max-width: 40px;
+    padding: 0;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QTabWidget#transcriptWorkspaceTabs QTabBar::tab {
+    min-width: 118px;
+    min-height: 38px;
+    padding: 0 14px;
+}
+
+QMenu {
+    color: #182230;
+    background: #FFFFFF;
+    border: 1px solid #D9E0E8;
+    border-radius: 9px;
+    padding: 6px;
+}
+
+QMenu::item {
+    padding: 8px 18px;
+    border-radius: 6px;
+}
+
+QMenu::item:selected {
+    background: #EAF2FF;
+}
+
 QStatusBar {
     color: #65758B;
     background: #F5F7FA;
