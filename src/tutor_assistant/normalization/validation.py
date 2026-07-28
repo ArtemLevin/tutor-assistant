@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -55,6 +56,76 @@ NON_CONTENT_WORDS = {
     "сейчас",
     "просто",
 }
+
+REVIEW_CANDIDATE_KEYS = (
+    "text",
+    "output_text",
+    "normalized_text",
+    "educational_text",
+    "content",
+    "result",
+    "response",
+)
+
+
+def _candidate_payload_text(payload: object) -> str | None:
+    if isinstance(payload, str):
+        return payload.strip() or None
+    if isinstance(payload, dict):
+        for key in REVIEW_CANDIDATE_KEYS:
+            if key in payload:
+                candidate = _candidate_payload_text(payload[key])
+                if candidate:
+                    return candidate
+        for value in payload.values():
+            candidate = _candidate_payload_text(value)
+            if candidate:
+                return candidate
+        return None
+    if isinstance(payload, list):
+        parts = [
+            candidate
+            for item in payload
+            if (candidate := _candidate_payload_text(item)) is not None
+        ]
+        return "\n".join(parts).strip() or None
+    return None
+
+
+def reviewable_candidate_text(response: object) -> str | None:
+    """Return the most useful text the model produced, even when validation rejects it."""
+
+    if not isinstance(response, str):
+        return None
+    text = (
+        response.replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\x00", "")
+        .strip()
+    )
+    if not text:
+        return None
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+        if not text:
+            return None
+
+    if text.startswith(("{", "[")):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        else:
+            extracted = _candidate_payload_text(payload)
+            if extracted:
+                text = extracted
+    return text.strip() or None
 
 
 def extract_numbers(text: str) -> list[str]:
@@ -112,6 +183,7 @@ def _counter_removed(source: list[str], normalized: list[str]) -> list[str]:
 
 @dataclass(slots=True)
 class ValidationState:
+    plain_text_valid: bool = True
     numbers_preserved: bool = True
     formula_tokens_preserved: bool = True
     protected_content_preserved: bool = True
@@ -120,6 +192,7 @@ class ValidationState:
     warnings: list[str] = field(default_factory=list)
 
     def merge(self, other: ValidationState) -> None:
+        self.plain_text_valid &= other.plain_text_valid
         self.numbers_preserved &= other.numbers_preserved
         self.formula_tokens_preserved &= other.formula_tokens_preserved
         self.protected_content_preserved &= other.protected_content_preserved
@@ -130,6 +203,7 @@ class ValidationState:
     @classmethod
     def from_quality(cls, quality: NormalizationQuality) -> ValidationState:
         return cls(
+            plain_text_valid=quality.plain_text_valid,
             numbers_preserved=quality.numbers_preserved,
             formula_tokens_preserved=quality.formula_tokens_preserved,
             protected_content_preserved=quality.protected_content_preserved,
@@ -140,7 +214,7 @@ class ValidationState:
 
     def quality(self) -> NormalizationQuality:
         return NormalizationQuality(
-            plain_text_valid=True,
+            plain_text_valid=self.plain_text_valid,
             numbers_preserved=self.numbers_preserved,
             formula_tokens_preserved=self.formula_tokens_preserved,
             protected_content_preserved=self.protected_content_preserved,

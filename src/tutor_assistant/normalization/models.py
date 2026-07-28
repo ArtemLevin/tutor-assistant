@@ -46,6 +46,7 @@ class NormalizationStatistics(BaseModel):
     completed_chunks: int = Field(default=0, ge=0)
     reused_chunks: int = Field(default=0, ge=0)
     provider_requests: int = Field(default=0, ge=0)
+    review_candidate_chunks: int = Field(default=0, ge=0)
     source_fallback_chunks: int = Field(default=0, ge=0)
 
 

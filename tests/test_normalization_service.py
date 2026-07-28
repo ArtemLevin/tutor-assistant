@@ -141,11 +141,14 @@ def test_invalid_first_plain_text_response_is_retried_once(tmp_path: Path) -> No
     assert len(provider.requests) == 2
 
 
-def test_rejected_responses_use_source_fallback_and_finish_review(tmp_path: Path) -> None:
+def test_rejected_responses_preserve_last_model_candidate_for_review(tmp_path: Path) -> None:
     provider = FakeNormalizationProvider(
         responses=[
             '{"text":"wrong contract"}',
-            '{"text":"still wrong"}',
+            (
+                '{"text":"[П] Сегодня решаем неравенство x + 2 > 6.\\n'
+                '[У] Я не понимаю, почему знак меняется."}'
+            ),
         ]
     )
     service, _content, lesson, source_path = _setup(
@@ -158,11 +161,42 @@ def test_rejected_responses_use_source_fallback_and_finish_review(tmp_path: Path
     result = service.normalize_lesson(lesson.lesson_id)
 
     assert result.run and result.run.status == NormalizationRunStatus.REVIEW_REQUIRED
-    assert result.transcript.statistics.source_fallback_chunks == 1
+    assert result.transcript.statistics.review_candidate_chunks == 1
+    assert result.transcript.statistics.source_fallback_chunks == 0
     assert result.transcript.quality.requires_manual_attention is True
-    assert any("source_fallback:" in item for item in result.transcript.quality.warnings)
-    assert "x + 2 > 5" in result.transcript.educational_text
+    assert any("model_candidate:" in item for item in result.transcript.quality.warnings)
+    assert "x + 2 > 6" in result.transcript.educational_text
     assert source_path.read_bytes() == source_before
+
+
+def test_model_number_change_is_preserved_in_review_candidate(tmp_path: Path) -> None:
+    provider = FakeNormalizationProvider(
+        default=(
+            "[П] Сегодня решаем неравенство x + 2 > 6.\n"
+            "[У] Я не понимаю, почему знак меняется."
+        )
+    )
+    service, _content, lesson, _source_path = _setup(tmp_path, provider)
+
+    result = service.normalize_lesson(lesson.lesson_id)
+
+    assert "x + 2 > 6" in result.transcript.educational_text
+    assert result.transcript.statistics.review_candidate_chunks == 1
+    assert result.transcript.statistics.source_fallback_chunks == 0
+    assert result.transcript.quality.numbers_preserved is False
+    assert result.transcript.quality.requires_manual_attention is True
+
+
+def test_empty_rejected_response_uses_source_fallback(tmp_path: Path) -> None:
+    provider = FakeNormalizationProvider(responses=[""])
+    service, _content, lesson, _source_path = _setup(tmp_path, provider)
+
+    result = service.normalize_lesson(lesson.lesson_id)
+
+    assert result.transcript.statistics.review_candidate_chunks == 0
+    assert result.transcript.statistics.source_fallback_chunks == 1
+    assert "x + 2 > 5" in result.transcript.educational_text
+    assert any("source_fallback:" in item for item in result.transcript.quality.warnings)
 
 
 def test_apply_creates_revision_and_marks_run_approved(tmp_path: Path) -> None:

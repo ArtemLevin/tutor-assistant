@@ -2198,6 +2198,7 @@ class MainWindow(QMainWindow):
         statistics = transcript.statistics
         summary = (
             f"Сохранено {statistics.retained_ratio * 100:.1f}% текста · "
+            f"кандидатов на проверку: {statistics.review_candidate_chunks} · "
             f"fallback-блоков: {statistics.source_fallback_chunks} · "
             f"запросов к модели: {statistics.provider_requests}"
         )
@@ -2533,6 +2534,9 @@ class MainWindow(QMainWindow):
                 "Проверить результат",
                 enabled=True,
             )
+            review_candidates = (
+                preview.statistics.review_candidate_chunks if preview else 0
+            )
             fallback_chunks = (
                 preview.statistics.source_fallback_chunks if preview else 0
             )
@@ -2540,10 +2544,15 @@ class MainWindow(QMainWindow):
             self.transcript_workspace.set_process_state(
                 "Фильтрация завершена · требуется проверка",
                 (
-                    f"Fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
+                    f"Кандидатов модели: {review_candidates} · "
+                    f"fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
                     "Результат не будет применён без вашего подтверждения."
                 ),
-                tone="warning" if fallback_chunks or warnings else "success",
+                tone=(
+                    "warning"
+                    if review_candidates or fallback_chunks or warnings
+                    else "success"
+                ),
             )
             return
 
