@@ -55,7 +55,11 @@ from .ollama_client import OllamaClient
 from .prompts import render_target_text
 from .protocol import CancellationToken, NormalizationProvider
 from .subjects import SubjectProfile, resolve_subject_profile
-from .validation import ValidationState, validate_plain_text_response
+from .validation import (
+    ValidationState,
+    reviewable_candidate_text,
+    validate_plain_text_response,
+)
 from .yandex_client import YandexAIStudioClient
 
 ProviderFactory = Callable[[NormalizationConfig, str], NormalizationProvider]
@@ -348,6 +352,7 @@ class NormalizationService:
                 attempts,
                 reused_chunks,
                 provider_requests,
+                review_candidate_chunks,
                 source_fallback_chunks,
             ) = self._normalize_chunks(
                 lesson_id,
@@ -379,6 +384,7 @@ class NormalizationService:
                 prompt_version=prompt_version,
                 reused_chunks=reused_chunks,
                 provider_requests=provider_requests,
+                review_candidate_chunks=review_candidate_chunks,
                 source_fallback_chunks=source_fallback_chunks,
             )
             cancellation.raise_if_cancelled()
@@ -523,12 +529,13 @@ class NormalizationService:
         progress: ProgressCallback | None,
         retry_indeterminate: bool,
         consent_id: str | None,
-    ) -> tuple[list[str], ValidationState, int, int, int, int]:
+    ) -> tuple[list[str], ValidationState, int, int, int, int, int]:
         normalized_chunks: list[str] = []
         state = ValidationState()
         attempts_total = 0
         reused_chunks = 0
         provider_requests = 0
+        review_candidate_chunks = 0
         source_fallback_chunks = 0
         total_chunks = len(chunks)
         checkpoints = {}
@@ -581,6 +588,11 @@ class NormalizationService:
                         f"Checkpoint чанка {chunk.index} не содержит quality"
                     )
                 state.merge(ValidationState.from_quality(checkpoint.quality))
+                checkpoint_warnings = checkpoint.quality.warnings
+                if any(item.startswith("model_candidate:") for item in checkpoint_warnings):
+                    review_candidate_chunks += 1
+                if any(item.startswith("source_fallback:") for item in checkpoint_warnings):
+                    source_fallback_chunks += 1
                 reused_chunks += 1
                 completed_count += 1
                 logging.info(
@@ -746,6 +758,71 @@ class NormalizationService:
                             sleep(self.config.retry_backoff_seconds)
                         continue
 
+                    raw_candidate = response.replace("\r\n", "\n").replace("\r", "\n").strip()
+                    candidate = reviewable_candidate_text(response)
+                    if candidate is not None:
+                        error_message = str(exc)
+                        lowered_error = error_message.casefold()
+                        candidate_state = ValidationState(
+                            plain_text_valid=(
+                                not isinstance(exc, InvalidPlainTextOutputError)
+                                or candidate != raw_candidate
+                            ),
+                            requires_manual_attention=True,
+                            warnings=[
+                                "model_candidate:"
+                                f"chunk={chunk.index + 1}:"
+                                f"error={type(exc).__name__}:"
+                                f"message={error_message}"
+                            ],
+                        )
+                        if "числ" in lowered_error:
+                            candidate_state.numbers_preserved = False
+                        if "формул" in lowered_error:
+                            candidate_state.formula_tokens_preserved = False
+                        if "единиц" in lowered_error:
+                            candidate_state.subject_units_preserved = False
+                            candidate_state.protected_content_preserved = False
+                        if any(
+                            marker in lowered_error
+                            for marker in ("термин", "защищ", "контекст")
+                        ):
+                            candidate_state.protected_content_preserved = False
+                        if run is not None:
+                            self.checkpoints.complete(
+                                run.id or 0,
+                                chunk.index,
+                                normalized_text=candidate,
+                                quality=candidate_state.quality(),
+                            )
+                        normalized_chunks.append(candidate)
+                        state.merge(candidate_state)
+                        review_candidate_chunks += 1
+                        completed_count += 1
+                        logging.warning(
+                            "event=content_filter_chunk_review_candidate lesson_id=%s "
+                            "run_id=%s chunk_index=%d error_code=%s attempts=%d",
+                            lesson_id,
+                            run.id if run else "dry-run",
+                            chunk.index,
+                            type(exc).__name__,
+                            attempt + 1,
+                        )
+                        self._emit_progress(
+                            progress,
+                            NormalizationProgress(
+                                run_id=run.id if run else None,
+                                current_chunk=chunk.index,
+                                total_chunks=total_chunks,
+                                completed_chunks=completed_count,
+                                reused_chunks=reused_chunks,
+                                provider_requests=provider_requests,
+                                current_attempt=attempt + 1,
+                                state="review_candidate",
+                            ),
+                        )
+                        break
+
                     target_ids = set(chunk.target_ids)
                     fallback = render_target_text(
                         tuple(
@@ -852,6 +929,7 @@ class NormalizationService:
             attempts_total,
             reused_chunks,
             provider_requests,
+            review_candidate_chunks,
             source_fallback_chunks,
         )
 
@@ -872,6 +950,7 @@ class NormalizationService:
         prompt_version: str,
         reused_chunks: int,
         provider_requests: int,
+        review_candidate_chunks: int,
         source_fallback_chunks: int,
     ) -> NormalizedTranscript:
         source_text = render_target_text(source_segments)
@@ -909,6 +988,7 @@ class NormalizationService:
                 completed_chunks=chunk_count,
                 reused_chunks=reused_chunks,
                 provider_requests=provider_requests,
+                review_candidate_chunks=review_candidate_chunks,
                 source_fallback_chunks=source_fallback_chunks,
             ),
             quality=validation.quality(),

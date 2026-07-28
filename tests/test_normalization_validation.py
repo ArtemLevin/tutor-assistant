@@ -11,8 +11,19 @@ from tutor_assistant.normalization.validation import (
     ValidationState,
     extract_formula_tokens,
     extract_numbers,
+    reviewable_candidate_text,
     validate_plain_text_response,
 )
+
+
+def test_reviewable_candidate_extracts_json_and_markdown_text() -> None:
+    assert reviewable_candidate_text(
+        '{"text":"[П] Решаем x + 2 = 6."}'
+    ) == "[П] Решаем x + 2 = 6."
+    assert reviewable_candidate_text(
+        "```text\n[П] Решаем x + 2 = 6.\n```"
+    ) == "[П] Решаем x + 2 = 6."
+    assert reviewable_candidate_text("") is None
 
 
 def test_number_and_formula_extractors_cover_educational_tokens() -> None:
