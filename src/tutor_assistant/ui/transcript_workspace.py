@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
-    QTabWidget,
     QTableWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -125,15 +125,10 @@ class NormalizationSettingsDialog(QDialog):
 
     def _provider_changed(self, _index: int | None = None) -> None:
         provider = self.selected_provider
-        current = self.model_combo.currentText().strip() if self.model_combo.count() else ""
         models = list(provider_models(provider))
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         self.model_combo.addItems(models)
-        if current and current not in models:
-            self.model_combo.insertItem(0, current)
-        if current:
-            self.model_combo.setCurrentText(current)
         self.model_combo.blockSignals(False)
         cloud = provider == "yandex_ai_studio"
         self.credentials_group.setVisible(cloud)

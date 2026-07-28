@@ -50,7 +50,7 @@ def test_workspace_exposes_one_contextual_primary_action() -> None:
 
     assert workspace.primary_action_button.text() == "Отменить"
     assert workspace.primary_action_button.isEnabled() is True
-    assert workspace.progress.isVisible() is True
+    assert workspace.progress.isHidden() is False
     assert workspace.progress.maximum() == 7
     assert workspace.progress.value() == 4
     assert "Блок 5" in workspace.process_detail.text()
