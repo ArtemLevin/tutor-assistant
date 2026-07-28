@@ -28,7 +28,7 @@ jobs:
       - name: Apply candidate-preservation patch
         shell: pwsh
         run: |
-          python scripts/pr42_preserve_model_candidates.py 2>&1 | Tee-Object patch-output.txt
+          python scripts/pr42_patch_runner.py 2>&1 | Tee-Object patch-output.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload patch diagnostics
