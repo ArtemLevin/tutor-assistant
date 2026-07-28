@@ -113,7 +113,8 @@ normalization:
   max_input_characters: 12000
   context_overlap_segments: 4
   request_timeout_seconds: 600
-  max_attempts: 2
+  # Повторные запросы после отклонённого ответа модели: 0..3.
+  retry_requests: 0
   retry_backoff_seconds: 2
   require_manual_approval: true
   high_removal_threshold: 0.35

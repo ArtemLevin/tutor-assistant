@@ -60,11 +60,11 @@ from .yandex_client import YandexAIStudioClient
 
 ProviderFactory = Callable[[NormalizationConfig, str], NormalizationProvider]
 ProgressCallback = Callable[[NormalizationProgress], None]
-RETRYABLE_OUTPUT_ERRORS = (
+RETRYABLE_VALIDATION_ERRORS = (
     InvalidPlainTextOutputError,
     UnsafeNormalizationResultError,
-    OllamaTimeoutError,
 )
+RETRYABLE_PROVIDER_ERRORS = (OllamaTimeoutError,)
 
 
 def build_provider(
@@ -348,6 +348,7 @@ class NormalizationService:
                 attempts,
                 reused_chunks,
                 provider_requests,
+                source_fallback_chunks,
             ) = self._normalize_chunks(
                 lesson_id,
                 chunks,
@@ -378,6 +379,7 @@ class NormalizationService:
                 prompt_version=prompt_version,
                 reused_chunks=reused_chunks,
                 provider_requests=provider_requests,
+                source_fallback_chunks=source_fallback_chunks,
             )
             cancellation.raise_if_cancelled()
             if output is None:
@@ -521,12 +523,13 @@ class NormalizationService:
         progress: ProgressCallback | None,
         retry_indeterminate: bool,
         consent_id: str | None,
-    ) -> tuple[list[str], ValidationState, int, int, int]:
+    ) -> tuple[list[str], ValidationState, int, int, int, int]:
         normalized_chunks: list[str] = []
         state = ValidationState()
         attempts_total = 0
         reused_chunks = 0
         provider_requests = 0
+        source_fallback_chunks = 0
         total_chunks = len(chunks)
         checkpoints = {}
         if run is not None:
@@ -724,7 +727,77 @@ class NormalizationService:
                         else:
                             self.checkpoints.reset_pending(run.id or 0, chunk.index)
                     raise
-                except RETRYABLE_OUTPUT_ERRORS as exc:
+                except RETRYABLE_VALIDATION_ERRORS as exc:
+                    if audit_event_id:
+                        self.cloud_audit.finish_request(
+                            audit_event_id,
+                            event="request_failed",
+                            error_code=type(exc).__name__,
+                        )
+                    if attempt + 1 < self.config.max_attempts:
+                        if run is not None:
+                            self.checkpoints.fail(
+                                run.id or 0,
+                                chunk.index,
+                                f"{type(exc).__name__}: {exc}",
+                            )
+                        validation_errors = (f"{type(exc).__name__}: {exc}",)
+                        if self.config.retry_backoff_seconds:
+                            sleep(self.config.retry_backoff_seconds)
+                        continue
+
+                    target_ids = set(chunk.target_ids)
+                    fallback = render_target_text(
+                        tuple(
+                            item
+                            for item in chunk.segments
+                            if item.source_segment_id in target_ids
+                        )
+                    )
+                    fallback_state = ValidationState(
+                        requires_manual_attention=True,
+                        warnings=[
+                            "source_fallback:"
+                            f"chunk={chunk.index + 1}:"
+                            f"error={type(exc).__name__}:"
+                            f"message={exc}"
+                        ],
+                    )
+                    if run is not None:
+                        self.checkpoints.complete(
+                            run.id or 0,
+                            chunk.index,
+                            normalized_text=fallback,
+                            quality=fallback_state.quality(),
+                        )
+                    normalized_chunks.append(fallback)
+                    state.merge(fallback_state)
+                    source_fallback_chunks += 1
+                    completed_count += 1
+                    logging.warning(
+                        "event=content_filter_chunk_source_fallback lesson_id=%s "
+                        "run_id=%s chunk_index=%d error_code=%s attempts=%d",
+                        lesson_id,
+                        run.id if run else "dry-run",
+                        chunk.index,
+                        type(exc).__name__,
+                        attempt + 1,
+                    )
+                    self._emit_progress(
+                        progress,
+                        NormalizationProgress(
+                            run_id=run.id if run else None,
+                            current_chunk=chunk.index,
+                            total_chunks=total_chunks,
+                            completed_chunks=completed_count,
+                            reused_chunks=reused_chunks,
+                            provider_requests=provider_requests,
+                            current_attempt=attempt + 1,
+                            state="source_fallback",
+                        ),
+                    )
+                    break
+                except RETRYABLE_PROVIDER_ERRORS as exc:
                     if audit_event_id:
                         self.cloud_audit.finish_request(
                             audit_event_id,
@@ -738,16 +811,7 @@ class NormalizationService:
                             f"{type(exc).__name__}: {exc}",
                         )
                     if attempt + 1 >= self.config.max_attempts:
-                        logging.warning(
-                            "event=content_filter_chunk_failed lesson_id=%s run_id=%s "
-                            "chunk_index=%d error_code=%s",
-                            lesson_id,
-                            run.id if run else "dry-run",
-                            chunk.index,
-                            type(exc).__name__,
-                        )
                         raise
-                    validation_errors = (f"{type(exc).__name__}: {exc}",)
                     if self.config.retry_backoff_seconds:
                         sleep(self.config.retry_backoff_seconds)
                 except Exception as exc:
@@ -782,7 +846,14 @@ class NormalizationService:
                     raise
             else:
                 raise InvalidPlainTextOutputError("Не удалось проверить plain-text ответ блока")
-        return normalized_chunks, state, attempts_total, reused_chunks, provider_requests
+        return (
+            normalized_chunks,
+            state,
+            attempts_total,
+            reused_chunks,
+            provider_requests,
+            source_fallback_chunks,
+        )
 
     def _build_result(
         self,
@@ -801,6 +872,7 @@ class NormalizationService:
         prompt_version: str,
         reused_chunks: int,
         provider_requests: int,
+        source_fallback_chunks: int,
     ) -> NormalizedTranscript:
         source_text = render_target_text(source_segments)
         source_characters = len(source_text)
@@ -837,6 +909,7 @@ class NormalizationService:
                 completed_chunks=chunk_count,
                 reused_chunks=reused_chunks,
                 provider_requests=provider_requests,
+                source_fallback_chunks=source_fallback_chunks,
             ),
             quality=validation.quality(),
         )

@@ -28,6 +28,7 @@ class ContentFilterReviewDialog(QDialog):
         self.transcript = transcript
         self.source_segments = source_segments
         self.source_text = render_target_text(source_segments)
+        self.restart_requested = False
         self.setWindowTitle("Проверка LLM-фильтрации учебного содержания")
         self.resize(1100, 760)
         layout = QVBoxLayout(self)
@@ -40,7 +41,9 @@ class ContentFilterReviewDialog(QDialog):
         summary = QLabel(
             f"Предмет: {subject} · профиль: {subject_profile} · "
             f"Provider: {provider} · модель: {model} · промпт: {prompt} · "
-            f"сохранено учебного текста: {ratio:.1f}% · результат требует ручного применения"
+            f"сохранено учебного текста: {ratio:.1f}% · "
+            f"fallback-блоков: {transcript.statistics.source_fallback_chunks} · "
+            "результат требует ручного применения"
         )
         summary.setWordWrap(True)
         layout.addWidget(summary)
@@ -58,6 +61,11 @@ class ContentFilterReviewDialog(QDialog):
             QDialogButtonBox.AcceptRole,
         )
         apply_button.setToolTip("Перед применением можно отредактировать отфильтрованный текст")
+        restart_button = buttons.addButton(
+            "Запустить фильтрацию заново",
+            QDialogButtonBox.ResetRole,
+        )
+        restart_button.clicked.connect(self._request_restart)
         buttons.addButton("Закрыть без применения", QDialogButtonBox.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -136,6 +144,10 @@ class ContentFilterReviewDialog(QDialog):
         warnings.setPlainText("\n".join(quality.warnings) or "Предупреждений нет")
         layout.addWidget(warnings)
         return page
+
+    def _request_restart(self) -> None:
+        self.restart_requested = True
+        self.reject()
 
     @property
     def edited_text(self) -> str:
