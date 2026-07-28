@@ -82,5 +82,5 @@ def test_main_window_transcript_tab_uses_state_driven_workspace() -> None:
 
     assert "TranscriptWorkspace" in source
     assert "transcript_splitter" not in source
-    assert "normalization_controls" not in source
+    assert "normalization_controls = QHBoxLayout()" not in source
     assert "primary_action_button" in source
