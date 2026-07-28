@@ -10,9 +10,17 @@ from tutor_assistant.ui.transcript_workspace import (
     TranscriptWorkspace,
 )
 
+_APPLICATION: QApplication | None = None
+
 
 def _application() -> QApplication:
-    return QApplication.instance() or QApplication([])
+    global _APPLICATION
+    existing = QApplication.instance()
+    if isinstance(existing, QApplication):
+        _APPLICATION = existing
+    elif _APPLICATION is None:
+        _APPLICATION = QApplication([])
+    return _APPLICATION
 
 
 def test_workspace_hides_result_until_filtering_finishes() -> None:
