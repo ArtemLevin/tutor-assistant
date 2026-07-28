@@ -1,0 +1,1 @@
+Trigger PR 40 product bootstrap after workflow installation.
