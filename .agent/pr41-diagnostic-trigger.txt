@@ -1,1 +1,0 @@
-Trigger PR 41 contract diagnostics on Python 3.12.
