@@ -84,9 +84,20 @@ jobs:
       - name: Commit implementation
         shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --check
-          git commit -m "Implement state-driven transcript workspace"
-          git push origin HEAD:feature/transcript-workspace-redesign
+          set -o pipefail
+          {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git diff --cached --check
+            git commit -m "Implement state-driven transcript workspace"
+            git push origin HEAD:feature/transcript-workspace-redesign
+          } 2>&1 | tee commit-report.txt
+
+      - name: Upload commit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr41-commit-report
+          path: commit-report.txt
+          if-no-files-found: ignore
