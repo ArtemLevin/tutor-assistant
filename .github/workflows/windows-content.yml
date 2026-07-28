@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   bootstrap-pr40:
-    if: github.head_ref == 'feature/reviewable-normalization-fallbacks' && hashFiles('scripts/pr40_apply_core.py') != ''
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -70,6 +69,7 @@ jobs:
           git rm scripts/pr40_apply_core.py
           git rm scripts/pr40_apply_ui.py
           git rm .github/workflows/pr40-bootstrap.yml
+          git rm .agent/pr40-trigger.txt
 
       - name: Commit implementation
         shell: bash
