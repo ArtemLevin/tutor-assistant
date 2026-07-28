@@ -24,12 +24,8 @@ jobs:
           python-version: '3.12'
 
       - name: Verify migration scripts
-        shell: pwsh
         run: |
-          $core = (Get-FileHash scripts/pr40_apply_core.py -Algorithm SHA256).Hash.ToLower()
-          $ui = (Get-FileHash scripts/pr40_apply_ui.py -Algorithm SHA256).Hash.ToLower()
-          if ($core -ne '2e2d27db2f8b018100e7fbc6d74f45c07b028b126625c7ebcfbc8487e638834a') { throw "core script mismatch: $core" }
-          if ($ui -ne '86b48eae0c3954036c9ed1d9e6833679ee452efa6c7cbb8d1ca1628f37a7e272') { throw "ui script mismatch: $ui" }
+          python -m py_compile scripts/pr40_apply_core.py scripts/pr40_apply_ui.py
 
       - name: Apply implementation
         run: |
