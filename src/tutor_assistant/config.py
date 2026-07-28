@@ -4,7 +4,7 @@ import logging
 import re
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import yaml
@@ -141,10 +141,26 @@ class NormalizationConfig(BaseModel):
     max_input_characters: int = Field(default=12_000, gt=0)
     context_overlap_segments: int = Field(default=4, ge=0)
     request_timeout_seconds: int = Field(default=600, gt=0)
-    max_attempts: int = Field(default=2, ge=1, le=5)
+    retry_requests: int = Field(default=0, ge=0, le=3)
     retry_backoff_seconds: float = Field(default=2, ge=0, le=60)
     require_manual_approval: Literal[True] = True
     high_removal_threshold: float = Field(default=0.35, gt=0, lt=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_retry_requests(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if "max_attempts" not in value or "retry_requests" in value:
+            return value
+        migrated = dict(value)
+        legacy_attempts = int(migrated.pop("max_attempts"))
+        migrated["retry_requests"] = max(0, min(3, legacy_attempts - 1))
+        return migrated
+
+    @property
+    def max_attempts(self) -> int:
+        return self.retry_requests + 1
 
     @field_validator("provider")
     @classmethod

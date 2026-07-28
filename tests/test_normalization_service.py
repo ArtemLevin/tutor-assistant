@@ -11,7 +11,6 @@ from tutor_assistant.config import NormalizationConfig
 from tutor_assistant.content import StudentContentService
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.normalization.errors import (
-    InvalidPlainTextOutputError,
     NormalizationCancelledError,
     OllamaTimeoutError,
     SourceTranscriptChangedError,
@@ -129,7 +128,11 @@ def test_invalid_first_plain_text_response_is_retried_once(tmp_path: Path) -> No
             _normalized_text,
         ]
     )
-    service, _content, lesson, _source_path = _setup(tmp_path, provider)
+    service, _content, lesson, _source_path = _setup(
+        tmp_path,
+        provider,
+        config=NormalizationConfig(retry_requests=1, retry_backoff_seconds=0),
+    )
 
     result = service.normalize_lesson(lesson.lesson_id)
 
@@ -138,21 +141,27 @@ def test_invalid_first_plain_text_response_is_retried_once(tmp_path: Path) -> No
     assert len(provider.requests) == 2
 
 
-def test_failed_second_response_preserves_source_and_marks_run_failed(tmp_path: Path) -> None:
+def test_rejected_responses_use_source_fallback_and_finish_review(tmp_path: Path) -> None:
     provider = FakeNormalizationProvider(
         responses=[
             '{"text":"wrong contract"}',
             '{"text":"still wrong"}',
         ]
     )
-    service, _content, lesson, source_path = _setup(tmp_path, provider)
+    service, _content, lesson, source_path = _setup(
+        tmp_path,
+        provider,
+        config=NormalizationConfig(retry_requests=1, retry_backoff_seconds=0),
+    )
     source_before = source_path.read_bytes()
 
-    with pytest.raises(InvalidPlainTextOutputError):
-        service.normalize_lesson(lesson.lesson_id)
+    result = service.normalize_lesson(lesson.lesson_id)
 
-    run = service.runs.latest(lesson.lesson_id)
-    assert run and run.status == NormalizationRunStatus.FAILED
+    assert result.run and result.run.status == NormalizationRunStatus.REVIEW_REQUIRED
+    assert result.transcript.statistics.source_fallback_chunks == 1
+    assert result.transcript.quality.requires_manual_attention is True
+    assert any("source_fallback:" in item for item in result.transcript.quality.warnings)
+    assert "x + 2 > 5" in result.transcript.educational_text
     assert source_path.read_bytes() == source_before
 
 
@@ -271,3 +280,12 @@ def test_logs_do_not_contain_transcript_text(tmp_path: Path, caplog) -> None:
 
     assert "Я не понимаю, почему знак меняется" not in caplog.text
     assert "event=content_filter_completed" in caplog.text
+
+
+
+def test_retry_requests_default_range_and_legacy_mapping() -> None:
+    assert NormalizationConfig().retry_requests == 0
+    assert NormalizationConfig().max_attempts == 1
+    assert NormalizationConfig(max_attempts=4).retry_requests == 3
+    with pytest.raises(ValueError):
+        NormalizationConfig(retry_requests=4)

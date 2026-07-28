@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
     QTableWidget,
@@ -1250,6 +1251,21 @@ class MainWindow(QMainWindow):
         self.normalization_model.setEditable(True)
         self.normalization_model.setMinimumWidth(145)
         normalization_controls.addWidget(self.normalization_model)
+        retry_label = QLabel("Повторных запросов")
+        retry_label.setObjectName("muted")
+        normalization_controls.addWidget(retry_label)
+        self.normalization_retry_requests = QSpinBox()
+        self.normalization_retry_requests.setRange(0, 3)
+        self.normalization_retry_requests.setValue(
+            self.config.normalization.retry_requests
+        )
+        self.normalization_retry_requests.setToolTip(
+            "Количество дополнительных запросов после отклонённого ответа модели"
+        )
+        self.normalization_retry_requests.valueChanged.connect(
+            self._normalization_retry_requests_changed
+        )
+        normalization_controls.addWidget(self.normalization_retry_requests)
         self.normalize_button = set_button_kind(
             QPushButton("Отфильтровать учебное содержание"),
             "primary",
@@ -1263,10 +1279,12 @@ class MainWindow(QMainWindow):
         self.cancel_normalization_button.clicked.connect(self.cancel_normalization)
         normalization_controls.addWidget(self.cancel_normalization_button)
         self.retry_normalization_button = set_button_kind(
-            QPushButton("Продолжить"),
+            QPushButton("Запустить заново"),
             "ghost",
         )
-        self.retry_normalization_button.clicked.connect(self.normalize_current_transcript)
+        self.retry_normalization_button.clicked.connect(
+            lambda: self.normalize_current_transcript(force=True)
+        )
         normalization_controls.addWidget(self.retry_normalization_button)
         self.open_normalization_button = set_button_kind(
             QPushButton("Открыть результат"),
@@ -2148,6 +2166,13 @@ class MainWindow(QMainWindow):
             self.content_service,
         )
 
+    def _normalization_retry_requests_changed(self, value: int) -> None:
+        updated = self.config.normalization.model_copy(
+            update={"retry_requests": value}
+        )
+        self._replace_normalization_config(updated)
+        self._set_status(f"Повторных запросов LLM при ошибке: {value}")
+
     def _sync_normalization_provider_ui(self) -> None:
         if not hasattr(self, "normalization_provider"):
             return
@@ -2357,6 +2382,7 @@ class MainWindow(QMainWindow):
                 run
                 and run.status
                 in {
+                    NormalizationRunStatus.REVIEW_REQUIRED,
                     NormalizationRunStatus.FAILED,
                     NormalizationRunStatus.CANCELLED,
                 }
@@ -2565,9 +2591,16 @@ class MainWindow(QMainWindow):
         ):
             self._normalization_execution = result
         warnings = len(result.transcript.quality.warnings)
+        fallback_chunks = result.transcript.statistics.source_fallback_chunks
         self._set_status(
             (
-                f"LLM-фильтрация готова · сохранено "
+                (
+                    "LLM-фильтрация завершена с замечаниями · "
+                    f"исходный текст использован в блоках: {fallback_chunks} · "
+                    if fallback_chunks
+                    else "LLM-фильтрация готова · "
+                )
+                + "сохранено "
                 f"{result.transcript.statistics.retained_ratio * 100:.1f}%"
                 f" · восстановлено блоков: {result.transcript.statistics.reused_chunks}"
                 + (f" · предупреждений: {warnings}" if warnings else "")
@@ -2627,7 +2660,11 @@ class MainWindow(QMainWindow):
             return
         run_id, transcript, source_segments = payload
         dialog = NormalizationReviewDialog(transcript, source_segments, self)
-        if dialog.exec() != QDialog.Accepted:
+        outcome = dialog.exec()
+        if dialog.restart_requested:
+            self.normalize_current_transcript(force=True)
+            return
+        if outcome != QDialog.Accepted:
             return
         edited_text = dialog.edited_text
         if not edited_text:
