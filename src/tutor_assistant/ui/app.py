@@ -69,6 +69,15 @@ from ..recording import (
     list_system_audio_sources,
     recover_recording,
 )
+from ..security.cloud_consent import (
+    CloudConsentReceipt,
+    CloudConsentScope,
+    CloudConsentSession,
+)
+from ..security.credentials import (
+    delete_yandex_api_key,
+    save_yandex_api_key,
+)
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
@@ -169,6 +178,7 @@ class MainWindow(QMainWindow):
         self._normalization_execution: NormalizationExecution | None = None
         self._normalization_lesson_id: str | None = None
         self._retry_indeterminate_after_worker = False
+        self._cloud_consent_session = CloudConsentSession()
         self._pending_auto_normalizations: list[str] = []
         self.devices = list_input_devices()
         self.system_sources = list_system_audio_sources(
@@ -1282,6 +1292,21 @@ class MainWindow(QMainWindow):
         self.normalization_provider_hint.setObjectName("muted")
         self.normalization_provider_hint.setWordWrap(True)
         segments_layout.addWidget(self.normalization_provider_hint)
+        credential_controls = QHBoxLayout()
+        self.save_yandex_key_button = set_button_kind(
+            QPushButton("Сохранить ключ безопасно"),
+            "ghost",
+        )
+        self.save_yandex_key_button.clicked.connect(self._configure_yandex_key)
+        self.delete_yandex_key_button = set_button_kind(
+            QPushButton("Удалить сохранённый ключ"),
+            "ghost",
+        )
+        self.delete_yandex_key_button.clicked.connect(self._delete_yandex_key)
+        credential_controls.addWidget(self.save_yandex_key_button)
+        credential_controls.addWidget(self.delete_yandex_key_button)
+        credential_controls.addStretch()
+        segments_layout.addLayout(credential_controls)
         self.normalization_progress_label = QLabel("LLM-фильтрация не запущена")
         self.normalization_progress_label.setObjectName("muted")
         segments_layout.addWidget(self.normalization_progress_label)
@@ -2145,6 +2170,9 @@ class MainWindow(QMainWindow):
         tooltip = error or provider_hint(self.config.normalization)
         self.normalization_provider.setToolTip(tooltip)
         self.normalization_model.setToolTip(tooltip)
+        cloud_selected = provider == "yandex_ai_studio"
+        self.save_yandex_key_button.setVisible(cloud_selected)
+        self.delete_yandex_key_button.setVisible(cloud_selected)
 
     def _normalization_provider_changed(self, _index: int) -> None:
         selected = self._selected_normalization_provider()
@@ -2212,6 +2240,90 @@ class MainWindow(QMainWindow):
             )
         else:
             self._set_status(f"Провайдер LLM-фильтрации: {provider_label(selected)}")
+
+    def _configure_yandex_key(self) -> None:
+        value, accepted = QInputDialog.getText(
+            self,
+            "Yandex AI Studio",
+            "API-ключ будет сохранён в Windows Credential Manager:",
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return
+        try:
+            save_yandex_api_key(self.config.normalization, value)
+            updated = self.config.normalization.model_copy(
+                update={"credential_source": "system_store"}
+            )
+            self._replace_normalization_config(updated)
+            self._sync_normalization_provider_ui()
+            self._sync_normalization_controls()
+            self._set_status("API-ключ Yandex AI Studio сохранён безопасно", "success")
+        except Exception as exc:
+            QMessageBox.warning(self, "Yandex AI Studio", str(exc))
+
+    def _delete_yandex_key(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Yandex AI Studio",
+            "Удалить API-ключ из Windows Credential Manager?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            delete_yandex_api_key(self.config.normalization)
+            self._sync_normalization_provider_ui()
+            self._sync_normalization_controls()
+            self._set_status("Сохранённый API-ключ удалён", "warning")
+        except Exception as exc:
+            QMessageBox.warning(self, "Yandex AI Studio", str(exc))
+
+    def _request_cloud_consent(
+        self,
+        lesson_id: str,
+        model: str,
+        segments: list[SourceSegment],
+    ) -> CloudConsentReceipt | None:
+        request = self.normalization_service.cloud_processing_request(
+            lesson_id,
+            model=model,
+            source_segments=segments,
+        )
+        if self.config.normalization.effective_cloud_policy == "allow_for_session":
+            existing = self._cloud_consent_session.find(request)
+            if existing:
+                return existing
+        box = QMessageBox(self)
+        box.setWindowTitle("Передача транскрипта в Yandex AI Studio")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            "Будет отправлен текст реплик занятия.\n\n"
+            f"Предметный профиль: {request.subject_profile}\n"
+            f"Модель: {request.model}\n"
+            f"Сегментов: {request.segment_count}\n"
+            f"Символов: {request.character_count}\n"
+            f"Блоков: {request.chunk_count}\n\n"
+            "Аудио, ФИО ученика, lesson ID, локальные пути и таймкоды не отправляются."
+        )
+        once_button = box.addButton("Разрешить один запуск", QMessageBox.AcceptRole)
+        session_button = box.addButton(
+            "Разрешить до закрытия приложения",
+            QMessageBox.YesRole,
+        )
+        box.addButton("Отмена", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is once_button:
+            return self._cloud_consent_session.grant(request, CloudConsentScope.ONCE)
+        if clicked is session_button:
+            updated = self.config.normalization.model_copy(
+                update={"cloud_policy": "allow_for_session"}
+            )
+            self._replace_normalization_config(updated)
+            return self._cloud_consent_session.grant(request, CloudConsentScope.SESSION)
+        return None
 
     def _persist_selected_normalization_model(self) -> str:
         provider = self._selected_normalization_provider()
@@ -2313,6 +2425,20 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "LLM-фильтрация", str(exc))
             return
+        cloud_consent = None
+        if provider == "yandex_ai_studio":
+            try:
+                cloud_consent = self._request_cloud_consent(
+                    lesson_id,
+                    model,
+                    segments,
+                )
+            except Exception as exc:
+                QMessageBox.warning(self, "Облачная обработка", str(exc))
+                return
+            if cloud_consent is None:
+                self._set_status("Облачная обработка отменена", "warning")
+                return
         token = CancellationToken()
         self._normalization_cancellation = token
         self._normalization_lesson_id = lesson_id
@@ -2330,6 +2456,7 @@ class MainWindow(QMainWindow):
             source_artifact="review-buffer",
             cancellation=token,
             retry_indeterminate=retry_indeterminate,
+            cloud_consent=cloud_consent,
         )
         worker.progress.connect(self._normalization_progress_updated)
         worker.resume_confirmation_required.connect(
@@ -2347,6 +2474,15 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _pump_auto_normalization(self) -> None:
+        if (
+            self.config.normalization.provider == "yandex_ai_studio"
+            and self._pending_auto_normalizations
+        ):
+            self._set_status(
+                "Облачная автофильтрация ожидает ручного согласия преподавателя",
+                "warning",
+            )
+            return
         if (
             self._shutdown_requested
             or self._normalization_cancellation is not None

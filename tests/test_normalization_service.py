@@ -25,6 +25,7 @@ from tutor_assistant.normalization.protocol import (
     FakeNormalizationProvider,
 )
 from tutor_assistant.normalization.service import NormalizationService
+from tutor_assistant.security.cloud_consent import CloudConsentReceipt
 
 
 def _setup(
@@ -179,7 +180,11 @@ def test_yandex_apply_records_cloud_provider(tmp_path: Path) -> None:
         retry_backoff_seconds=0,
     )
     service, content, lesson, _source_path = _setup(tmp_path, provider, config=config)
-    result = service.normalize_lesson(lesson.lesson_id)
+    request = service.cloud_processing_request(lesson.lesson_id)
+    result = service.normalize_lesson(
+        lesson.lesson_id,
+        cloud_consent=CloudConsentReceipt.grant(request),
+    )
 
     service.apply_result(result.run.id if result.run else 0)
 

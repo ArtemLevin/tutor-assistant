@@ -5,6 +5,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .security.redaction import RedactingFormatter, SensitiveDataFilter
+
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
 
@@ -17,7 +19,8 @@ def configure_logging(workspace: Path, verbose: bool = False) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     log_file = directory / "application.log"
     console_level = logging.DEBUG if verbose else logging.WARNING
-    formatter = logging.Formatter(LOG_FORMAT)
+    formatter = RedactingFormatter(LOG_FORMAT)
+    sensitive_filter = SensitiveDataFilter()
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=5 * 1024 * 1024,
@@ -26,15 +29,19 @@ def configure_logging(workspace: Path, verbose: bool = False) -> Path:
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
+    file_handler.addFilter(sensitive_filter)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(sensitive_filter)
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(logging.DEBUG)
     root.addHandler(file_handler)
     root.addHandler(console_handler)
     logging.captureWarnings(True)
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     logging.getLogger(__name__).info("Логирование настроено: %s", log_file)
     return log_file
 

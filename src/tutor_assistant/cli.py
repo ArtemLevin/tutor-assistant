@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sqlite3
 from datetime import date, timedelta
@@ -68,6 +69,11 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--provider", choices=("ollama", "yandex_ai_studio"))
         command.add_argument("--model")
         command.add_argument("--force", action="store_true")
+        command.add_argument(
+            "--allow-cloud",
+            action="store_true",
+            help="Явно разрешить передачу текущего транскрипта в облако",
+        )
         command.add_argument("--dry-run", action="store_true")
         command.add_argument("--output", type=Path)
         command.add_argument(
@@ -113,6 +119,18 @@ def parser() -> argparse.ArgumentParser:
         help="Совместимый алиас команды content-filter-doctor",
     )
     add_filter_doctor_arguments(normalization_doctor)
+    privacy = commands.add_parser(
+        "privacy-doctor",
+        help="Проверить privacy boundary, credentials и локальный аудит облака",
+    )
+    privacy.add_argument("--json", action="store_true")
+    privacy.add_argument("--strict", action="store_true")
+    credentials = commands.add_parser(
+        "credentials",
+        help="Управление безопасными credentials",
+    )
+    credentials.add_argument("credential_provider", choices=("yandex",))
+    credentials.add_argument("credential_action", choices=("status", "set", "delete"))
     publish = commands.add_parser("publish", help="Опубликовать подтверждённое занятие")
     publish.add_argument("lesson_json", type=Path)
     commands.add_parser("latex-doctor", help="Проверить локальное LaTeX-окружение")
@@ -157,6 +175,46 @@ def main() -> None:
         print(report_json(report) if args.json else format_diagnostics(report))
         if args.strict and not report.ready:
             raise SystemExit(1)
+        return
+    if args.command == "privacy-doctor":
+        from .security.privacy_diagnostics import (
+            format_privacy_report,
+            run_privacy_diagnostics,
+        )
+
+        report = run_privacy_diagnostics(config, args.config)
+        print(report.model_dump_json(indent=2) if args.json else format_privacy_report(report))
+        if args.strict and not report.ready:
+            raise SystemExit(1)
+        return
+    if args.command == "credentials":
+        from .security.credentials import (
+            credential_status,
+            delete_yandex_api_key,
+            save_yandex_api_key,
+        )
+
+        if args.credential_action == "status":
+            status = credential_status(config.normalization)
+            print(
+                json.dumps(
+                    {
+                        "configured": status.configured,
+                        "source": status.source,
+                        "detail": status.detail,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
+        if args.credential_action == "set":
+            value = getpass.getpass("Yandex AI Studio API key: ")
+            save_yandex_api_key(config.normalization, value)
+            print("API-ключ сохранён в Windows Credential Manager.")
+            return
+        delete_yandex_api_key(config.normalization)
+        print("Сохранённый API-ключ удалён.")
         return
     if args.command == "latex-doctor":
         from .latex import inspect_latex_environment
@@ -324,6 +382,7 @@ def main() -> None:
         from .config import NormalizationConfig
         from .content import ContentBusyError, ContentNotFoundError
         from .normalization import NormalizationError, NormalizationService
+        from .security.cloud_consent import CloudConsentReceipt
 
         normalization_config = config.normalization
         if args.provider:
@@ -331,6 +390,17 @@ def main() -> None:
                 {**normalization_config.model_dump(), "provider": args.provider}
             )
         service = NormalizationService(normalization_config, pipeline.content_service)
+        cloud_consent = None
+        if normalization_config.provider == "yandex_ai_studio":
+            if not args.allow_cloud:
+                raise SystemExit(
+                    "Для Yandex AI Studio укажите --allow-cloud после проверки объёма данных"
+                )
+            request = service.cloud_processing_request(
+                args.lesson_id,
+                model=args.model,
+            )
+            cloud_consent = CloudConsentReceipt.grant(request)
         try:
             result = service.normalize_lesson(
                 args.lesson_id,
@@ -340,6 +410,7 @@ def main() -> None:
                 output=args.output,
                 include_removed_text=args.include_removed_text,
                 retry_indeterminate=args.retry_indeterminate,
+                cloud_consent=cloud_consent,
             )
         except (NormalizationError, ContentBusyError, ContentNotFoundError) as exc:
             raise SystemExit(str(exc)) from None
