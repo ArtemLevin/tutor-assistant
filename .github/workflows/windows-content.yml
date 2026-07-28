@@ -64,7 +64,7 @@ jobs:
 
       - name: Filtering, checkpoint and privacy contracts
         run: >-
-          uv run pytest -q
+          uv run pytest -q --tb=short --junitxml=contract-report.xml
           tests/test_filtering_feature_contracts.py
           tests/test_subject_aware_filtering.py
           tests/test_subject_manifest_compatibility.py
@@ -83,6 +83,14 @@ jobs:
           tests/test_privacy_doctor.py
           tests/test_cloud_consent_cli.py
           tests/test_cloud_service_consent.py
+
+      - name: Upload contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-contract-report
+          path: contract-report.xml
+          if-no-files-found: ignore
 
       - name: Validate patch whitespace
         if: github.event_name == 'pull_request'
