@@ -52,13 +52,21 @@ jobs:
 
       - name: Focused transcript workspace tests
         run: >-
-          uv run pytest -q
+          uv run pytest -q --tb=short --junitxml=focused-report.xml
           tests/test_transcript_workspace_gui.py
           tests/test_normalization_provider_gui.py
           tests/test_normalization_progress_gui.py
           tests/test_normalization_service.py
           tests/test_normalization_checkpoint_store.py
           tests/test_normalization_resume.py
+
+      - name: Upload focused test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr41-focused-report
+          path: focused-report.xml
+          if-no-files-found: ignore
 
       - name: Full test suite
         run: uv run pytest -q
