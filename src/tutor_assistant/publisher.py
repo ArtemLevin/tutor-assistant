@@ -255,7 +255,8 @@ def _verified_transcript(lesson: Lesson) -> tuple[Path, str]:
 
 
 def _git_paths(checkout: Path, *args: str) -> tuple[str, ...]:
-    return tuple(line.strip() for line in run_git(checkout, *args).splitlines() if line.strip())
+    output = run_git(checkout, "-c", "core.quotepath=false", *args)
+    return tuple(line.strip() for line in output.splitlines() if line.strip())
 
 
 def _assert_transcript_only_egress(paths: tuple[str, ...], expected: str) -> None:
