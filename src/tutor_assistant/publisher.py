@@ -123,6 +123,105 @@ def ensure_private_repository(
         )
 
 
+def _draft_pr_copy(lesson: Lesson) -> tuple[str, str]:
+    title = f"Lesson: {lesson.student.full_name} — {lesson.topic}"
+    body = f"""## Занятие
+
+- Ученик: {lesson.student.full_name}
+- Дата: {lesson.lesson_date:%d.%m.%Y}
+- Предмет: {lesson.subject}
+- Тема: {lesson.topic}
+
+PR создан Tutor Assistant и остаётся draft до завершения проверок.
+"""
+    return title, body
+
+
+def create_draft_pr(
+    config: RepositoryConfig,
+    checkout: Path,
+    lesson: Lesson,
+    branch: str,
+    gateway: GitHubRepositoryGateway | None = None,
+) -> tuple[str | None, list[str]]:
+    """Compatibility utility for workflows that explicitly request a PR.
+
+    Transcript publication never calls this function: its egress path targets main directly.
+    """
+
+    warnings: list[str] = []
+    if not config.auto_create_pr:
+        return None, warnings
+    title, body = _draft_pr_copy(lesson)
+    if shutil.which("gh") is None:
+        try:
+            api = gateway or GitHubRestGateway(config)
+            existing = api.find_open_pull_request(branch, config.pr_base_branch)
+            if existing:
+                return existing, warnings
+            return (
+                api.create_draft_pull_request(
+                    branch=branch,
+                    base_branch=config.pr_base_branch,
+                    title=title,
+                    body=body,
+                ),
+                warnings,
+            )
+        except GitHubApiError as exc:
+            warnings.append("Не удалось создать draft PR через GitHub API: " + str(exc))
+            return None, warnings
+    auth = _run_command(
+        ["gh", "auth", "status"],
+        cwd=checkout,
+        timeout=GH_TIMEOUT_SECONDS,
+    )
+    if auth.returncode:
+        return None, ["GitHub CLI не авторизован: выполните gh auth login"]
+    existing = _run_command(
+        [
+            "gh",
+            "pr",
+            "view",
+            branch,
+            "--repo",
+            config.repository_full_name,
+            "--json",
+            "url",
+            "--jq",
+            ".url",
+        ],
+        cwd=checkout,
+        timeout=GH_TIMEOUT_SECONDS,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        return existing.stdout.strip(), warnings
+    result = _run_command(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--draft",
+            "--repo",
+            config.repository_full_name,
+            "--base",
+            config.pr_base_branch,
+            "--head",
+            branch,
+            "--title",
+            title,
+            "--body",
+            body,
+        ],
+        cwd=checkout,
+        timeout=60,
+    )
+    if result.returncode:
+        warnings.append("Не удалось создать draft PR: " + (result.stderr.strip() or result.stdout.strip()))
+        return None, warnings
+    return result.stdout.strip().splitlines()[-1], warnings
+
+
 def publication_repository_path(
     lesson: Lesson,
     policy: PublicationPolicy = TRANSCRIPT_ONLY_POLICY,
