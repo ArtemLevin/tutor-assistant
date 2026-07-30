@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from .atomic_io import atomic_write_text
 from .config import RepositoryConfig
 from .domain import JobStatus, Lesson
 from .github_api import GitHubApiError, GitHubRepositoryGateway, GitHubRestGateway
@@ -20,16 +19,18 @@ class GitError(RuntimeError):
 
 GIT_TIMEOUT_SECONDS = 120
 GH_TIMEOUT_SECONDS = 30
-PUBLICATION_ARTIFACTS = {
-    "verified_transcript": "transcript.txt",
-    "cleaned_transcript": "transcript_generated.txt",
-    "timestamped_transcript": "transcript_timestamped.txt",
-    "segments_json": "segments.json",
-    "student_signals": "important_student_signals.json",
-    "transcription_manifest": "transcription_manifest.json",
-    "teacher_transcript": "teacher_transcript.txt",
-    "student_transcript": "student_transcript.txt",
-}
+
+
+@dataclass(frozen=True)
+class PublicationPolicy:
+    """Fail-closed contract for every file sent to the students repository."""
+
+    allowed_filename: str = "transcript.txt"
+    target_branch: str = "main"
+    require_private_repository: bool = True
+
+
+TRANSCRIPT_ONLY_POLICY = PublicationPolicy()
 
 
 @dataclass(frozen=True)
@@ -82,28 +83,6 @@ def run_git(repo: Path, *args: str, timeout: float = GIT_TIMEOUT_SECONDS) -> str
     return result.stdout.strip()
 
 
-def _local_branch_exists(repo: Path, branch: str) -> bool:
-    result = _run_command(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=repo,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if result.returncode not in {0, 1}:
-        raise GitError(result.stderr.strip() or result.stdout.strip())
-    return result.returncode == 0
-
-
-def _remote_branch_exists(repo: Path, remote: str, branch: str) -> bool:
-    result = _run_command(
-        ["git", "ls-remote", "--exit-code", "--heads", remote, branch],
-        cwd=repo,
-        timeout=GIT_TIMEOUT_SECONDS,
-    )
-    if result.returncode not in {0, 2}:
-        raise GitError(result.stderr.strip() or result.stdout.strip())
-    return result.returncode == 0
-
-
 def ensure_private_repository(
     config: RepositoryConfig,
     checkout: Path,
@@ -144,16 +123,6 @@ def ensure_private_repository(
         )
 
 
-def publication_payload_files(lesson: Lesson) -> tuple[str, ...]:
-    files = ["lesson.json", "job.status.json"]
-    files.extend(
-        f"source/{filename}"
-        for field, filename in PUBLICATION_ARTIFACTS.items()
-        if (value := getattr(lesson.artifacts, field)) and Path(value).is_file()
-    )
-    return tuple(files)
-
-
 def _draft_pr_copy(lesson: Lesson) -> tuple[str, str]:
     title = f"Lesson: {lesson.student.full_name} — {lesson.topic}"
     body = f"""## Занятие
@@ -162,15 +131,6 @@ def _draft_pr_copy(lesson: Lesson) -> tuple[str, str]:
 - Дата: {lesson.lesson_date:%d.%m.%Y}
 - Предмет: {lesson.subject}
 - Тема: {lesson.topic}
-
-## Конвейер
-
-- [x] Подтверждённый транскрипт
-- [ ] LaTeX-пособие
-- [ ] PDF
-- [ ] Образовательный плакат
-- [ ] Web-эквивалент
-- [ ] Проверка ссылок и index.html
 
 PR создан Tutor Assistant и остаётся draft до завершения проверок.
 """
@@ -184,6 +144,11 @@ def create_draft_pr(
     branch: str,
     gateway: GitHubRepositoryGateway | None = None,
 ) -> tuple[str | None, list[str]]:
+    """Compatibility utility for workflows that explicitly request a PR.
+
+    Transcript publication never calls this function: its egress path targets main directly.
+    """
+
     warnings: list[str] = []
     if not config.auto_create_pr:
         return None, warnings
@@ -257,128 +222,151 @@ def create_draft_pr(
     return result.stdout.strip().splitlines()[-1], warnings
 
 
+def publication_repository_path(
+    lesson: Lesson,
+    policy: PublicationPolicy = TRANSCRIPT_ONLY_POLICY,
+) -> PurePosixPath:
+    path = PurePosixPath(lesson.student.folder) / "lessons" / lesson.lesson_slug / policy.allowed_filename
+    if path.is_absolute() or ".." in path.parts or path.name != policy.allowed_filename:
+        raise GitError("Путь публикации транскрипта выходит за разрешённые границы")
+    return path
+
+
+def publication_payload_files(lesson: Lesson) -> tuple[str, ...]:
+    """Return the complete and exhaustive network egress payload."""
+
+    return (publication_repository_path(lesson).as_posix(),)
+
+
+def _verified_transcript(lesson: Lesson) -> tuple[Path, str]:
+    if lesson.status != JobStatus.READY:
+        raise GitError("Публикация разрешена только после подтверждения транскрипта")
+    value = lesson.artifacts.verified_transcript
+    if not value:
+        raise GitError("Подтверждённый транскрипт отсутствует")
+    source = Path(value)
+    if not source.is_file():
+        raise GitError(f"Подтверждённый транскрипт не найден: {source}")
+    try:
+        text = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise GitError("Подтверждённый транскрипт должен быть UTF-8 текстом") from exc
+    return source, text
+
+
+def _git_paths(checkout: Path, *args: str) -> tuple[str, ...]:
+    output = run_git(checkout, "-c", "core.quotepath=false", *args)
+    return tuple(line.strip() for line in output.splitlines() if line.strip())
+
+
+def _assert_transcript_only_egress(paths: tuple[str, ...], expected: str) -> None:
+    unexpected = tuple(path for path in paths if PurePosixPath(path).as_posix() != expected)
+    if unexpected:
+        details = ", ".join(unexpected)
+        raise GitError(f"Публикация заблокирована: обнаружены посторонние файлы: {details}")
+    if len(paths) > 1:
+        raise GitError("Публикация заблокирована: разрешён ровно один transcript.txt")
+
+
 class LessonPublisher:
     def __init__(
         self,
         config: RepositoryConfig,
         github_gateway: GitHubRepositoryGateway | None = None,
+        policy: PublicationPolicy = TRANSCRIPT_ONLY_POLICY,
     ) -> None:
         self.config = config
         self.github_gateway = github_gateway
+        self.policy = policy
 
-    def _copy_job(self, lesson: Lesson, checkout: Path) -> Path:
+    def _write_transcript(self, lesson: Lesson, checkout: Path, text: str) -> Path:
+        relative = publication_repository_path(lesson, self.policy)
         checkout = checkout.resolve()
-        target = (checkout / lesson.student.folder / "lessons" / lesson.lesson_slug).resolve()
+        target = (checkout / Path(relative.as_posix())).resolve()
         if not target.is_relative_to(checkout):
-            raise GitError("Папка ученика выходит за пределы Git-репозитория")
-        source_dir = target / "source"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        for field, filename in PUBLICATION_ARTIFACTS.items():
-            value = getattr(lesson.artifacts, field)
-            if value and Path(value).exists():
-                shutil.copy2(value, source_dir / filename)
-        lesson.transition(JobStatus.READY) if lesson.status == JobStatus.PUBLISHED else None
-        lesson.write_json(target / "lesson.json")
-        job_status = {
-            "schema_version": "1.0",
-            "lesson_id": lesson.lesson_id,
-            "status": JobStatus.READY.value,
-            "stage": "generation",
-            "updated_at": datetime.now(UTC).isoformat(),
-            "artifacts": {
-                "tex": "pending",
-                "pdf": "pending",
-                "poster": "pending",
-                "web": "pending",
-                "index": "pending",
-            },
-        }
-        (target / "job.status.json").write_text(
-            json.dumps(job_status, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+            raise GitError("Путь публикации транскрипта выходит за пределы Git-репозитория")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(target, text)
         return target
 
     def publish(self, lesson: Lesson, _lesson_dir: Path) -> PublicationResult:
+        del _lesson_dir  # Local lesson assets are deliberately outside the egress contract.
+        _source, text = _verified_transcript(lesson)
+        expected_path = publication_repository_path(lesson, self.policy).as_posix()
+        payload = publication_payload_files(lesson)
+        _assert_transcript_only_egress(payload, expected_path)
+        if payload != (expected_path,):
+            raise GitError("Публикация заблокирована: payload не соответствует transcript-only policy")
+
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
             raise GitError(f"Git-репозиторий не найден: {repo}")
-        if self.config.push or self.config.auto_create_pr:
+        if self.config.push and self.policy.require_private_repository:
             ensure_private_repository(self.config, repo, self.github_gateway)
-        run_git(repo, "fetch", self.config.remote, self.config.base_branch)
-        branch = f"lesson/{lesson.student.id}-{lesson.lesson_date:%Y%m%d}-{lesson.lesson_id[:8]}"
-        relative_target = Path(lesson.student.folder) / "lessons" / lesson.lesson_slug
-        local_branch_exists = _local_branch_exists(repo, branch)
-        if not local_branch_exists and _remote_branch_exists(
-            repo,
-            self.config.remote,
-            branch,
-        ):
-            run_git(repo, "fetch", self.config.remote, branch)
-            run_git(repo, "branch", branch, "FETCH_HEAD")
-            local_branch_exists = True
+
+        branch = self.policy.target_branch
+        run_git(repo, "fetch", self.config.remote, branch)
         checkout = repo
         worktree_path: Path | None = None
         try:
             if self.config.use_worktree:
                 root = repo.parent / ".tutor-assistant-worktrees"
                 root.mkdir(parents=True, exist_ok=True)
-                worktree_path = Path(tempfile.mkdtemp(prefix="lesson-", dir=root))
+                worktree_path = Path(tempfile.mkdtemp(prefix="transcript-", dir=root))
                 worktree_path.rmdir()
-                if local_branch_exists:
-                    run_git(repo, "worktree", "add", str(worktree_path), branch)
-                else:
-                    run_git(
-                        repo,
-                        "worktree",
-                        "add",
-                        "-b",
-                        branch,
-                        str(worktree_path),
-                        f"{self.config.remote}/{self.config.base_branch}",
-                    )
+                run_git(
+                    repo,
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(worktree_path),
+                    f"{self.config.remote}/{branch}",
+                )
                 checkout = worktree_path
-            elif self.config.create_branch:
+            else:
                 if run_git(repo, "status", "--porcelain"):
                     raise GitError("Основная копия содержит незакоммиченные изменения; включите use_worktree")
-                run_git(repo, "switch", self.config.base_branch)
-                run_git(repo, "pull", "--ff-only", self.config.remote, self.config.base_branch)
-                if local_branch_exists:
-                    run_git(repo, "switch", branch)
-                else:
-                    run_git(repo, "switch", "-c", branch)
-            committed_target = (
-                _run_command(
-                    [
-                        "git",
-                        "cat-file",
-                        "-e",
-                        f"HEAD:{relative_target.as_posix()}/lesson.json",
-                    ],
-                    cwd=checkout,
-                    timeout=GIT_TIMEOUT_SECONDS,
-                ).returncode
-                == 0
-            )
-            target = checkout / relative_target
-            if not committed_target:
-                target = self._copy_job(lesson, checkout)
-                run_git(checkout, "add", str(target.relative_to(checkout)))
+                run_git(repo, "switch", branch)
+                run_git(repo, "pull", "--ff-only", self.config.remote, branch)
+
+            target = self._write_transcript(lesson, checkout, text)
+            relative_target = target.relative_to(checkout).as_posix()
+            if relative_target != expected_path:
+                raise GitError("Публикация заблокирована: итоговый путь transcript.txt изменился")
+
+            run_git(checkout, "add", "--", relative_target)
+            staged = _git_paths(checkout, "diff", "--cached", "--name-only")
+            _assert_transcript_only_egress(staged, expected_path)
+            if staged:
                 run_git(
                     checkout,
                     "commit",
                     "-m",
-                    f"Add lesson job for {lesson.student.full_name} ({lesson.lesson_date})",
+                    f"Publish transcript for {lesson.student.full_name} ({lesson.lesson_date})",
                 )
+
             commit = run_git(checkout, "rev-parse", "HEAD")
-            if self.config.push:
-                run_git(checkout, "push", "-u", self.config.remote, "HEAD")
-            pr_url, warnings = create_draft_pr(
-                self.config, checkout, lesson, branch, self.github_gateway
+            outgoing = _git_paths(
+                checkout,
+                "diff",
+                "--name-only",
+                f"{self.config.remote}/{branch}..HEAD",
             )
+            _assert_transcript_only_egress(outgoing, expected_path)
+            if self.config.push and outgoing:
+                run_git(
+                    checkout,
+                    "push",
+                    self.config.remote,
+                    f"HEAD:refs/heads/{branch}",
+                )
             lesson.transition(JobStatus.PUBLISHED)
             return PublicationResult(
-                branch, str(target.relative_to(checkout)), commit, pr_url, tuple(warnings)
+                branch=branch,
+                repository_path=expected_path,
+                commit=commit,
+                pr_url=None,
+                warnings=(),
             )
         finally:
             if worktree_path and worktree_path.exists() and not self.config.keep_worktree:
