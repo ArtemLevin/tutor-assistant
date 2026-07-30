@@ -67,17 +67,16 @@ def test_missing_local_students_file_is_an_explicit_empty_import(
     assert "CRM без YAML-импорта" in caplog.text
 
 
-def test_publication_payload_preview_lists_only_existing_files(tmp_path: Path) -> None:
+def test_publication_payload_preview_is_transcript_only(tmp_path: Path) -> None:
     lesson = make_lesson("payload-preview")
     transcript = tmp_path / "verified.txt"
     transcript.write_text("Transcript", encoding="utf-8")
     lesson.artifacts.verified_transcript = str(transcript)
-    lesson.artifacts.cleaned_transcript = str(tmp_path / "missing.txt")
+    lesson.artifacts.cleaned_transcript = str(tmp_path / "cleaned.txt")
+    lesson.artifacts.segments_json = str(tmp_path / "segments.json")
 
     assert publication_payload_files(lesson) == (
-        "lesson.json",
-        "job.status.json",
-        "source/transcript.txt",
+        f"students/student/lessons/{lesson.lesson_slug}/transcript.txt",
     )
 
 
@@ -139,7 +138,7 @@ def _git(repo: Path, *args: str) -> None:
 
 
 @pytest.mark.parametrize("use_worktree", [True, False])
-def test_publication_retry_resumes_app_owned_branch(
+def test_publication_retry_updates_main_with_transcript_only(
     monkeypatch,
     tmp_path: Path,
     use_worktree: bool,
@@ -169,12 +168,16 @@ def test_publication_retry_resumes_app_owned_branch(
     config = RepositoryConfig(
         students_repo=repository,
         push=True,
-        auto_create_pr=False,
+        auto_create_pr=True,
         use_worktree=use_worktree,
         repository_full_name="owner/private-students",
     )
     lesson = make_lesson("retry-publication")
     lesson.status = JobStatus.READY
+    transcript = tmp_path / "transcript_verified.txt"
+    transcript.write_text("Подтверждённый транскрипт\n", encoding="utf-8")
+    lesson.artifacts.verified_transcript = str(transcript)
+    expected_path = publication_payload_files(lesson)[0]
     real_run_git = publisher_module.run_git
     failed = False
 
@@ -194,12 +197,25 @@ def test_publication_retry_resumes_app_owned_branch(
     result = LessonPublisher(config).publish(lesson, tmp_path)
 
     assert result.commit
-    remote_branch = subprocess.run(
-        ["git", "--git-dir", str(remote), "show-ref", "--verify", f"refs/heads/{result.branch}"],
+    assert result.branch == "main"
+    assert result.repository_path == expected_path
+    assert result.pr_url is None
+    published = subprocess.run(
+        ["git", "--git-dir", str(remote), "show", f"main:{expected_path}"],
+        check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
-    assert remote_branch.returncode == 0
+    assert published.stdout == "Подтверждённый транскрипт\n"
+    files = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout.splitlines()
+    assert files == ["README.md", expected_path]
 
 
 def test_same_lesson_mutations_conflict_but_different_lessons_do_not(
