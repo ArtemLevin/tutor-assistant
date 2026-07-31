@@ -4,11 +4,11 @@ import logging
 
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
+from . import app as base_app
+from .concurrent_app import MainWindow as ConcurrentMainWindow
 from ..domain import JobStatus
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
-from . import app as base_app
-from .concurrent_app import MainWindow as ConcurrentMainWindow
 
 
 _AUDIO_FORMAT_OPTIONS = (
