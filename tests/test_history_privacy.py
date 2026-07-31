@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-import tutor_assistant.security.history_privacy as history_privacy
+from tutor_assistant.security import history_privacy
 from tutor_assistant.security.history_privacy import (
+    REWRITE_CONFIRMATION,
     HistoryPrivacyError,
     HistoryPrivacyPolicy,
-    REWRITE_CONFIRMATION,
     audit_repository,
     build_filter_repo_command,
     path_is_forbidden,
