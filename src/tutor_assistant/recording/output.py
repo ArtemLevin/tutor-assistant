@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 from ..atomic_io import atomic_write_text
 from .devices import SystemAudioSource
@@ -65,7 +65,7 @@ def normalize_output_format(value: str) -> AudioOutputFormat:
     if normalized not in AUDIO_ENCODING_PROFILES:
         supported = ", ".join(AUDIO_ENCODING_PROFILES)
         raise ValueError(f"Неподдерживаемый формат аудио: {value}. Доступны: {supported}")
-    return normalized  # type: ignore[return-value]
+    return cast(AudioOutputFormat, normalized)
 
 
 def output_profile(value: str) -> AudioEncodingProfile:
@@ -183,7 +183,7 @@ def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Pat
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        completed = subprocess.run(
+        subprocess.run(
             [
                 ffmpeg,
                 "-hide_banner",
@@ -205,8 +205,6 @@ def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Pat
             errors="replace",
             timeout=3600,
         )
-        if completed.stderr:
-            completed.stderr.strip()
         _verify_encoded_audio(temporary, profile, ffprobe)
         os.replace(temporary, output_file)
         return output_file
@@ -221,7 +219,7 @@ def _mark_encoding_failure(
     session_file: Path,
     master_file: Path,
     profile: AudioEncodingProfile,
-    error: BaseException,
+    error: Exception,
 ) -> None:
     session = _read_session(session_file)
     session.update(_profile_metadata(profile))
@@ -248,7 +246,7 @@ def finalize_recording_output(
     )
     try:
         final_file = encode_master_audio(master_file, output_file, profile.output_format)
-    except BaseException as exc:
+    except Exception as exc:
         _mark_encoding_failure(result.session_file, master_file, profile, exc)
         raise RuntimeError(
             f"Не удалось создать {profile.output_format.upper()}. "
