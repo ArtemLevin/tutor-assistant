@@ -15,7 +15,9 @@ from .output import (
     finalize_recording_output,
     normalize_output_format,
     output_profile,
-    recover_recording,
+)
+from .output import (
+    recover_recording as recover_recording_output,
 )
 from .quality import AudioQualityReport, TrackQuality, analyze_track, create_quality_report
 from .recorder import (
@@ -23,6 +25,7 @@ from .recorder import (
     RecorderHealth,
     RecordingResult,
     find_recoverable_recordings,
+    recover_recording,
 )
 
 __all__ = [
@@ -49,6 +52,7 @@ __all__ = [
     "normalize_output_format",
     "output_profile",
     "recover_recording",
+    "recover_recording_output",
     "test_input_device",
     "test_system_audio_source",
 ]
