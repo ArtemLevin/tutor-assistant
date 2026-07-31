@@ -1,3 +1,4 @@
+from . import recorder as _recorder
 from .devices import (
     AudioDevice,
     SystemAudioSource,
@@ -15,18 +16,22 @@ from .output import (
     finalize_recording_output,
     normalize_output_format,
     output_profile,
+    recover_recording,
 )
-from .output import (
-    recover_recording as recover_recording_output,
-)
+from .output import recover_recording as recover_recording_output
 from .quality import AudioQualityReport, TrackQuality, analyze_track, create_quality_report
 from .recorder import (
     AudioLevels,
     RecorderHealth,
     RecordingResult,
     find_recoverable_recordings,
-    recover_recording,
 )
+from .recorder import recover_recording as recover_wav_recording
+
+# Preserve the historical module import while routing public recovery through
+# the format-aware implementation. The captured WAV function remains available
+# explicitly as recover_wav_recording.
+_recorder.recover_recording = recover_recording
 
 __all__ = [
     "AUDIO_ENCODING_PROFILES",
@@ -53,6 +58,7 @@ __all__ = [
     "output_profile",
     "recover_recording",
     "recover_recording_output",
+    "recover_wav_recording",
     "test_input_device",
     "test_system_audio_source",
 ]

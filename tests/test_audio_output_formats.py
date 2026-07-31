@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from time import monotonic
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+import tutor_assistant.recording as recording_package
 from tutor_assistant.config import AppConfig, RecordingConfig
 from tutor_assistant.recording import output as output_module
 from tutor_assistant.recording.output import (
     DualRecorder,
+    encode_master_audio,
     ensure_output_format_available,
     finalize_recording_output,
     normalize_output_format,
@@ -39,6 +43,34 @@ def _recording_result(tmp_path: Path) -> RecordingResult:
         sync_report=sync_report,
         quality_report=quality_report,
     )
+
+
+def _probe_payload(
+    codec: str,
+    *,
+    duration: float = 12.5,
+    sample_rate: int = 48_000,
+    channels: int = 1,
+    bitrate: int = 96_000,
+) -> str:
+    return json.dumps(
+        {
+            "streams": [
+                {
+                    "codec_name": codec,
+                    "duration": str(duration),
+                    "sample_rate": str(sample_rate),
+                    "channels": channels,
+                    "bit_rate": str(bitrate),
+                }
+            ],
+            "format": {"duration": str(duration), "bit_rate": str(bitrate)},
+        }
+    )
+
+
+def _encoder_output(*encoders: str) -> str:
+    return "\n".join(f" A..... {encoder} test encoder" for encoder in encoders)
 
 
 def test_recording_config_defaults_to_m4a_and_round_trips(tmp_path: Path) -> None:
@@ -82,12 +114,34 @@ def test_compressed_format_requires_ffmpeg_and_ffprobe(
         ensure_output_format_available("m4a")
 
 
+def test_capability_probe_requires_selected_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_module._ensure_encoder_available.cache_clear()
+    monkeypatch.setattr(output_module.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        output_module.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=_encoder_output("aac"),
+            stderr="",
+        ),
+    )
+
+    ensure_output_format_available("m4a")
+    with pytest.raises(RuntimeError, match="libmp3lame"):
+        ensure_output_format_available("mp3")
+
+
 def test_m4a_encoding_is_verified_and_committed_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = _recording_result(tmp_path)
     commands: list[list[str]] = []
+    output_module._ensure_encoder_available.cache_clear()
 
     def fake_which(name: str) -> str:
         return f"C:/ffmpeg/{name}.exe"
@@ -95,17 +149,22 @@ def test_m4a_encoding_is_verified_and_committed_atomically(
     def fake_run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         assert kwargs["check"] is True
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=_encoder_output("aac"),
+                stderr="",
+            )
         if command[0].endswith("ffmpeg.exe"):
             Path(command[-1]).write_bytes(b"encoded-m4a")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        payload = {
-            "streams": [{"codec_name": "aac", "duration": "12.5"}],
-            "format": {"format_name": "mov,mp4,m4a", "duration": "12.5"},
-        }
+        codec = "pcm_s16le" if Path(command[-1]) == result.mixed_file else "aac"
+        bitrate = 768_000 if codec == "pcm_s16le" else 96_000
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps(payload),
+            stdout=_probe_payload(codec, bitrate=bitrate),
             stderr="",
         )
 
@@ -118,8 +177,9 @@ def test_m4a_encoding_is_verified_and_committed_atomically(
     assert finalized.mixed_file.read_bytes() == b"encoded-m4a"
     assert result.mixed_file.exists()
     assert any("96k" in command for command in commands)
+    assert sum("-show_entries" in command for command in commands) == 2
     session = json.loads(result.session_file.read_text(encoding="utf-8"))
-    assert session["version"] == 4
+    assert session["version"] == 5
     assert session["output_format"] == "m4a"
     assert session["output_codec"] == "aac"
     assert session["output_bitrate_kbps"] == 96
@@ -134,23 +194,27 @@ def test_mp3_uses_expected_encoder_and_bitrate(
 ) -> None:
     result = _recording_result(tmp_path)
     ffmpeg_command: list[str] = []
-
+    output_module._ensure_encoder_available.cache_clear()
     monkeypatch.setattr(output_module.shutil, "which", lambda name: name)
 
     def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=_encoder_output("libmp3lame"),
+                stderr="",
+            )
         if command[0] == "ffmpeg":
             ffmpeg_command.extend(command)
             Path(command[-1]).write_bytes(b"encoded-mp3")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        codec = "pcm_s16le" if Path(command[-1]) == result.mixed_file else "mp3"
+        bitrate = 768_000 if codec == "pcm_s16le" else 128_000
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps(
-                {
-                    "streams": [{"codec_name": "mp3", "duration": "1.0"}],
-                    "format": {"format_name": "mp3", "duration": "1.0"},
-                }
-            ),
+            stdout=_probe_payload(codec, duration=1.0, bitrate=bitrate),
             stderr="",
         )
 
@@ -161,6 +225,58 @@ def test_mp3_uses_expected_encoder_and_bitrate(
     assert finalized.mixed_file.suffix == ".mp3"
     assert "libmp3lame" in ffmpeg_command
     assert "128k" in ffmpeg_command
+
+
+def test_duration_mismatch_rejects_truncated_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _recording_result(tmp_path)
+    output_module._ensure_encoder_available.cache_clear()
+    monkeypatch.setattr(output_module.shutil, "which", lambda name: name)
+
+    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=_encoder_output("aac"), stderr="")
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"truncated")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if Path(command[-1]) == result.mixed_file:
+            payload = _probe_payload("pcm_s16le", duration=120.0, bitrate=768_000)
+        else:
+            payload = _probe_payload("aac", duration=2.0, bitrate=96_000)
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(output_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Длительность"):
+        encode_master_audio(result.mixed_file, tmp_path / "lesson.m4a", "m4a")
+
+
+def test_sample_rate_mismatch_rejects_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _recording_result(tmp_path)
+    output_module._ensure_encoder_available.cache_clear()
+    monkeypatch.setattr(output_module.shutil, "which", lambda name: name)
+
+    def fake_run(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=_encoder_output("aac"), stderr="")
+        if command[0] == "ffmpeg":
+            Path(command[-1]).write_bytes(b"resampled")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if Path(command[-1]) == result.mixed_file:
+            payload = _probe_payload("pcm_s16le", sample_rate=48_000, bitrate=768_000)
+        else:
+            payload = _probe_payload("aac", sample_rate=44_100, bitrate=96_000)
+        return subprocess.CompletedProcess(command, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(output_module.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Частота дискретизации"):
+        encode_master_audio(result.mixed_file, tmp_path / "lesson.m4a", "m4a")
 
 
 def test_encoding_failure_preserves_master_and_marks_session(
@@ -197,35 +313,72 @@ def test_legacy_recovery_defaults_to_wav(
     assert session["output_codec"] == "pcm_s16le"
 
 
-def test_recorder_default_format_is_configurable(
+def test_package_recovery_uses_session_output_format(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = _recording_result(tmp_path)
+    result.session_file.write_text('{"output_format": "mp3"}', encoding="utf-8")
     selected: list[str] = []
-    monkeypatch.setattr(DualRecorder, "default_output_format", "m4a")
-    monkeypatch.setattr(
-        output_module.WavDualRecorder,
-        "stop",
-        lambda _self: result,
-    )
+    monkeypatch.setattr(output_module, "recover_wav_recording", lambda _path: result)
     monkeypatch.setattr(
         output_module,
         "finalize_recording_output",
         lambda value, output_format: selected.append(output_format) or value,
     )
-    DualRecorder.set_default_output_format("mp3")
-    recorder = DualRecorder()
 
-    assert recorder.stop() is result
+    assert recording_package.recover_recording(tmp_path) is result
     assert selected == ["mp3"]
 
 
-def test_production_gui_exposes_detailed_format_selector() -> None:
+def test_recorder_formats_are_instance_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _recording_result(tmp_path)
+    selected: list[str] = []
+    monkeypatch.setattr(output_module.WavDualRecorder, "stop", lambda _self: result)
+    monkeypatch.setattr(
+        output_module,
+        "finalize_recording_output",
+        lambda value, output_format: selected.append(output_format) or value,
+    )
+
+    first = DualRecorder(output_format="mp3")
+    second = DualRecorder(output_format="wav")
+
+    assert first.stop() is result
+    assert second.stop() is result
+    assert selected == ["mp3", "wav"]
+
+
+def test_health_counts_time_before_first_callback() -> None:
+    recorder = DualRecorder(output_format="wav")
+    writer = SimpleNamespace(
+        queue_percent=0,
+        dropped_blocks=0,
+        max_latency_seconds=0.0,
+        first_callback_monotonic=None,
+        last_callback_monotonic=None,
+        last_non_silent_monotonic=None,
+    )
+    recorder._writers = {"microphone": writer, "system": writer}
+    recorder._active = True
+    recorder._output_started_monotonic = monotonic() - 6
+
+    health = recorder.health
+
+    assert health.microphone_callback_age_seconds >= 5.5
+    assert health.system_callback_age_seconds >= 5.5
+
+
+def test_production_gui_uses_instance_recorder_factory() -> None:
     source = Path(
         "src/tutor_assistant/ui/transcript_publication_app.py"
     ).read_text(encoding="utf-8")
 
     assert 'setObjectName("audioOutputFormat")' in source
     assert 'form.addRow("Итоговый формат аудио"' in source
-    assert "DualRecorder.set_default_output_format" in source
+    assert "_create_configured_recorder" in source
+    assert 'kwargs["output_format"] = self.config.recording.output_format' in source
+    assert "set_default_output_format" not in source
