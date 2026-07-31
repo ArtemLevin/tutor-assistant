@@ -203,6 +203,7 @@ def test_recorder_default_format_is_configurable(
 ) -> None:
     result = _recording_result(tmp_path)
     selected: list[str] = []
+    monkeypatch.setattr(DualRecorder, "default_output_format", "m4a")
     monkeypatch.setattr(
         output_module.WavDualRecorder,
         "stop",
