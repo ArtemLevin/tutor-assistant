@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
 from ..audio_files import finalize_readable_audio
-from ..domain import JobStatus
+from ..domain import JobStatus, Lesson
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
 from . import app as base_app
@@ -18,6 +19,19 @@ _AUDIO_FORMAT_OPTIONS = (
     ("MP3 · 128 кбит/с", "mp3"),
     ("WAV · PCM 16 бит", "wav"),
 )
+_TRANSCRIPTION_ENTRY_STATUSES = {
+    JobStatus.DRAFT,
+    JobStatus.RECORDED,
+    JobStatus.REVIEW_REQUIRED,
+    JobStatus.READY,
+    JobStatus.FAILED,
+}
+_TRANSCRIPTION_BLOCKED_STATUSES = {
+    JobStatus.RECORDING,
+    JobStatus.TRANSCRIBING,
+    JobStatus.COMPILING_PDF,
+    JobStatus.GENERATING,
+}
 
 
 class MainWindow(ConcurrentMainWindow):
@@ -115,6 +129,32 @@ class MainWindow(ConcurrentMainWindow):
                 lesson.lesson_date,
             )
         super()._recovery_ready(result)
+
+    def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
+        if lesson.status in _TRANSCRIPTION_BLOCKED_STATUSES:
+            self._set_status(
+                f"{lesson.student.full_name}: занятие занято другой операцией",
+                "warning",
+            )
+            return
+        if lesson.status not in _TRANSCRIPTION_ENTRY_STATUSES:
+            lesson.transition(JobStatus.RECORDED, force=True)
+            self.pipeline.save_state(
+                lesson,
+                "status",
+                "error",
+                force_status=True,
+            )
+        super()._queue_imported_audio(lesson, audio)
+        self.student_content_page.refresh_if_loaded()
+
+    def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
+        super()._background_transcription_ready(job_id, lesson)
+        self.student_content_page.refresh_if_loaded()
+
+    def _background_transcription_failed(self, job_id: str, details: str) -> None:
+        super()._background_transcription_failed(job_id, details)
+        self.student_content_page.refresh_if_loaded()
 
     def approve_transcript(self) -> None:
         super().approve_transcript()
