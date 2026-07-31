@@ -11,7 +11,7 @@ export UV_CACHE_DIR
 
 .PHONY: help init sync lock lock-check upgrade run setup doctor doctor-json doctor-strict \
 	devices latex-doctor test lint format format-check check build clean compile compile-remote \
-	scan-latex recover support
+	scan-latex recover support privacy-history privacy-history-full
 
 help: ## Показать список команд
 	@$(UV) run --no-project python scripts/make_help.py
@@ -69,7 +69,13 @@ format: ## Отформатировать код с Ruff
 format-check: ## Проверить форматирование без изменений
 	$(UV) run --all-extras ruff format --check .
 
-check: lock-check lint format-check test ## Полная проверка перед публикацией
+privacy-history: ## Проверить commits после privacy baseline
+	$(UV) run --no-project python scripts/history_privacy.py audit --mode head
+
+privacy-history-full: ## Проверить все refs и PRIVATE visibility
+	$(UV) run --no-project python scripts/history_privacy.py audit --mode full --require-visibility
+
+check: lock-check lint format-check test privacy-history ## Полная проверка перед публикацией
 	$(UV) run --all-extras python -m compileall -q src tests scripts
 
 build: check ## Собрать wheel и sdist
