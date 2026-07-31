@@ -5,11 +5,13 @@ import logging
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
+from ..audio_files import finalize_readable_audio
 from ..domain import JobStatus
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
 from . import app as base_app
 from .concurrent_app import MainWindow as ConcurrentMainWindow
+from .library_transcription import install_library_transcription_control
 
 _AUDIO_FORMAT_OPTIONS = (
     ("M4A · AAC 96 кбит/с · рекомендуется", "m4a"),
@@ -24,6 +26,7 @@ class MainWindow(ConcurrentMainWindow):
     def __init__(self, config_path):
         super().__init__(config_path)
         base_app.DualRecorder = self._create_configured_recorder
+        install_library_transcription_control(self.student_content_page)
         self._install_audio_format_selector()
         self.open_pr_button.setVisible(False)
         self.publish_button.setText("Опубликовать transcript.txt в main")
@@ -82,6 +85,14 @@ class MainWindow(ConcurrentMainWindow):
             if not (self.recorder and self.recorder.active):
                 self.audio_output_format.setEnabled(True)
 
+    def _recording_ready_impl(self, result, recorded_lesson, source_recorder, reason=None) -> None:
+        readable = finalize_readable_audio(
+            result,
+            recorded_lesson.student.full_name,
+            recorded_lesson.lesson_date,
+        )
+        super()._recording_ready_impl(readable, recorded_lesson, source_recorder, reason)
+
     def _recording_ready(self, *args, **kwargs) -> None:
         try:
             super()._recording_ready(*args, **kwargs)
@@ -93,6 +104,17 @@ class MainWindow(ConcurrentMainWindow):
             super()._recording_stop_failed(*args, **kwargs)
         finally:
             self.audio_output_format.setEnabled(True)
+
+    def _recovery_ready(self, result) -> None:
+        lesson_id = result.session_file.parent.parent.name
+        lesson = self.pipeline.store.get(lesson_id)
+        if lesson is not None:
+            result = finalize_readable_audio(
+                result,
+                lesson.student.full_name,
+                lesson.lesson_date,
+            )
+        super()._recovery_ready(result)
 
     def approve_transcript(self) -> None:
         super().approve_transcript()
