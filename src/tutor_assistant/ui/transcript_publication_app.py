@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
 from ..domain import JobStatus
@@ -22,6 +23,7 @@ class MainWindow(ConcurrentMainWindow):
 
     def __init__(self, config_path):
         super().__init__(config_path)
+        base_app.DualRecorder = self._create_configured_recorder
         self._install_audio_format_selector()
         self.open_pr_button.setVisible(False)
         self.publish_button.setText("Опубликовать transcript.txt в main")
@@ -39,6 +41,10 @@ class MainWindow(ConcurrentMainWindow):
                     "После подтверждения в main будет записан один файл transcript.txt. "
                     "Аудио и служебные материалы останутся локально."
                 )
+
+    def _create_configured_recorder(self, *args, **kwargs) -> DualRecorder:
+        kwargs["output_format"] = self.config.recording.output_format
+        return DualRecorder(*args, **kwargs)
 
     def _install_audio_format_selector(self) -> None:
         self.audio_output_format = QComboBox()
@@ -61,12 +67,10 @@ class MainWindow(ConcurrentMainWindow):
         self.audio_output_format.currentIndexChanged.connect(
             self._audio_output_format_changed
         )
-        DualRecorder.set_default_output_format(self.config.recording.output_format)
 
     def _audio_output_format_changed(self, _index: int) -> None:
         selected = str(self.audio_output_format.currentData())
         self.config.recording.output_format = selected
-        DualRecorder.set_default_output_format(selected)
         self.config.save(self.config_path)
         self._set_status(f"Формат следующих записей: {selected.upper()}")
 
@@ -141,6 +145,11 @@ class MainWindow(ConcurrentMainWindow):
             result.commit,
             result.repository_path,
         )
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        super().closeEvent(event)
+        if event.isAccepted():
+            base_app.DualRecorder = DualRecorder
 
 
 def main() -> None:
