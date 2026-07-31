@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import ClassVar, Literal, cast
+from time import monotonic
+from typing import Literal, cast
 
 from ..atomic_io import atomic_write_text
 from .devices import SystemAudioSource
@@ -33,6 +36,15 @@ class AudioEncodingProfile:
     encoder: str
     bitrate_kbps: int | None
     ffmpeg_arguments: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AudioProbe:
+    codec: str
+    duration_seconds: float
+    sample_rate_hz: int
+    channels: int
+    bitrate_bps: int | None
 
 
 AUDIO_ENCODING_PROFILES: dict[AudioOutputFormat, AudioEncodingProfile] = {
@@ -83,12 +95,36 @@ def _tool_path(name: str) -> str:
     )
 
 
+@lru_cache(maxsize=16)
+def _ensure_encoder_available(ffmpeg: str, encoder: str) -> None:
+    try:
+        completed = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(f"FFmpeg не смог перечислить кодировщики: {details[-1200:]}") from exc
+    pattern = rf"(?m)^\s*[A-Z.]+\s+{re.escape(encoder)}(?:\s|$)"
+    if re.search(pattern, completed.stdout) is None:
+        raise RuntimeError(
+            f"Установленный FFmpeg не содержит кодировщик {encoder}. "
+            "Установите полную сборку FFmpeg."
+        )
+
+
 def ensure_output_format_available(value: str) -> None:
     profile = output_profile(value)
     if profile.output_format == "wav":
         return
-    _tool_path("ffmpeg")
+    ffmpeg = _tool_path("ffmpeg")
     _tool_path("ffprobe")
+    _ensure_encoder_available(ffmpeg, profile.encoder)
 
 
 def _read_session(path: Path) -> dict:
@@ -106,7 +142,7 @@ def _write_session(path: Path, payload: dict) -> None:
 
 def _profile_metadata(profile: AudioEncodingProfile) -> dict:
     return {
-        "version": 4,
+        "version": 5,
         "output_format": profile.output_format,
         "output_codec": profile.codec,
         "output_encoder": profile.encoder,
@@ -114,25 +150,38 @@ def _profile_metadata(profile: AudioEncodingProfile) -> dict:
     }
 
 
-def _positive_duration(payload: dict) -> float:
-    candidates: list[object] = []
-    streams = payload.get("streams")
-    if isinstance(streams, list) and streams and isinstance(streams[0], dict):
-        candidates.append(streams[0].get("duration"))
-    container = payload.get("format")
-    if isinstance(container, dict):
-        candidates.append(container.get("duration"))
-    for value in candidates:
+def _positive_float(value: object, field: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"FFprobe не вернул корректное поле {field}") from exc
+    if parsed <= 0:
+        raise RuntimeError(f"FFprobe вернул неположительное поле {field}")
+    return parsed
+
+
+def _positive_int(value: object, field: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"FFprobe не вернул корректное поле {field}") from exc
+    if parsed <= 0:
+        raise RuntimeError(f"FFprobe вернул неположительное поле {field}")
+    return parsed
+
+
+def _optional_positive_int(*values: object) -> int | None:
+    for value in values:
         try:
-            duration = float(value)
+            parsed = int(value)
         except (TypeError, ValueError):
             continue
-        if duration > 0:
-            return duration
-    raise RuntimeError("FFprobe не подтвердил положительную длительность итогового аудио")
+        if parsed > 0:
+            return parsed
+    return None
 
 
-def _verify_encoded_audio(path: Path, profile: AudioEncodingProfile, ffprobe: str) -> None:
+def _probe_audio(path: Path, ffprobe: str) -> AudioProbe:
     completed = subprocess.run(
         [
             ffprobe,
@@ -141,7 +190,7 @@ def _verify_encoded_audio(path: Path, profile: AudioEncodingProfile, ffprobe: st
             "-select_streams",
             "a:0",
             "-show_entries",
-            "stream=codec_name,duration:format=format_name,duration",
+            "stream=codec_name,duration,sample_rate,channels,bit_rate:format=duration,bit_rate",
             "-of",
             "json",
             str(path),
@@ -159,23 +208,68 @@ def _verify_encoded_audio(path: Path, profile: AudioEncodingProfile, ffprobe: st
         raise RuntimeError("FFprobe вернул повреждённый JSON") from exc
     streams = payload.get("streams")
     if not isinstance(streams, list) or not streams or not isinstance(streams[0], dict):
-        raise RuntimeError("FFprobe не обнаружил аудиопоток в итоговом файле")
-    codec = str(streams[0].get("codec_name") or "").casefold()
-    if codec != profile.codec:
+        raise RuntimeError("FFprobe не обнаружил аудиопоток")
+    stream = streams[0]
+    container = payload.get("format")
+    container = container if isinstance(container, dict) else {}
+    duration_value = stream.get("duration") or container.get("duration")
+    return AudioProbe(
+        codec=str(stream.get("codec_name") or "").casefold(),
+        duration_seconds=_positive_float(duration_value, "duration"),
+        sample_rate_hz=_positive_int(stream.get("sample_rate"), "sample_rate"),
+        channels=_positive_int(stream.get("channels"), "channels"),
+        bitrate_bps=_optional_positive_int(stream.get("bit_rate"), container.get("bit_rate")),
+    )
+
+
+def _verify_encoded_audio(
+    path: Path,
+    profile: AudioEncodingProfile,
+    ffprobe: str,
+    master: AudioProbe,
+) -> AudioProbe:
+    encoded = _probe_audio(path, ffprobe)
+    if encoded.codec != profile.codec:
         raise RuntimeError(
-            f"FFprobe обнаружил codec={codec or 'unknown'}, ожидался {profile.codec}"
+            f"FFprobe обнаружил codec={encoded.codec or 'unknown'}, ожидался {profile.codec}"
         )
-    _positive_duration(payload)
+    duration_tolerance = max(1.0, master.duration_seconds * 0.02)
+    duration_delta = abs(encoded.duration_seconds - master.duration_seconds)
+    if duration_delta > duration_tolerance:
+        raise RuntimeError(
+            "Длительность итогового аудио отличается от WAV-мастера: "
+            f"master={master.duration_seconds:.3f}s, output={encoded.duration_seconds:.3f}s"
+        )
+    if encoded.sample_rate_hz != master.sample_rate_hz:
+        raise RuntimeError(
+            "Частота дискретизации итогового аудио изменилась: "
+            f"master={master.sample_rate_hz}, output={encoded.sample_rate_hz}"
+        )
+    if encoded.channels != master.channels:
+        raise RuntimeError(
+            "Количество каналов итогового аудио изменилось: "
+            f"master={master.channels}, output={encoded.channels}"
+        )
+    if profile.bitrate_kbps is not None and encoded.bitrate_bps is not None:
+        target = profile.bitrate_kbps * 1000
+        if not target * 0.65 <= encoded.bitrate_bps <= target * 1.45:
+            raise RuntimeError(
+                "Битрейт итогового аудио выходит за допустимый диапазон: "
+                f"target={target}, actual={encoded.bitrate_bps}"
+            )
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError("Итоговый аудиофайл пуст")
+    return encoded
 
 
 def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Path:
     profile = output_profile(value)
     if profile.output_format == "wav":
         return master_file
+    ensure_output_format_available(profile.output_format)
     ffmpeg = _tool_path("ffmpeg")
     ffprobe = _tool_path("ffprobe")
+    master_probe = _probe_audio(master_file, ffprobe)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=output_file.parent,
@@ -207,7 +301,7 @@ def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Pat
             errors="replace",
             timeout=3600,
         )
-        _verify_encoded_audio(temporary, profile, ffprobe)
+        _verify_encoded_audio(temporary, profile, ffprobe, master_probe)
         os.replace(temporary, output_file)
         return output_file
     except subprocess.CalledProcessError as exc:
@@ -270,18 +364,32 @@ def finalize_recording_output(
 
 
 class DualRecorder(WavDualRecorder):
-    """WAV-first recorder with a configurable verified delivery format."""
+    """WAV-first recorder with an explicit verified delivery format."""
 
-    default_output_format: ClassVar[AudioOutputFormat] = "m4a"
-
-    def __init__(self, *args, output_format: str | None = None, **kwargs) -> None:
+    def __init__(self, *args, output_format: str = "m4a", **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        selected = output_format or type(self).default_output_format
-        self.output_format = normalize_output_format(selected)
+        self.output_format = normalize_output_format(output_format)
+        self._output_started_monotonic: float | None = None
 
-    @classmethod
-    def set_default_output_format(cls, value: str) -> None:
-        cls.default_output_format = normalize_output_format(value)
+    @property
+    def health(self):
+        health = super().health
+        if not self.active or self._output_started_monotonic is None:
+            return health
+        elapsed = max(0.0, monotonic() - self._output_started_monotonic)
+        microphone = self._writers.get("microphone")
+        system = self._writers.get("system")
+        microphone_age = health.microphone_callback_age_seconds
+        system_age = health.system_callback_age_seconds
+        if microphone is not None and microphone.last_callback_monotonic is None:
+            microphone_age = round(elapsed, 2)
+        if system is not None and system.last_callback_monotonic is None:
+            system_age = round(elapsed, 2)
+        return replace(
+            health,
+            microphone_callback_age_seconds=microphone_age,
+            system_callback_age_seconds=system_age,
+        )
 
     def start(
         self,
@@ -290,13 +398,19 @@ class DualRecorder(WavDualRecorder):
         system_source: SystemAudioSource | int,
     ) -> None:
         ensure_output_format_available(self.output_format)
-        super().start(output_dir, mic_device, system_source)
+        self._output_started_monotonic = monotonic()
+        try:
+            super().start(output_dir, mic_device, system_source)
+        except Exception:
+            self._output_started_monotonic = None
+            raise
         profile = output_profile(self.output_format)
         self._session.update(_profile_metadata(profile))
         self._write_session()
 
     def stop(self) -> RecordingResult:
         wav_result = super().stop()
+        self._output_started_monotonic = None
         return finalize_recording_output(wav_result, self.output_format)
 
 
