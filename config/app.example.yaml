@@ -18,7 +18,7 @@ repository:
   students_repo: ../students-26-27
   remote: origin
   base_branch: main
-  push: true
+  push: false
   use_worktree: true
   repository_full_name: owner/private-students-repo
 
