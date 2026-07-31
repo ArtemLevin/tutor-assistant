@@ -30,7 +30,8 @@ def test_publisher_writes_only_transcript_without_job_status(tmp_path: Path) -> 
     target = publisher._write_transcript(lesson, tmp_path, "Подтверждённый транскрипт\n")
 
     assert publication_payload_files(lesson) == (
-        f"students/student/lessons/{lesson.lesson_slug}/transcript.txt",
+        f"students/student/lessons/{lesson.lesson_slug}__"
+        f"{lesson.lesson_id[:8]}/transcript.txt",
     )
     assert target.read_text(encoding="utf-8") == "Подтверждённый транскрипт\n"
     assert not list(tmp_path.rglob("job.status.json"))

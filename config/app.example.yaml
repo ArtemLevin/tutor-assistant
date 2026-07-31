@@ -1,121 +1,43 @@
 setup_completed: false
 workspace: data
-content:
-  trash_retention_days: 30
-  maintenance_enabled: true
-  maintenance_interval_minutes: 30
-  auto_repair: true
-  auto_purge_trash: true
-  auto_cleanup_temporary: true
-  temporary_retention_hours: 24
-  backup_enabled: true
-  backup_interval_hours: 24
-  backup_retention_count: 14
-  maintenance_max_lessons_per_cycle: 50
-  maintenance_max_seconds: 120
-  maintenance_apply_max_seconds: 30
-  maintenance_full_scan_interval_hours: 168
 students_file: config/students.yaml
 
 recording:
-  sample_rate: 48000
-  channels: 1
   output_format: m4a
   mic_device: null
   system_device_id: null
   system_backend: soundcard
-  chunk_seconds: 30
-  diagnostics_seconds: 5
-  queue_blocks: 256
-  target_sample_rate: 48000
-  dual_channel_transcription: true
-  require_preflight: true
-  silence_warning_seconds: 20
-  device_timeout_seconds: 5
 
 whisper:
   model: small
   device: cpu
   compute_type: int8
   language: ru
-  beam_size: 1
-  vad_filter: true
-  cpu_threads: 2
-  num_workers: 1
 
 repository:
   students_repo: ../students-26-27
   remote: origin
   base_branch: main
   push: false
-  create_branch: true
   use_worktree: true
-  keep_worktree: false
-  auto_create_pr: true
   repository_full_name: owner/private-students-repo
-  pr_base_branch: main
-  # Без gh используется GitHub REST API и токен из переменной окружения.
-  github_token_env: GITHUB_TOKEN
-  github_api_timeout_seconds: 30
 
 latex:
   enabled: true
-  auto_monitor: true
+  auto_monitor: false
+  publish_pdf: false
   engine: pdflatex
-  latexmk_command: latexmk
-  timeout_seconds: 180
-  keep_build_files: false
-  publish_pdf: true
-  max_attempts: 2
   render_preview: true
-  preview_dpi: 120
-  poll_seconds: 60
-  reservation_timeout_minutes: 30
-  remote_fetch_attempts: 3
-  remote_fetch_backoff_seconds: 0.5
 
 quick_start:
-  start_in_quick_mode: true
-  default_profile_id: online_lesson
   last_student_id: null
-  last_subject: mathematics
-  last_topic: ''
-  profiles:
-    - id: online_lesson
-      name: Обычный онлайн-урок
-      subject: mathematics
-      student_id: null
-      auto_transcribe: true
-      countdown_seconds: 3
 
-# Имя секции normalization сохранено для совместимости; публично это LLM-фильтр.
 normalization:
   enabled: true
-  auto_run: false
   provider: ollama
   base_url: http://127.0.0.1:11434
   allow_remote_endpoint: false
   model: qwen3:8b
-  # Для облака установите provider: yandex_ai_studio и явно разрешите передачу текста.
   allow_cloud_processing: false
   cloud_policy: ask_every_time
-  credential_source: auto
-  cloud_trust_env: false
-  cloud_max_response_bytes: 1000000
-  yandex_base_url: https://ai.api.cloud.yandex.net/v1
-  yandex_folder_id: null
-  yandex_api_key_env: YANDEX_AI_STUDIO_API_KEY
-  yandex_model: yandexgpt-lite
-  mode: filter_only
-  temperature: 0
-  num_ctx: 8192
-  num_predict: 4096
-  max_segments_per_chunk: 50
-  max_input_characters: 12000
-  context_overlap_segments: 4
-  request_timeout_seconds: 600
-  # Повторные запросы после отклонённого ответа модели: 0..3.
-  retry_requests: 0
-  retry_backoff_seconds: 2
   require_manual_approval: true
-  high_removal_threshold: 0.35
