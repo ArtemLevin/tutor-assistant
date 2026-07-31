@@ -1,0 +1,83 @@
+name: Privacy history gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Audit scope
+        required: true
+        default: head
+        type: choice
+        options:
+          - head
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  head-policy:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'head'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Audit commits since the accepted privacy baseline
+        shell: pwsh
+        run: |
+          python scripts/history_privacy.py audit `
+            --mode head `
+            --report privacy-history-report.json
+
+      - name: Upload privacy history report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-history-head-report
+          path: privacy-history-report.json
+          if-no-files-found: error
+
+  full-history:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install GitHub CLI
+        shell: pwsh
+        run: gh --version
+
+      - name: Audit every reachable ref and require PRIVATE visibility
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/history_privacy.py audit `
+            --mode full `
+            --require-visibility `
+            --report privacy-history-report.json
+
+      - name: Upload full privacy history report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-history-full-report
+          path: privacy-history-report.json
+          if-no-files-found: error

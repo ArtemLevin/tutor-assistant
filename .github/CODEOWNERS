@@ -1,5 +1,9 @@
 /src/tutor_assistant/normalization/ @ArtemLevin
+/src/tutor_assistant/security/ @ArtemLevin
 /src/tutor_assistant/ui/app.py @ArtemLevin
 /src/tutor_assistant/ui/normalization_provider.py @ArtemLevin
+/policy/ @ArtemLevin
+/scripts/history_privacy.py @ArtemLevin
 /.github/workflows/ @ArtemLevin
 /tests/test_filtering_feature_contracts.py @ArtemLevin
+/tests/test_history_privacy.py @ArtemLevin
