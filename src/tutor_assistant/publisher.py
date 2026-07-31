@@ -39,6 +39,7 @@ class PublicationIndeterminateError(GitError):
 GIT_TIMEOUT_SECONDS = 120
 GH_TIMEOUT_SECONDS = 30
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
+_CANONICAL_LESSON_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,16 @@ def _run_command(
         raise GitError(f"Команда {command[0]} превысила timeout {timeout:g} секунд") from exc
 
 
-def run_git(repo: Path, *args: str, timeout: float = GIT_TIMEOUT_SECONDS) -> str:
+def run_git(
+    repo: Path,
+    *args: str,
+    timeout: float = GIT_TIMEOUT_SECONDS,
+    allow_push: bool = False,
+) -> str:
+    if args and args[0] == "push" and not allow_push:
+        raise GitError(
+            "Git push разрешён только через verified transcript publication gateway"
+        )
     result = _run_command(["git", *args], cwd=repo, timeout=timeout)
     if result.returncode:
         raise GitError(result.stderr.strip() or result.stdout.strip())
@@ -249,8 +259,10 @@ def publication_repository_path(
     lesson: Lesson,
     policy: PublicationPolicy = TRANSCRIPT_ONLY_POLICY,
 ) -> PurePosixPath:
-    unique_slug = f"{lesson.lesson_slug}__{lesson.lesson_id[:8]}"
-    path = PurePosixPath(lesson.student.folder) / "lessons" / unique_slug / policy.allowed_filename
+    lesson_slug = lesson.lesson_slug
+    if _CANONICAL_LESSON_ID.fullmatch(lesson.lesson_id):
+        lesson_slug = f"{lesson_slug}__{lesson.lesson_id[:8]}"
+    path = PurePosixPath(lesson.student.folder) / "lessons" / lesson_slug / policy.allowed_filename
     if path.is_absolute() or ".." in path.parts or path.name != policy.allowed_filename:
         raise GitError("Путь публикации транскрипта выходит за разрешённые границы")
     return path
@@ -271,19 +283,21 @@ def _verified_transcript(lesson: Lesson, policy: PublicationPolicy) -> tuple[Pat
     source = Path(value)
     if not source.is_file():
         raise GitError(f"Подтверждённый транскрипт не найден: {source}")
-    payload = source.read_bytes()
-    if len(payload) > policy.maximum_file_size_bytes:
-        raise GitError(
-            f"Подтверждённый транскрипт превышает {policy.maximum_file_size_bytes} байт"
-        )
+    raw = source.read_bytes()
     try:
-        text = payload.decode("utf-8")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise GitError("Подтверждённый транскрипт должен быть UTF-8 текстом") from exc
     if text.startswith("\ufeff"):
         raise GitError("Подтверждённый транскрипт не должен содержать UTF-8 BOM")
     if "\x00" in text:
         raise GitError("Подтверждённый транскрипт содержит недопустимый NUL-символ")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    payload = text.encode("utf-8")
+    if len(payload) > policy.maximum_file_size_bytes:
+        raise GitError(
+            f"Подтверждённый транскрипт превышает {policy.maximum_file_size_bytes} байт"
+        )
     return source, text, hashlib.sha256(payload).hexdigest(), len(payload)
 
 
@@ -452,11 +466,12 @@ class LessonPublisher:
         if reconciled is not None:
             return reconciled
 
+        descriptor = self._descriptor(repo)
         operation = store.begin(
             lesson_id=lesson.lesson_id,
             repository_full_name=plan.repository_full_name,
             remote_name=plan.remote_name,
-            remote_url_sha256=self._descriptor(repo).url_sha256,
+            remote_url_sha256=descriptor.url_sha256,
             branch=plan.branch,
             repository_path=plan.repository_path,
             content_sha256=plan.content_sha256,
@@ -472,7 +487,12 @@ class LessonPublisher:
             )
         except GitError:
             existing = None
-        if existing is not None and hashlib.sha256(existing.encode("utf-8")).hexdigest() == plan.content_sha256:
+        existing_sha256 = (
+            hashlib.sha256(existing.encode("utf-8")).hexdigest()
+            if existing is not None
+            else None
+        )
+        if existing_sha256 == plan.content_sha256:
             verified = store.mark_remote_verified(
                 operation.id,
                 plan.expected_remote_sha,
@@ -531,6 +551,7 @@ class LessonPublisher:
                 "--porcelain",
                 self.config.remote,
                 f"HEAD:refs/heads/{plan.branch}",
+                allow_push=True,
             )
             remote_sha = _remote_head(repo, self.config.remote, plan.branch)
             if remote_sha != local_commit:
