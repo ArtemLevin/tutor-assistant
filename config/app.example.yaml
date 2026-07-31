@@ -29,6 +29,9 @@ latex:
   engine: pdflatex
   render_preview: true
 
+quick_start:
+  last_student_id: null
+
 normalization:
   enabled: true
   provider: ollama
