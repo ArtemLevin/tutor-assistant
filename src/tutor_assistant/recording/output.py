@@ -14,8 +14,6 @@ from ..atomic_io import atomic_write_text
 from .devices import SystemAudioSource
 from .recorder import (
     DualRecorder as WavDualRecorder,
-)
-from .recorder import (
     RecordingResult,
     recover_recording as recover_wav_recording,
 )
