@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -46,15 +45,28 @@ class HistoryPrivacyPolicy:
             )
         except (KeyError, TypeError) as exc:
             raise HistoryPrivacyError("Privacy policy имеет неполную структуру") from exc
-        if policy.schema_version != "1.0":
-            raise HistoryPrivacyError(f"Неподдерживаемая версия privacy policy: {policy.schema_version}")
-        if not policy.repository_full_name or "/" not in policy.repository_full_name:
-            raise HistoryPrivacyError("repository_full_name должен иметь формат owner/repository")
-        if len(policy.baseline_commit) < 7:
-            raise HistoryPrivacyError("baseline_commit отсутствует или слишком короткий")
-        if not policy.forbidden_paths or not policy.rewrite_remove_paths:
-            raise HistoryPrivacyError("Списки forbidden_paths и rewrite_remove_paths должны быть заполнены")
+        policy.validate()
         return policy
+
+    def validate(self) -> None:
+        if self.schema_version != "1.0":
+            raise HistoryPrivacyError(f"Неподдерживаемая версия privacy policy: {self.schema_version}")
+        if not self.repository_full_name or "/" not in self.repository_full_name:
+            raise HistoryPrivacyError("repository_full_name должен иметь формат owner/repository")
+        if len(self.baseline_commit) < 7:
+            raise HistoryPrivacyError("baseline_commit отсутствует или слишком короткий")
+        if not self.forbidden_paths or not self.rewrite_remove_paths:
+            raise HistoryPrivacyError("Списки forbidden_paths и rewrite_remove_paths должны быть заполнены")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "repository_full_name": self.repository_full_name,
+            "baseline_commit": self.baseline_commit,
+            "required_visibility": self.required_visibility,
+            "forbidden_paths": list(self.forbidden_paths),
+            "rewrite_remove_paths": list(self.rewrite_remove_paths),
+        }
 
 
 @dataclass
@@ -89,6 +101,7 @@ class RewriteArtifacts:
     refs_manifest: Path
     collaborator_notice: Path
     audit_report: Path
+    rewritten_policy: Path
     post_clone_report: Path | None = None
 
 
@@ -157,8 +170,8 @@ def _nul_paths(output: str) -> tuple[str, ...]:
 def _object_paths(output: str) -> tuple[str, ...]:
     paths: list[str] = []
     for line in output.splitlines():
-        _separator, marker, path = line.partition(" ")
-        if marker and path:
+        _object_sha, separator, path = line.partition(" ")
+        if separator and path:
             paths.append(path)
     return tuple(paths)
 
@@ -200,6 +213,17 @@ def _visibility(policy: HistoryPrivacyPolicy, repo: Path) -> str:
     return result.stdout.strip().upper()
 
 
+def _current_tree_paths(repo: Path) -> tuple[str, ...]:
+    head = _head_sha(repo)
+    if not head:
+        return ()
+    return _nul_paths(_git(repo, "ls-tree", "-r", "--name-only", "-z", head).stdout)
+
+
+def _range_object_paths(repo: Path, baseline: str) -> tuple[str, ...]:
+    return _object_paths(_git(repo, "rev-list", "--objects", f"{baseline}..HEAD").stdout)
+
+
 def audit_repository(
     policy: HistoryPrivacyPolicy,
     repo: Path,
@@ -217,23 +241,33 @@ def audit_repository(
         baseline_commit=policy.baseline_commit,
     )
 
-    tracked = _nul_paths(_git(root, "ls-files", "-z").stdout)
-    report.checked_path_count += len(tracked)
-    for path in tracked:
+    current_paths = _current_tree_paths(root)
+    report.checked_path_count += len(current_paths)
+    for path in current_paths:
         if path_is_forbidden(path, policy.forbidden_paths):
             report.findings.append(f"forbidden_tracked_path:{path}")
 
-    baseline_exists = _git(root, "cat-file", "-e", f"{policy.baseline_commit}^{{commit}}", check=False)
-    if baseline_exists.returncode:
-        report.findings.append(f"missing_baseline_commit:{policy.baseline_commit}")
-    else:
-        changed = _nul_paths(
-            _git(root, "diff", "--name-only", "-z", f"{policy.baseline_commit}..HEAD").stdout
-        )
-        report.checked_path_count += len(changed)
-        for path in changed:
-            if path_is_forbidden(path, policy.forbidden_paths):
-                report.findings.append(f"forbidden_path_since_baseline:{path}")
+    if mode == "head":
+        baseline_exists = _git(root, "cat-file", "-e", f"{policy.baseline_commit}^{{commit}}", check=False)
+        if baseline_exists.returncode:
+            report.findings.append(f"missing_baseline_commit:{policy.baseline_commit}")
+        else:
+            ancestor = _git(
+                root,
+                "merge-base",
+                "--is-ancestor",
+                policy.baseline_commit,
+                "HEAD",
+                check=False,
+            )
+            if ancestor.returncode:
+                report.findings.append(f"baseline_not_ancestor:{policy.baseline_commit}")
+            else:
+                changed_history = _range_object_paths(root, policy.baseline_commit)
+                report.checked_path_count += len(changed_history)
+                for path in changed_history:
+                    if path_is_forbidden(path, policy.forbidden_paths):
+                        report.findings.append(f"forbidden_path_since_baseline:{path}")
 
     if mode == "full":
         historical = _object_paths(_git(root, "rev-list", "--objects", "--all").stdout)
@@ -305,20 +339,62 @@ def _write_collaborator_notice(path: Path, policy: HistoryPrivacyPolicy, refs: d
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _refresh_policy_baseline(
+    mirror: Path,
+    policy: HistoryPrivacyPolicy,
+    *,
+    output_policy: Path,
+) -> HistoryPrivacyPolicy:
+    main_ref = "refs/heads/main"
+    baseline = _git(mirror, "rev-parse", main_ref).stdout.strip()
+    rewritten_policy = replace(policy, baseline_commit=baseline)
+    rewritten_policy.validate()
+
+    worktree_root = mirror.parent / "policy-worktree"
+    _git(mirror, "worktree", "add", "--detach", str(worktree_root), main_ref)
+    try:
+        policy_path = worktree_root / "policy" / "privacy-history.json"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(
+            json.dumps(rewritten_policy.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _git(worktree_root, "add", "--", "policy/privacy-history.json")
+        _git(
+            worktree_root,
+            "-c",
+            "user.name=Tutor Assistant Privacy Rewrite",
+            "-c",
+            "user.email=privacy-rewrite@users.noreply.github.com",
+            "commit",
+            "-m",
+            "Refresh privacy history baseline after rewrite",
+        )
+        new_head = _git(worktree_root, "rev-parse", "HEAD").stdout.strip()
+        _git(mirror, "update-ref", main_ref, new_head, baseline)
+    finally:
+        _git(mirror, "worktree", "remove", "--force", str(worktree_root), check=False)
+
+    output_policy.write_text(
+        json.dumps(rewritten_policy.to_dict(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return rewritten_policy
+
+
 def _push_rewritten_refs(mirror: Path, remote_url: str, old_refs: dict[str, str]) -> None:
     remotes = _git(mirror, "remote", check=False).stdout.split()
     if "origin" not in remotes:
         _git(mirror, "remote", "add", "origin", remote_url)
     for ref, old_sha in sorted(old_refs.items()):
         exists = _git(mirror, "show-ref", "--verify", "--quiet", ref, check=False)
-        if exists.returncode:
-            continue
+        refspec = f"{ref}:{ref}" if exists.returncode == 0 else f":{ref}"
         _git(
             mirror,
             "push",
             "origin",
             f"--force-with-lease={ref}:{old_sha}",
-            f"{ref}:{ref}",
+            refspec,
         )
 
 
@@ -337,6 +413,7 @@ def rewrite_history(
     refs_manifest = output_dir / "pre-rewrite-refs.json"
     notice = output_dir / "COLLABORATOR_NOTICE.md"
     audit_path = output_dir / "rewritten-history-audit.json"
+    rewritten_policy_path = output_dir / "post-rewrite-privacy-history.json"
     post_clone_path = output_dir / "post-rewrite-clone-audit.json"
 
     if not execute:
@@ -387,8 +464,16 @@ def rewrite_history(
     _write_collaborator_notice(notice, policy, old_refs)
 
     _run_process(build_filter_repo_command(policy), cwd=mirror, timeout=1800)
-    rewritten_report = audit_repository(policy, mirror, mode="full", require_visibility=False)
+    active_policy = _refresh_policy_baseline(
+        mirror,
+        policy,
+        output_policy=rewritten_policy_path,
+    )
+    rewritten_report = audit_repository(active_policy, mirror, mode="full", require_visibility=False)
     rewritten_report.visibility = visibility
+    rewritten_report.findings = [
+        finding for finding in rewritten_report.findings if not finding.startswith("visibility_")
+    ]
     rewritten_report.write(audit_path)
     if not rewritten_report.passed:
         raise HistoryPrivacyError(
@@ -401,7 +486,7 @@ def rewrite_history(
         with tempfile.TemporaryDirectory(prefix="tutor-assistant-post-rewrite-") as temporary:
             clone = Path(temporary) / "verification.git"
             _run_process(["git", "clone", "--mirror", repository_url, str(clone)], cwd=output_dir)
-            post_report = audit_repository(policy, clone, mode="full", require_visibility=True)
+            post_report = audit_repository(active_policy, clone, mode="full", require_visibility=True)
             post_report.write(post_clone_path)
             if not post_report.passed:
                 raise HistoryPrivacyError(
@@ -416,6 +501,7 @@ def rewrite_history(
         refs_manifest=refs_manifest,
         collaborator_notice=notice,
         audit_report=audit_path,
+        rewritten_policy=rewritten_policy_path,
         post_clone_report=final_post_clone,
     )
 
