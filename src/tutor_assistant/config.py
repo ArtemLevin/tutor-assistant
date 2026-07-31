@@ -48,7 +48,7 @@ class RepositoryConfig(BaseModel):
     students_repo: Path = Path("../students-26-27")
     remote: str = "origin"
     base_branch: str = "main"
-    push: bool = False
+    push: bool = True
     create_branch: bool = True
     use_worktree: bool = True
     keep_worktree: bool = False
@@ -68,12 +68,12 @@ class RepositoryConfig(BaseModel):
 
 class LatexConfig(BaseModel):
     enabled: bool = True
-    auto_monitor: bool = True
+    auto_monitor: bool = False
     engine: str = "pdflatex"
     latexmk_command: str = "latexmk"
     timeout_seconds: int = 180
     keep_build_files: bool = False
-    publish_pdf: bool = True
+    publish_pdf: bool = False
     max_attempts: int = 2
     render_preview: bool = True
     preview_dpi: int = 120
