@@ -1,21 +1,37 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
-from ..domain import JobStatus
+from ..audio_files import finalize_readable_audio
+from ..domain import JobStatus, Lesson
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
 from . import app as base_app
 from .concurrent_app import MainWindow as ConcurrentMainWindow
+from .library_transcription import install_library_transcription_control
 
 _AUDIO_FORMAT_OPTIONS = (
     ("M4A · AAC 96 кбит/с · рекомендуется", "m4a"),
     ("MP3 · 128 кбит/с", "mp3"),
     ("WAV · PCM 16 бит", "wav"),
 )
+_TRANSCRIPTION_ENTRY_STATUSES = {
+    JobStatus.DRAFT,
+    JobStatus.RECORDED,
+    JobStatus.REVIEW_REQUIRED,
+    JobStatus.READY,
+    JobStatus.FAILED,
+}
+_TRANSCRIPTION_BLOCKED_STATUSES = {
+    JobStatus.RECORDING,
+    JobStatus.TRANSCRIBING,
+    JobStatus.COMPILING_PDF,
+    JobStatus.GENERATING,
+}
 
 
 class MainWindow(ConcurrentMainWindow):
@@ -24,6 +40,7 @@ class MainWindow(ConcurrentMainWindow):
     def __init__(self, config_path):
         super().__init__(config_path)
         base_app.DualRecorder = self._create_configured_recorder
+        install_library_transcription_control(self.student_content_page)
         self._install_audio_format_selector()
         self.open_pr_button.setVisible(False)
         self.publish_button.setText("Опубликовать transcript.txt в main")
@@ -82,6 +99,14 @@ class MainWindow(ConcurrentMainWindow):
             if not (self.recorder and self.recorder.active):
                 self.audio_output_format.setEnabled(True)
 
+    def _recording_ready_impl(self, result, recorded_lesson, source_recorder, reason=None) -> None:
+        readable = finalize_readable_audio(
+            result,
+            recorded_lesson.student.full_name,
+            recorded_lesson.lesson_date,
+        )
+        super()._recording_ready_impl(readable, recorded_lesson, source_recorder, reason)
+
     def _recording_ready(self, *args, **kwargs) -> None:
         try:
             super()._recording_ready(*args, **kwargs)
@@ -93,6 +118,43 @@ class MainWindow(ConcurrentMainWindow):
             super()._recording_stop_failed(*args, **kwargs)
         finally:
             self.audio_output_format.setEnabled(True)
+
+    def _recovery_ready(self, result) -> None:
+        lesson_id = result.session_file.parent.parent.name
+        lesson = self.pipeline.store.get(lesson_id)
+        if lesson is not None:
+            result = finalize_readable_audio(
+                result,
+                lesson.student.full_name,
+                lesson.lesson_date,
+            )
+        super()._recovery_ready(result)
+
+    def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
+        if lesson.status in _TRANSCRIPTION_BLOCKED_STATUSES:
+            self._set_status(
+                f"{lesson.student.full_name}: занятие занято другой операцией",
+                "warning",
+            )
+            return
+        if lesson.status not in _TRANSCRIPTION_ENTRY_STATUSES:
+            lesson.transition(JobStatus.RECORDED, force=True)
+            self.pipeline.save_state(
+                lesson,
+                "status",
+                "error",
+                force_status=True,
+            )
+        super()._queue_imported_audio(lesson, audio)
+        self.student_content_page.refresh_if_loaded()
+
+    def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
+        super()._background_transcription_ready(job_id, lesson)
+        self.student_content_page.refresh_if_loaded()
+
+    def _background_transcription_failed(self, job_id: str, details: str) -> None:
+        super()._background_transcription_failed(job_id, details)
+        self.student_content_page.refresh_if_loaded()
 
     def approve_transcript(self) -> None:
         super().approve_transcript()
