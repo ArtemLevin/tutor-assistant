@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "repository_full_name": "ArtemLevin/tutor-assistant",
+  "baseline_commit": "cf65915f7d2aa9b3a42c09fdbd52416d60b7958b",
+  "required_visibility": "PRIVATE",
+  "forbidden_paths": [
+    ".env",
+    "config/app.yaml",
+    "config/students.yaml",
+    "data"
+  ],
+  "rewrite_remove_paths": [
+    ".env",
+    "config/app.yaml",
+    "config/students.yaml",
+    "data"
+  ]
+}
