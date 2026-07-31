@@ -1,25 +1,37 @@
 from __future__ import annotations
 
-from pathlib import Path
+import inspect
 
-import pytest
-
-from tutor_assistant import latex
-
-
-def test_remote_latex_blocks_git_push(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="read-only"):
-        latex._read_only_remote_git(tmp_path, "push", "origin", "HEAD:main")
+from tutor_assistant.config import LatexConfig
+from tutor_assistant.latex.remote import RemoteLatexService
 
 
-def test_remote_latex_allows_read_commands(monkeypatch, tmp_path: Path) -> None:
-    calls: list[tuple[Path, tuple[str, ...]]] = []
+def test_remote_latex_defaults_to_local_only() -> None:
+    config = LatexConfig()
 
-    def fake(repo: Path, *args: str, **_kwargs) -> str:
-        calls.append((repo, args))
-        return "ok"
+    assert config.auto_monitor is False
+    assert config.publish_pdf is False
 
-    monkeypatch.setattr(latex, "_original_remote_run_git", fake)
 
-    assert latex._read_only_remote_git(tmp_path, "fetch", "origin", "main") == "ok"
-    assert calls == [(tmp_path, ("fetch", "origin", "main"))]
+def test_transcript_file_path_resolves_to_lesson_root() -> None:
+    root = RemoteLatexService._repository_lesson_root(
+        "students/test/lessons/lesson-id/transcript.txt"
+    )
+
+    assert root.as_posix() == "students/test/lessons/lesson-id"
+
+
+def test_legacy_directory_path_remains_supported() -> None:
+    root = RemoteLatexService._repository_lesson_root(
+        "students/test/lessons/legacy-lesson"
+    )
+
+    assert root.as_posix() == "students/test/lessons/legacy-lesson"
+
+
+def test_remote_latex_compile_method_contains_no_git_push() -> None:
+    source = inspect.getsource(RemoteLatexService._compile_with_probe)
+
+    assert '"push"' not in source
+    assert "_cache_result" in source
+    assert "probe.remote_head" in source
