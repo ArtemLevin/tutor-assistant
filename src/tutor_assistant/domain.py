@@ -121,6 +121,14 @@ class PublicationInfo(BaseModel):
     branch: str
     repository_path: str
     commit: str
+    operation_id: str | None = None
+    repository_full_name: str | None = None
+    remote_name: str = "origin"
+    previous_remote_commit: str | None = None
+    content_sha256: str | None = None
+    remote_verified: bool = False
+    idempotent: bool = False
+    published_at: datetime | None = None
     pr_url: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
