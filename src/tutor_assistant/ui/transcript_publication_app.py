@@ -64,14 +64,12 @@ class MainWindow(ConcurrentMainWindow):
         )
         DualRecorder.set_default_output_format(self.config.recording.output_format)
 
-    def _audio_output_format_changed(self) -> None:
+    def _audio_output_format_changed(self, _index: int) -> None:
         selected = str(self.audio_output_format.currentData())
         self.config.recording.output_format = selected
         DualRecorder.set_default_output_format(selected)
         self.config.save(self.config_path)
-        self._set_status(
-            f"Формат следующих записей: {selected.upper()}"
-        )
+        self._set_status(f"Формат следующих записей: {selected.upper()}")
 
     def start_recording(self) -> None:
         self.audio_output_format.setEnabled(False)
