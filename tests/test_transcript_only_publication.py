@@ -21,7 +21,7 @@ def make_lesson(tmp_path: Path, *, status: JobStatus = JobStatus.READY) -> Lesso
     transcript = tmp_path / "transcript_verified.txt"
     transcript.write_text("[П] Подтверждённый текст\n", encoding="utf-8")
     lesson = Lesson(
-        lesson_id="lesson-publication",
+        lesson_id="1234567890abcdef1234567890abcdef",
         student=Student(
             id="student",
             full_name="Тестовый ученик",
@@ -66,9 +66,18 @@ def test_payload_ignores_every_local_derivative(tmp_path: Path) -> None:
 def test_equal_date_and_topic_still_produce_unique_paths(tmp_path: Path) -> None:
     first = make_lesson(tmp_path)
     second = first.model_copy(deep=True)
-    second.lesson_id = "another-publication"
+    second.lesson_id = "abcdef1234567890abcdef1234567890"
 
     assert publication_repository_path(first) != publication_repository_path(second)
+
+
+def test_legacy_non_uuid_path_is_stable(tmp_path: Path) -> None:
+    lesson = make_lesson(tmp_path)
+    lesson.lesson_id = "legacy-publication"
+
+    assert publication_repository_path(lesson).as_posix() == (
+        f"students/test_student/lessons/{lesson.lesson_slug}/transcript.txt"
+    )
 
 
 @pytest.mark.parametrize(
