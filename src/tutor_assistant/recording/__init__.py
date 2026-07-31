@@ -1,3 +1,4 @@
+from . import recorder as _recorder
 from .devices import (
     AudioDevice,
     SystemAudioSource,
@@ -26,6 +27,11 @@ from .recorder import (
     find_recoverable_recordings,
 )
 from .recorder import recover_recording as recover_wav_recording
+
+# Preserve the historical module import while routing public recovery through
+# the format-aware implementation. The captured WAV function remains available
+# explicitly as recover_wav_recording.
+_recorder.recover_recording = recover_recording
 
 __all__ = [
     "AUDIO_ENCODING_PROFILES",
