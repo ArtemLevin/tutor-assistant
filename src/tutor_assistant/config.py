@@ -18,6 +18,7 @@ class RecordingConfig(BaseModel):
     sample_rate: int = 48_000
     channels: int = 1
     subtype: str = "PCM_16"
+    output_format: Literal["m4a", "mp3", "wav"] = "m4a"
     mic_device: int | None = None
     loopback_device: int | None = None
     system_device_id: str | None = None

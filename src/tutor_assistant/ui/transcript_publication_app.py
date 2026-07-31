@@ -2,19 +2,27 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtWidgets import QLabel, QMessageBox
+from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
 
 from ..domain import JobStatus
 from ..publisher import publication_payload_files
+from ..recording import DualRecorder
 from . import app as base_app
 from .concurrent_app import MainWindow as ConcurrentMainWindow
 
+_AUDIO_FORMAT_OPTIONS = (
+    ("M4A · AAC 96 кбит/с · рекомендуется", "m4a"),
+    ("MP3 · 128 кбит/с", "mp3"),
+    ("WAV · PCM 16 бит", "wav"),
+)
+
 
 class MainWindow(ConcurrentMainWindow):
-    """Production window with explicit transcript-only publication UX."""
+    """Production window with transcript-only publication and audio delivery controls."""
 
     def __init__(self, config_path):
         super().__init__(config_path)
+        self._install_audio_format_selector()
         self.open_pr_button.setVisible(False)
         self.publish_button.setText("Опубликовать transcript.txt в main")
         self.publish_button.setToolTip(
@@ -31,6 +39,56 @@ class MainWindow(ConcurrentMainWindow):
                     "После подтверждения в main будет записан один файл transcript.txt. "
                     "Аудио и служебные материалы останутся локально."
                 )
+
+    def _install_audio_format_selector(self) -> None:
+        self.audio_output_format = QComboBox()
+        self.audio_output_format.setObjectName("audioOutputFormat")
+        self.audio_output_format.setToolTip(
+            "Чанки и внутренний мастер сохраняются в WAV. "
+            "Итоговый файл кодируется после завершения записи."
+        )
+        for label, value in _AUDIO_FORMAT_OPTIONS:
+            self.audio_output_format.addItem(label, value)
+        selected_index = self.audio_output_format.findData(
+            self.config.recording.output_format
+        )
+        if selected_index >= 0:
+            self.audio_output_format.setCurrentIndex(selected_index)
+        form = self.student.parentWidget().layout()
+        if not isinstance(form, QFormLayout):
+            raise RuntimeError("Форма параметров занятия недоступна")
+        form.addRow("Итоговый формат аудио", self.audio_output_format)
+        self.audio_output_format.currentIndexChanged.connect(
+            self._audio_output_format_changed
+        )
+        DualRecorder.set_default_output_format(self.config.recording.output_format)
+
+    def _audio_output_format_changed(self, _index: int) -> None:
+        selected = str(self.audio_output_format.currentData())
+        self.config.recording.output_format = selected
+        DualRecorder.set_default_output_format(selected)
+        self.config.save(self.config_path)
+        self._set_status(f"Формат следующих записей: {selected.upper()}")
+
+    def start_recording(self) -> None:
+        self.audio_output_format.setEnabled(False)
+        try:
+            super().start_recording()
+        finally:
+            if not (self.recorder and self.recorder.active):
+                self.audio_output_format.setEnabled(True)
+
+    def _recording_ready(self, *args, **kwargs) -> None:
+        try:
+            super()._recording_ready(*args, **kwargs)
+        finally:
+            self.audio_output_format.setEnabled(True)
+
+    def _recording_stop_failed(self, *args, **kwargs) -> None:
+        try:
+            super()._recording_stop_failed(*args, **kwargs)
+        finally:
+            self.audio_output_format.setEnabled(True)
 
     def approve_transcript(self) -> None:
         super().approve_transcript()
