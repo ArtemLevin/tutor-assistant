@@ -5,10 +5,10 @@ import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable, Sequence
 
 
 class HistoryPrivacyError(RuntimeError):
@@ -283,8 +283,10 @@ def audit_repository(
             report.findings.append(f"visibility_check_failed:{exc}")
         else:
             if report.visibility != policy.required_visibility:
+                visibility = report.visibility or "UNKNOWN"
                 report.findings.append(
-                    f"invalid_visibility:{report.visibility or 'UNKNOWN'}:required={policy.required_visibility}"
+                    f"invalid_visibility:{visibility}:"
+                    f"required={policy.required_visibility}"
                 )
 
     report.findings = sorted(set(report.findings))
@@ -562,7 +564,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             force_push=args.force_push,
             confirmation=args.confirm,
         )
-        print(json.dumps({key: str(value) if value else None for key, value in asdict(artifacts).items()}, indent=2))
+        serialized = {
+            key: str(value) if value else None
+            for key, value in asdict(artifacts).items()
+        }
+        print(json.dumps(serialized, indent=2))
         return 0
     except HistoryPrivacyError as exc:
         print(str(exc))
