@@ -5,8 +5,7 @@ import logging
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import sleep
 
 from ..config import LatexConfig, RepositoryConfig
@@ -140,6 +139,11 @@ class RemoteLatexService:
             return False
         return True
 
+    @staticmethod
+    def _repository_lesson_root(repository_path: str) -> PurePosixPath:
+        path = PurePosixPath(repository_path)
+        return path.parent if path.name == "transcript.txt" else path
+
     def probe_lesson(self, lesson: Lesson) -> RemoteTexProbe | None:
         if not lesson.publication:
             return None
@@ -148,7 +152,8 @@ class RemoteLatexService:
         if not self._fetch_remote_branch(branch):
             return None
         remote_head = run_git(self.repo, "rev-parse", remote_ref)
-        handbook = f"{lesson.publication.repository_path}/handbook"
+        lesson_root = self._repository_lesson_root(lesson.publication.repository_path)
+        handbook = (lesson_root / "handbook").as_posix()
         names = run_git(
             self.repo,
             "ls-tree",
@@ -242,9 +247,9 @@ class RemoteLatexService:
         try:
             run_git(self.repo, "worktree", "add", "--detach", str(worktree), probe.remote_head)
             tex_file = worktree / probe.path
-            lesson_root = worktree / lesson.publication.repository_path
-            report_dir = lesson_root / "reports" / "latex"
-            preview_dir = lesson_root / "preview" / "pdf"
+            source_lesson_root = tex_file.parent.parent
+            report_dir = source_lesson_root / "reports" / "latex"
+            preview_dir = source_lesson_root / "preview" / "pdf"
             candidate = lesson.model_copy(deep=True)
             candidate.latex.tex_path = probe.path
             candidate.latex.tex_blob_sha = probe.blob_sha
@@ -254,47 +259,38 @@ class RemoteLatexService:
                 report_dir=report_dir,
                 preview_dir=preview_dir,
             )
-            candidate.latex.report_path = str(compilation.report_file.relative_to(worktree).as_posix())
-            candidate.latex.preview_paths = [
-                str(path.relative_to(worktree).as_posix()) for path in compilation.preview_files
-            ]
             if compilation.success and compilation.pdf_file:
-                candidate.latex.pdf_path = str(compilation.pdf_file.relative_to(worktree).as_posix())
                 candidate.transition(JobStatus.PDF_REVIEW_REQUIRED, force=True)
             else:
                 candidate.transition(JobStatus.COMPILE_FAILED, force=True)
 
-            self._rewrite_report_paths(compilation.report_file, worktree)
-            published_candidate = candidate.model_copy(deep=True)
-            published_candidate.latex.active_operation_id = None
-            published_candidate.latex.active_tex_blob_sha = None
-            published_candidate.latex.active_source_commit = None
-            published_candidate.latex.active_branch = None
-            published_candidate.latex.active_started_at = None
-            published_candidate.write_json(lesson_root / "lesson.json")
-            self._write_job_status(lesson_root, published_candidate, compilation)
-            run_git(worktree, "add", str(lesson_root.relative_to(worktree)))
-            status = "success" if compilation.success else "failed"
-            run_git(
-                worktree,
-                "commit",
-                "-m",
-                f"Compile lesson PDF ({status}, attempt {candidate.latex.attempt})",
+            destination = (
+                cache_dir
+                or self.repo.parent
+                / ".tutor-assistant-latex-cache"
+                / lesson.lesson_id
             )
-            commit = run_git(worktree, "rev-parse", "HEAD")
-            # No force: if the remote branch advanced after the probe, Git rejects the push.
-            run_git(
-                worktree,
-                "push",
-                self.repository.remote,
-                f"HEAD:refs/heads/{probe.branch}",
+            self._cache_result(compilation, destination)
+            self._rewrite_report_paths(compilation.report_file, destination)
+            candidate.latex.tex_path = str(compilation.tex_file.resolve())
+            candidate.latex.report_path = str(compilation.report_file.resolve())
+            candidate.latex.preview_paths = [
+                str(path.resolve()) for path in compilation.preview_files
+            ]
+            candidate.latex.pdf_path = (
+                str(compilation.pdf_file.resolve()) if compilation.pdf_file else None
             )
-            if cache_dir:
-                try:
-                    self._cache_result(compilation, cache_dir)
-                except OSError as exc:
-                    compilation.warnings.append(f"Не удалось создать локальный кэш предпросмотра: {exc}")
-            return RemoteCompilationResult(candidate, compilation, probe.branch, commit)
+            candidate.latex.active_operation_id = None
+            candidate.latex.active_tex_blob_sha = None
+            candidate.latex.active_source_commit = None
+            candidate.latex.active_branch = None
+            candidate.latex.active_started_at = None
+            return RemoteCompilationResult(
+                candidate,
+                compilation,
+                probe.branch,
+                probe.remote_head,
+            )
         finally:
             if worktree.exists():
                 try:
@@ -335,51 +331,20 @@ class RemoteLatexService:
         result.preview_files = cached_previews
 
     @staticmethod
-    def _rewrite_report_paths(report: Path, worktree: Path) -> None:
+    def _rewrite_report_paths(report: Path, root: Path) -> None:
         payload = json.loads(report.read_text(encoding="utf-8"))
         for key in ("tex_file", "pdf_file", "log_file", "report_file", "fix_request_file"):
             value = payload.get(key)
             if value:
                 path = Path(value)
                 try:
-                    payload[key] = path.relative_to(worktree).as_posix()
+                    payload[key] = path.relative_to(root).as_posix()
                 except ValueError:
                     payload[key] = path.name
         payload["preview_files"] = [
-            Path(value).relative_to(worktree).as_posix()
-            if Path(value).is_relative_to(worktree)
+            Path(value).relative_to(root).as_posix()
+            if Path(value).is_relative_to(root)
             else Path(value).name
             for value in payload.get("preview_files", [])
         ]
         report.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _write_job_status(self, root: Path, lesson: Lesson, result: CompilationResult) -> None:
-        path = root / "job.status.json"
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        payload.update(
-            {
-                "schema_version": payload.get("schema_version", "1.0"),
-                "lesson_id": payload.get("lesson_id", lesson.lesson_id),
-                "status": lesson.status.value,
-                "stage": "materials" if result.success else "latex",
-                "updated_at": datetime.now(UTC).isoformat(),
-                "artifacts": {
-                    **payload.get("artifacts", {}),
-                    "tex": "completed",
-                    "pdf": "completed" if result.success else "failed",
-                },
-                "latex": {
-                    "attempt": lesson.latex.attempt,
-                    "max_attempts": self.latex.max_attempts,
-                    "pdf": lesson.latex.pdf_path,
-                    "report": lesson.latex.report_path,
-                    "pages": result.pages,
-                    "size_bytes": result.size_bytes,
-                    "errors": result.errors[:10],
-                },
-            }
-        )
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
