@@ -23,12 +23,11 @@ from PySide6.QtWidgets import (
 
 from ..crm import CrmStats, ScheduledLesson
 from ..domain import JobStatus, Lesson
-from .app_routes import AppRoute, ROUTE_DEFINITIONS, route_definition
+from .app_routes import ROUTE_DEFINITIONS, AppRoute, route_definition
 from .command_palette import CommandPalette, PaletteCommand
 from .localization import subject_label
 from .theme import refresh_style, set_button_kind
 from .ui_session import UISessionStore
-
 
 COCKPIT_STYLESHEET = """
 QFrame#globalContextBar,
@@ -190,11 +189,7 @@ def _next_scheduled_lesson(
     lessons: list[ScheduledLesson],
     now: datetime,
 ) -> tuple[ScheduledLesson | None, int | None]:
-    candidates = [
-        item
-        for item in lessons
-        if item.status != "cancelled" and item.ends_at >= now
-    ]
+    candidates = [item for item in lessons if item.status != "cancelled" and item.ends_at >= now]
     if not candidates:
         return None, None
     selected = min(candidates, key=lambda item: item.starts_at)
@@ -329,9 +324,7 @@ def _attention_items(
         )
 
     overdue = [
-        scheduled
-        for scheduled in lessons
-        if scheduled.status == "planned" and scheduled.ends_at < now
+        scheduled for scheduled in lessons if scheduled.status == "planned" and scheduled.ends_at < now
     ]
     for scheduled in overdue[-3:]:
         items.append(
@@ -377,7 +370,9 @@ def build_cockpit_snapshot(
     if not isinstance(lesson, Lesson):
         lesson = None
     background_jobs = _safe_running_workers(window)
-    provider_value = getattr(getattr(getattr(window, "config", None), "normalization", None), "provider", "ollama")
+    provider_value = getattr(
+        getattr(getattr(window, "config", None), "normalization", None), "provider", "ollama"
+    )
     provider = "Yandex AI Studio" if provider_value == "yandex_ai_studio" else "Локальная LLM"
     attention = _attention_items(window, lesson, lessons, current_time, background_jobs)
     return CockpitSnapshot(
@@ -466,9 +461,7 @@ class GlobalContextBar(QFrame):
         self.provider.setObjectName("statusPill")
         layout.addWidget(self.provider)
         self.open_active = set_button_kind(QPushButton("Активное занятие"), "ghost")
-        self.open_active.clicked.connect(
-            lambda: self.route_requested.emit(AppRoute.LESSON.value)
-        )
+        self.open_active.clicked.connect(lambda: self.route_requested.emit(AppRoute.LESSON.value))
         layout.addWidget(self.open_active)
         refresh = set_button_kind(QPushButton("↻"), "ghost")
         refresh.setToolTip("Обновить контекст")
@@ -541,9 +534,7 @@ class TeacherCockpitPage(QWidget):
         hero_text.addWidget(self.hero_detail)
         hero_layout.addLayout(hero_text, 1)
         self.hero_secondary = set_button_kind(QPushButton("Открыть расписание"), "ghost")
-        self.hero_secondary.clicked.connect(
-            lambda: self.route_requested.emit(AppRoute.SCHEDULE.value)
-        )
+        self.hero_secondary.clicked.connect(lambda: self.route_requested.emit(AppRoute.SCHEDULE.value))
         hero_layout.addWidget(self.hero_secondary)
         self.hero_primary = set_button_kind(QPushButton("Быстрый урок"), "primary")
         self.hero_primary.clicked.connect(self.quick_requested)
@@ -628,9 +619,7 @@ class TeacherCockpitPage(QWidget):
             self.route_requested.emit(str(route))
 
     def set_snapshot(self, snapshot: CockpitSnapshot) -> None:
-        self.subtitle.setText(
-            snapshot.created_at.strftime("%A, %d.%m.%Y · обновлено %H:%M")
-        )
+        self.subtitle.setText(snapshot.created_at.strftime("%A, %d.%m.%Y · обновлено %H:%M"))
         next_lesson = snapshot.next_lesson
         if next_lesson is None:
             self.hero_time.setText("Следующее занятие")
@@ -757,9 +746,7 @@ class TeacherCockpitController(QObject):
         for definition in ROUTE_DEFINITIONS:
             shortcut = QShortcut(QKeySequence(definition.shortcut), self.window)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            shortcut.activated.connect(
-                lambda route=definition.route: self.navigate(route.value)
-            )
+            shortcut.activated.connect(lambda route=definition.route: self.navigate(route.value))
             self.route_shortcuts.append(shortcut)
 
     def _route_changed(self, route_value: str) -> None:
