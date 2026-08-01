@@ -283,15 +283,18 @@ def test_dashboard_timestamp_is_locale_independent() -> None:
 def test_pipeline_refresh_preserves_button_and_focus() -> None:
     application = _application()
     page = TeacherCockpitPage()
-    page.show()
     snapshot = build_cockpit_snapshot(
         _window_stub(),
         now=datetime(2026, 8, 1, 15, 10),
     )
     page.set_snapshot(snapshot)
-    button = page.pipeline.buttons["review"]
-    button.setFocus()
+    page.show()
+    page.activateWindow()
     application.processEvents()
+    button = page.pipeline.buttons["review"]
+    button.setFocus(Qt.FocusReason.OtherFocusReason)
+    application.processEvents()
+    assert QApplication.focusWidget() is button
 
     page.set_snapshot(snapshot)
     application.processEvents()
