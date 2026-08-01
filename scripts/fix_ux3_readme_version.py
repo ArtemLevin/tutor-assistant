@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# One-time consistency fix for the UX-3 release metadata.
 path = Path("README.md")
 content = path.read_text(encoding="utf-8")
 old = "Текущая версия: **0.19.0**."
