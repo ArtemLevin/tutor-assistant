@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -137,6 +138,8 @@ class CockpitSnapshot:
     provider: str
     pipeline: tuple[PipelineStage, ...]
     attention: tuple[AttentionItem, ...]
+    crm_error: str | None = None
+    lesson_store_error: str | None = None
 
 
 _STATUS_TITLES = {
@@ -155,6 +158,20 @@ _STATUS_TITLES = {
     JobStatus.COMPLETED: "Занятие полностью обработано",
     JobStatus.FAILED: "Обработка остановлена с ошибкой",
 }
+_RUSSIAN_WEEKDAYS = (
+    "Понедельник",
+    "Вторник",
+    "Среда",
+    "Четверг",
+    "Пятница",
+    "Суббота",
+    "Воскресенье",
+)
+
+
+def format_dashboard_timestamp(value: datetime) -> str:
+    weekday = _RUSSIAN_WEEKDAYS[value.weekday()]
+    return f"{weekday}, {value:%d.%m.%Y} · обновлено {value:%H:%M}"
 
 
 def _safe_running_workers(window: object) -> int:
@@ -172,24 +189,58 @@ def _week_start(value: date) -> date:
     return value - timedelta(days=value.weekday())
 
 
-def _scheduled_context(window: object, now: datetime) -> tuple[list[ScheduledLesson], CrmStats]:
+def _scheduled_context(
+    window: object,
+    now: datetime,
+) -> tuple[list[ScheduledLesson], CrmStats, str | None]:
     store = getattr(window, "crm_store", None)
     if store is None:
-        return [], CrmStats(0, 0, 0)
+        return [], CrmStats(0, 0, 0), None
+    monday = _week_start(now.date())
     try:
-        monday = _week_start(now.date())
-        lessons = list(store.lessons_for_week(monday))
+        current_week = list(store.lessons_for_week(monday))
+        next_week = list(store.lessons_for_week(monday + timedelta(days=7)))
         stats = store.stats(monday)
-        return lessons, stats
-    except Exception:
-        return [], CrmStats(0, 0, 0)
+        return current_week + next_week, stats, None
+    except Exception as exc:
+        logging.exception("Teacher Cockpit: CRM data unavailable")
+        return [], CrmStats(0, 0, 0), str(exc) or type(exc).__name__
+
+
+def _stored_lessons(window: object) -> tuple[list[Lesson], str | None]:
+    pipeline = getattr(window, "pipeline", None)
+    store = getattr(pipeline, "store", None)
+    list_lessons = getattr(store, "list", None)
+    if not callable(list_lessons):
+        return [], None
+    try:
+        try:
+            lessons = list(list_lessons(limit=250))
+        except TypeError:
+            lessons = list(list_lessons())
+    except Exception as exc:
+        logging.exception("Teacher Cockpit: lesson store unavailable")
+        return [], str(exc) or type(exc).__name__
+
+    current = getattr(window, "lesson", None)
+    if isinstance(current, Lesson):
+        lessons.append(current)
+    unique: dict[str, Lesson] = {}
+    for lesson in lessons:
+        if isinstance(lesson, Lesson):
+            unique[lesson.lesson_id] = lesson
+    return list(unique.values()), None
 
 
 def _next_scheduled_lesson(
     lessons: list[ScheduledLesson],
     now: datetime,
 ) -> tuple[ScheduledLesson | None, int | None]:
-    candidates = [item for item in lessons if item.status != "cancelled" and item.ends_at >= now]
+    candidates = [
+        item
+        for item in lessons
+        if item.status != "cancelled" and item.ends_at >= now
+    ]
     if not candidates:
         return None, None
     selected = min(candidates, key=lambda item: item.starts_at)
@@ -217,15 +268,10 @@ def _pipeline_for_lesson(lesson: Lesson | None) -> tuple[PipelineStage, ...]:
     active = "prepare"
     attention: set[str] = set()
 
-    if status == JobStatus.DRAFT:
-        active = "prepare"
-    elif status == JobStatus.RECORDING:
+    if status == JobStatus.RECORDING:
         completed.add("prepare")
         active = "record"
-    elif status == JobStatus.RECORDED:
-        completed.update({"prepare", "record"})
-        active = "transcribe"
-    elif status == JobStatus.TRANSCRIBING:
+    elif status in {JobStatus.RECORDED, JobStatus.TRANSCRIBING}:
         completed.update({"prepare", "record"})
         active = "transcribe"
     elif status == JobStatus.REVIEW_REQUIRED:
@@ -238,7 +284,11 @@ def _pipeline_for_lesson(lesson: Lesson | None) -> tuple[PipelineStage, ...]:
     elif status == JobStatus.PUBLISHED:
         completed.update({"prepare", "record", "transcribe", "review", "publish"})
         active = "materials"
-    elif status in {JobStatus.GENERATED_TEX, JobStatus.COMPILING_PDF, JobStatus.GENERATING}:
+    elif status in {
+        JobStatus.GENERATED_TEX,
+        JobStatus.COMPILING_PDF,
+        JobStatus.GENERATING,
+    }:
         completed.update({"prepare", "record", "transcribe", "review", "publish"})
         active = "materials"
     elif status in {JobStatus.PDF_REVIEW_REQUIRED, JobStatus.COMPILE_FAILED}:
@@ -252,84 +302,99 @@ def _pipeline_for_lesson(lesson: Lesson | None) -> tuple[PipelineStage, ...]:
         active = "transcribe" if lesson.source_audio_local else "prepare"
         attention.add(active)
 
+    detail = _STATUS_TITLES.get(status, status.value)
     stages: list[PipelineStage] = []
     for key, title, route in stage_data:
         state = "completed" if key in completed else "pending"
         if key == active:
             state = "attention" if key in attention else "active"
-        detail = _STATUS_TITLES.get(status, status.value)
         stages.append(PipelineStage(key, title, route, state, detail))
     return tuple(stages)
 
 
+def _lesson_attention(lesson: Lesson) -> AttentionItem | None:
+    topic = lesson.topic or subject_label(lesson.subject)
+    detail = f"{lesson.student.full_name} · {topic}"
+    if lesson.status == JobStatus.REVIEW_REQUIRED:
+        return AttentionItem(
+            f"review-{lesson.lesson_id}",
+            "warning",
+            AppRoute.TRANSCRIPT,
+            "Проверьте транскрипт",
+            detail,
+        )
+    if lesson.status == JobStatus.READY:
+        return AttentionItem(
+            f"publish-{lesson.lesson_id}",
+            "warning",
+            AppRoute.PUBLICATION,
+            "Транскрипт готов к публикации",
+            detail,
+        )
+    if lesson.status == JobStatus.PDF_REVIEW_REQUIRED:
+        return AttentionItem(
+            f"pdf-{lesson.lesson_id}",
+            "warning",
+            AppRoute.LATEX,
+            "Проверьте собранный PDF",
+            detail,
+        )
+    if lesson.status in {JobStatus.FAILED, JobStatus.COMPILE_FAILED}:
+        route = (
+            AppRoute.LATEX
+            if lesson.status == JobStatus.COMPILE_FAILED
+            else AppRoute.PROCESSING
+        )
+        return AttentionItem(
+            f"failed-{lesson.lesson_id}",
+            "critical",
+            route,
+            "Обработка занятия остановлена",
+            lesson.error or detail,
+        )
+    return None
+
+
 def _attention_items(
     window: object,
-    lesson: Lesson | None,
-    lessons: list[ScheduledLesson],
+    stored_lessons: list[Lesson],
+    scheduled_lessons: list[ScheduledLesson],
     now: datetime,
     background_jobs: int,
+    *,
+    crm_error: str | None,
+    lesson_store_error: str | None,
 ) -> tuple[AttentionItem, ...]:
     items: list[AttentionItem] = []
-    if lesson is None:
-        if not getattr(window, "students", None):
-            items.append(
-                AttentionItem(
-                    "no-students",
-                    "info",
-                    AppRoute.STUDENTS,
-                    "Создайте карточку первого ученика",
-                    "После этого станут доступны расписание и быстрый запуск занятия.",
-                )
-            )
-    elif lesson.status == JobStatus.REVIEW_REQUIRED:
+
+    if not getattr(window, "students", None) and not stored_lessons:
         items.append(
             AttentionItem(
-                f"review-{lesson.lesson_id}",
-                "warning",
-                AppRoute.TRANSCRIPT,
-                "Проверьте транскрипт",
-                f"{lesson.student.full_name} · {lesson.topic or subject_label(lesson.subject)}",
-            )
-        )
-    elif lesson.status == JobStatus.READY:
-        items.append(
-            AttentionItem(
-                f"publish-{lesson.lesson_id}",
-                "warning",
-                AppRoute.PUBLICATION,
-                "Транскрипт готов к публикации",
-                lesson.student.full_name,
-            )
-        )
-    elif lesson.status == JobStatus.PDF_REVIEW_REQUIRED:
-        items.append(
-            AttentionItem(
-                f"pdf-{lesson.lesson_id}",
-                "warning",
-                AppRoute.LATEX,
-                "Проверьте собранный PDF",
-                lesson.student.full_name,
-            )
-        )
-    elif lesson.status in {JobStatus.FAILED, JobStatus.COMPILE_FAILED}:
-        route = AppRoute.LATEX if lesson.status == JobStatus.COMPILE_FAILED else AppRoute.PROCESSING
-        items.append(
-            AttentionItem(
-                f"failed-{lesson.lesson_id}",
-                "critical",
-                route,
-                "Обработка занятия остановлена",
-                lesson.error or _STATUS_TITLES[lesson.status],
+                "no-students",
+                "info",
+                AppRoute.STUDENTS,
+                "Создайте карточку первого ученика",
+                "После этого станут доступны расписание и быстрый запуск занятия.",
             )
         )
 
+    for lesson in stored_lessons:
+        item = _lesson_attention(lesson)
+        if item is not None:
+            items.append(item)
+
     overdue = [
-        scheduled for scheduled in lessons if scheduled.status == "planned" and scheduled.ends_at < now
+        lesson
+        for lesson in scheduled_lessons
+        if lesson.status == "planned" and lesson.ends_at < now
     ]
     for scheduled in overdue[-3:]:
         items.append(
             AttentionItem(
-                f"overdue-{scheduled.occurrence_id or scheduled.rule_id}-{scheduled.starts_at.isoformat()}",
+                (
+                    f"overdue-{scheduled.occurrence_id or scheduled.rule_id}-"
+                    f"{scheduled.starts_at.isoformat()}"
+                ),
                 "warning",
                 AppRoute.SCHEDULE,
                 f"Уточните статус занятия с {scheduled.student_name}",
@@ -337,6 +402,26 @@ def _attention_items(
             )
         )
 
+    if crm_error:
+        items.append(
+            AttentionItem(
+                "crm-unavailable",
+                "critical",
+                AppRoute.SCHEDULE,
+                "Данные расписания временно недоступны",
+                crm_error,
+            )
+        )
+    if lesson_store_error:
+        items.append(
+            AttentionItem(
+                "lesson-store-unavailable",
+                "critical",
+                AppRoute.MATERIALS,
+                "История занятий временно недоступна",
+                lesson_store_error,
+            )
+        )
     if background_jobs:
         items.append(
             AttentionItem(
@@ -353,7 +438,14 @@ def _attention_items(
         unique.setdefault(item.key, item)
     severity_order = {"critical": 0, "warning": 1, "info": 2}
     return tuple(
-        sorted(unique.values(), key=lambda item: (severity_order.get(item.severity, 3), item.title))[:8]
+        sorted(
+            unique.values(),
+            key=lambda item: (
+                severity_order.get(item.severity, 3),
+                item.title,
+                item.key,
+            ),
+        )[:12]
     )
 
 
@@ -364,17 +456,40 @@ def build_cockpit_snapshot(
     now: datetime | None = None,
 ) -> CockpitSnapshot:
     current_time = now or datetime.now()
-    lessons, stats = _scheduled_context(window, current_time)
-    next_lesson, minutes = _next_scheduled_lesson(lessons, current_time)
+    scheduled_lessons, stats, crm_error = _scheduled_context(window, current_time)
+    next_lesson, minutes = _next_scheduled_lesson(
+        scheduled_lessons,
+        current_time,
+    )
+    stored_lessons, lesson_store_error = _stored_lessons(window)
+
     lesson = getattr(window, "lesson", None)
     if not isinstance(lesson, Lesson):
         lesson = None
     background_jobs = _safe_running_workers(window)
     provider_value = getattr(
-        getattr(getattr(window, "config", None), "normalization", None), "provider", "ollama"
+        getattr(
+            getattr(window, "config", None),
+            "normalization",
+            None,
+        ),
+        "provider",
+        "ollama",
     )
-    provider = "Yandex AI Studio" if provider_value == "yandex_ai_studio" else "Локальная LLM"
-    attention = _attention_items(window, lesson, lessons, current_time, background_jobs)
+    provider = (
+        "Yandex AI Studio"
+        if provider_value == "yandex_ai_studio"
+        else "Локальная LLM"
+    )
+    attention = _attention_items(
+        window,
+        stored_lessons,
+        scheduled_lessons,
+        current_time,
+        background_jobs,
+        crm_error=crm_error,
+        lesson_store_error=lesson_store_error,
+    )
     return CockpitSnapshot(
         created_at=current_time,
         route=route,
@@ -387,6 +502,8 @@ def build_cockpit_snapshot(
         provider=provider,
         pipeline=_pipeline_for_lesson(lesson),
         attention=attention,
+        crm_error=crm_error,
+        lesson_store_error=lesson_store_error,
     )
 
 
@@ -408,31 +525,49 @@ class LessonPipelineWidget(QFrame):
         layout.addLayout(self.stage_layout)
         self.buttons: dict[str, QPushButton] = {}
 
+    def _create_button(self, key: str) -> QPushButton:
+        button = QPushButton()
+        button.setObjectName("pipelineStage")
+        button.clicked.connect(
+            lambda _checked=False, current=button: self.route_requested.emit(
+                str(current.property("route"))
+            )
+        )
+        self.stage_layout.addWidget(button, 1)
+        self.buttons[key] = button
+        return button
+
     def set_stages(self, stages: tuple[PipelineStage, ...]) -> None:
-        while self.stage_layout.count():
-            item = self.stage_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self.buttons.clear()
+        current_keys = {stage.key for stage in stages}
+        for key in tuple(self.buttons):
+            if key in current_keys:
+                continue
+            button = self.buttons.pop(key)
+            self.stage_layout.removeWidget(button)
+            button.deleteLater()
+
         state_icons = {
             "completed": "✓",
             "active": "●",
             "attention": "!",
             "pending": "○",
         }
+        state_titles = {
+            "completed": "завершено",
+            "active": "выполняется",
+            "attention": "требует внимания",
+            "pending": "ожидает",
+        }
         for stage in stages:
-            button = QPushButton(f"{state_icons.get(stage.state, '○')}  {stage.title}")
-            button.setObjectName("pipelineStage")
+            button = self.buttons.get(stage.key) or self._create_button(stage.key)
+            button.setText(f"{state_icons.get(stage.state, '○')}  {stage.title}")
             button.setProperty("state", stage.state)
+            button.setProperty("route", stage.route.value)
             button.setToolTip(stage.detail)
-            button.setAccessibleName(f"{stage.title}: {stage.state}")
-            button.setAccessibleDescription(stage.detail)
-            button.clicked.connect(
-                lambda _checked=False, route=stage.route: self.route_requested.emit(route.value)
+            button.setAccessibleName(
+                f"{stage.title}: {state_titles.get(stage.state, stage.state)}"
             )
-            self.stage_layout.addWidget(button, 1)
-            self.buttons[stage.key] = button
+            button.setAccessibleDescription(stage.detail)
             refresh_style(button)
 
 
@@ -460,8 +595,13 @@ class GlobalContextBar(QFrame):
         self.provider = QLabel("Локальная LLM")
         self.provider.setObjectName("statusPill")
         layout.addWidget(self.provider)
-        self.open_active = set_button_kind(QPushButton("Активное занятие"), "ghost")
-        self.open_active.clicked.connect(lambda: self.route_requested.emit(AppRoute.LESSON.value))
+        self.open_active = set_button_kind(
+            QPushButton("Активное занятие"),
+            "ghost",
+        )
+        self.open_active.clicked.connect(
+            lambda: self.route_requested.emit(AppRoute.LESSON.value)
+        )
         layout.addWidget(self.open_active)
         refresh = set_button_kind(QPushButton("↻"), "ghost")
         refresh.setToolTip("Обновить контекст")
@@ -474,18 +614,26 @@ class GlobalContextBar(QFrame):
         lesson = snapshot.lesson
         if lesson is None:
             self.breadcrumb.setText(route_title)
-            self.detail.setText("Активное занятие пока не выбрано")
+            detail = "Активное занятие пока не выбрано"
+            if snapshot.crm_error or snapshot.lesson_store_error:
+                detail = "Часть данных временно недоступна"
+            self.detail.setText(detail)
             self.open_active.setEnabled(False)
         else:
             topic = lesson.topic or subject_label(lesson.subject)
-            self.breadcrumb.setText(f"{lesson.student.full_name}  ›  {route_title}")
+            self.breadcrumb.setText(
+                f"{lesson.student.full_name}  ›  {route_title}"
+            )
             self.detail.setText(
-                f"{lesson.lesson_date:%d.%m.%Y} · {subject_label(lesson.subject)} · {topic} · "
+                f"{lesson.lesson_date:%d.%m.%Y} · "
+                f"{subject_label(lesson.subject)} · {topic} · "
                 f"{_STATUS_TITLES.get(lesson.status, lesson.status.value)}"
             )
             self.open_active.setEnabled(True)
         self.provider.setText(snapshot.provider)
-        self.setAccessibleDescription(f"{self.breadcrumb.text()}. {self.detail.text()}")
+        self.setAccessibleDescription(
+            f"{self.breadcrumb.text()}. {self.detail.text()}"
+        )
 
 
 class TeacherCockpitPage(QWidget):
@@ -511,6 +659,7 @@ class TeacherCockpitPage(QWidget):
         title_box.addWidget(self.subtitle)
         heading.addLayout(title_box, 1)
         refresh = set_button_kind(QPushButton("Обновить"), "ghost")
+        refresh.setAccessibleName("Обновить рабочую панель")
         refresh.clicked.connect(self.refresh_requested)
         heading.addWidget(refresh)
         root.addLayout(heading)
@@ -526,17 +675,27 @@ class TeacherCockpitPage(QWidget):
         self.hero_time.setObjectName("cockpitHeroTime")
         self.hero_title = QLabel("Расписание свободно")
         self.hero_title.setObjectName("cockpitHeroTitle")
-        self.hero_detail = QLabel("Можно подготовить материалы или запланировать занятие")
+        self.hero_detail = QLabel(
+            "Можно подготовить материалы или запланировать занятие"
+        )
         self.hero_detail.setObjectName("muted")
         self.hero_detail.setWordWrap(True)
         hero_text.addWidget(self.hero_time)
         hero_text.addWidget(self.hero_title)
         hero_text.addWidget(self.hero_detail)
         hero_layout.addLayout(hero_text, 1)
-        self.hero_secondary = set_button_kind(QPushButton("Открыть расписание"), "ghost")
-        self.hero_secondary.clicked.connect(lambda: self.route_requested.emit(AppRoute.SCHEDULE.value))
+        self.hero_secondary = set_button_kind(
+            QPushButton("Открыть расписание"),
+            "ghost",
+        )
+        self.hero_secondary.clicked.connect(
+            lambda: self.route_requested.emit(AppRoute.SCHEDULE.value)
+        )
         hero_layout.addWidget(self.hero_secondary)
-        self.hero_primary = set_button_kind(QPushButton("Быстрый урок"), "primary")
+        self.hero_primary = set_button_kind(
+            QPushButton("Быстрый урок"),
+            "primary",
+        )
         self.hero_primary.clicked.connect(self.quick_requested)
         hero_layout.addWidget(self.hero_primary)
         root.addWidget(self.hero)
@@ -586,8 +745,12 @@ class TeacherCockpitPage(QWidget):
         attention_layout.addLayout(attention_header)
         self.attention_list = QListWidget()
         self.attention_list.setObjectName("attentionList")
-        self.attention_list.setAccessibleName("События, требующие внимания")
-        self.attention_list.itemActivated.connect(self._attention_activated)
+        self.attention_list.setAccessibleName(
+            "События, требующие внимания"
+        )
+        self.attention_list.itemActivated.connect(
+            self._attention_activated
+        )
         attention_layout.addWidget(self.attention_list, 1)
         lower.addWidget(attention_card, 2)
 
@@ -606,7 +769,9 @@ class TeacherCockpitPage(QWidget):
         ):
             button = set_button_kind(QPushButton(title_text), "ghost")
             button.clicked.connect(
-                lambda _checked=False, current=route: self.route_requested.emit(current.value)
+                lambda _checked=False, current=route: self.route_requested.emit(
+                    current.value
+                )
             )
             quick_layout.addWidget(button)
         quick_layout.addStretch(1)
@@ -619,12 +784,15 @@ class TeacherCockpitPage(QWidget):
             self.route_requested.emit(str(route))
 
     def set_snapshot(self, snapshot: CockpitSnapshot) -> None:
-        self.subtitle.setText(snapshot.created_at.strftime("%A, %d.%m.%Y · обновлено %H:%M"))
+        self.subtitle.setText(format_dashboard_timestamp(snapshot.created_at))
         next_lesson = snapshot.next_lesson
         if next_lesson is None:
             self.hero_time.setText("Следующее занятие")
             self.hero_title.setText("Расписание свободно")
-            self.hero_detail.setText("Можно подготовить материалы или запланировать занятие")
+            detail = "Можно подготовить материалы или запланировать занятие"
+            if snapshot.crm_error:
+                detail = "Расписание временно недоступно — откройте центр внимания"
+            self.hero_detail.setText(detail)
             self.hero_primary.setText("Быстрый урок")
         else:
             minutes = snapshot.minutes_to_next
@@ -640,36 +808,62 @@ class TeacherCockpitPage(QWidget):
                 timing = next_lesson.starts_at.strftime("%d.%m · %H:%M")
             self.hero_time.setText(timing)
             self.hero_title.setText(next_lesson.student_name)
-            self.hero_detail.setText(
-                f"{subject_label(next_lesson.subject)}"
-                + (f" · {next_lesson.topic}" if next_lesson.topic else "")
-            )
+            detail = subject_label(next_lesson.subject)
+            if next_lesson.topic:
+                detail += f" · {next_lesson.topic}"
+            self.hero_detail.setText(detail)
             self.hero_primary.setText("Начать быстрый урок")
 
         values = {
-            "students": str(snapshot.stats.active_students or snapshot.active_students),
+            "students": str(
+                snapshot.stats.active_students or snapshot.active_students
+            ),
             "lessons": str(snapshot.stats.lessons_this_week),
-            "revenue": f"{snapshot.stats.planned_revenue_cents / 100:,.0f} ₽",
+            "revenue": (
+                f"{snapshot.stats.planned_revenue_cents / 100:,.0f} ₽"
+            ),
             "jobs": str(snapshot.background_jobs),
         }
         for key, value in values.items():
             self.metric_widgets[key][1].setText(value)
 
         self.pipeline.set_stages(snapshot.pipeline)
+        selected_key = None
+        current_item = self.attention_list.currentItem()
+        if current_item is not None:
+            selected_key = current_item.data(Qt.ItemDataRole.UserRole + 1)
         self.attention_list.clear()
+        row_to_restore = -1
         if not snapshot.attention:
-            calm = QListWidgetItem("✓ Всё спокойно\nСрочных действий сейчас нет")
-            calm.setFlags(calm.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            calm = QListWidgetItem(
+                "✓ Всё спокойно\nСрочных действий сейчас нет"
+            )
+            calm.setFlags(
+                calm.flags() & ~Qt.ItemFlag.ItemIsSelectable
+            )
             self.attention_list.addItem(calm)
         else:
             icons = {"critical": "●", "warning": "!", "info": "i"}
-            for attention in snapshot.attention:
+            for row, attention in enumerate(snapshot.attention):
                 item = QListWidgetItem(
-                    f"{icons.get(attention.severity, '•')}  {attention.title}\n{attention.detail}"
+                    f"{icons.get(attention.severity, '•')}  "
+                    f"{attention.title}\n{attention.detail}"
                 )
-                item.setData(Qt.ItemDataRole.UserRole, attention.route.value)
+                item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    attention.route.value,
+                )
+                item.setData(
+                    Qt.ItemDataRole.UserRole + 1,
+                    attention.key,
+                )
                 item.setToolTip(attention.detail)
+                item.setAccessibleDescription(attention.detail)
                 self.attention_list.addItem(item)
+                if attention.key == selected_key:
+                    row_to_restore = row
+        if row_to_restore >= 0:
+            self.attention_list.setCurrentRow(row_to_restore)
         self.attention_count.setText(str(len(snapshot.attention)))
 
 
@@ -686,14 +880,21 @@ class TeacherCockpitController(QObject):
         self.palette = CommandPalette(window)
         self.session: UISessionStore | None = None
         self.last_snapshot = build_cockpit_snapshot(window)
-        self.dashboard_index = self.window.tabs.addTab(self.dashboard, "09  Сегодня")
+        self.dashboard_index = self.window.tabs.addTab(
+            self.dashboard,
+            "09  Сегодня",
+        )
         if self.dashboard_index != 8:
-            raise RuntimeError("Экран «Сегодня» должен сохранять legacy-индексы 0–7")
+            raise RuntimeError(
+                "Экран «Сегодня» должен сохранять legacy-индексы 0–7"
+            )
         central_layout = self.window.centralWidget().layout()
         central_layout.insertWidget(1, self.context_bar)
 
         self.dashboard.route_requested.connect(self.navigate)
-        self.dashboard.quick_requested.connect(lambda: self.window._set_mode("quick"))
+        self.dashboard.quick_requested.connect(
+            lambda: self.window._set_mode("quick")
+        )
         self.dashboard.refresh_requested.connect(self.refresh)
         self.context_bar.route_requested.connect(self.navigate)
         self.context_bar.refresh_requested.connect(self.refresh)
@@ -703,9 +904,24 @@ class TeacherCockpitController(QObject):
         self.refresh_timer.timeout.connect(self.refresh)
         self.refresh_timer.start()
 
-        self.palette_shortcut = QShortcut(QKeySequence("Ctrl+K"), self.window)
-        self.palette_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.palette_shortcut = QShortcut(
+            QKeySequence("Ctrl+K"),
+            self.window,
+        )
+        self.palette_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
         self.palette_shortcut.activated.connect(self.open_palette)
+
+        self.refresh_shortcut = QShortcut(
+            QKeySequence("F5"),
+            self.window,
+        )
+        self.refresh_shortcut.setContext(
+            Qt.ShortcutContext.ApplicationShortcut
+        )
+        self.refresh_shortcut.activated.connect(self.refresh)
+
         self.route_shortcuts: list[QShortcut] = []
         _install_stylesheet()
 
@@ -719,14 +935,26 @@ class TeacherCockpitController(QObject):
             route_provider=navigation.current_route,
         )
         self.session.restore_window()
-        materials_splitter = getattr(self.window.student_content_page, "content_splitter", None)
+        materials_splitter = getattr(
+            self.window.student_content_page,
+            "content_splitter",
+            None,
+        )
         self.session.register_splitter("materials", materials_splitter)
-        students_splitter = self.window.crm_students_page.findChild(QSplitter)
+        students_splitter = self.window.crm_students_page.findChild(
+            QSplitter
+        )
         self.session.register_splitter("students", students_splitter)
-        navigation.set_collapsed(self.session.sidebar_collapsed())
-        navigation.collapsed_changed.connect(self.session.record_sidebar_collapsed)
+        navigation.set_collapsed(
+            self.session.sidebar_collapsed()
+        )
+        navigation.collapsed_changed.connect(
+            self.session.record_sidebar_collapsed
+        )
         navigation.route_changed.connect(self.session.record_route)
-        self.session.restore_deferred(self.window.student_content_page)
+        self.session.restore_deferred(
+            self.window.student_content_page
+        )
         self._install_route_shortcuts()
         self.refresh()
 
@@ -734,19 +962,34 @@ class TeacherCockpitController(QObject):
         if self.session is None or self.navigation is None:
             self.window._set_mode(default_mode)
             return
-        mode = self.session.preferred_mode(default_mode) if self.session.initialized else default_mode
+        mode = (
+            self.session.preferred_mode(default_mode)
+            if self.session.initialized
+            else default_mode
+        )
         if mode == "quick":
             self.window._set_mode("quick")
         else:
             self.window._set_mode("detailed")
-            self.navigation.navigate(self.session.preferred_route())
+            self.navigation.navigate(
+                self.session.preferred_route()
+            )
         self.session.mark_initialized()
 
     def _install_route_shortcuts(self) -> None:
         for definition in ROUTE_DEFINITIONS:
-            shortcut = QShortcut(QKeySequence(definition.shortcut), self.window)
-            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-            shortcut.activated.connect(lambda route=definition.route: self.navigate(route.value))
+            shortcut = QShortcut(
+                QKeySequence(definition.shortcut),
+                self.window,
+            )
+            shortcut.setContext(
+                Qt.ShortcutContext.ApplicationShortcut
+            )
+            shortcut.activated.connect(
+                lambda route=definition.route: self.navigate(
+                    route.value
+                )
+            )
             self.route_shortcuts.append(shortcut)
 
     def _route_changed(self, route_value: str) -> None:
@@ -765,10 +1008,16 @@ class TeacherCockpitController(QObject):
     def _student_command(self, student: object) -> None:
         name = str(getattr(student, "full_name", ""))
         self.navigate(AppRoute.STUDENTS.value)
-        search = getattr(self.window.crm_students_page, "search", None)
+        search = getattr(
+            self.window.crm_students_page,
+            "search",
+            None,
+        )
         if search is not None:
             search.setText(name)
-            search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            search.setFocus(
+                Qt.FocusReason.ShortcutFocusReason
+            )
 
     def commands(self) -> list[PaletteCommand]:
         commands: list[PaletteCommand] = []
@@ -778,19 +1027,24 @@ class TeacherCockpitController(QObject):
                     f"route:{definition.route.value}",
                     definition.title,
                     f"Открыть раздел · {definition.group.title()}",
-                    lambda route=definition.route: self.navigate(route.value),
+                    lambda route=definition.route: self.navigate(
+                        route.value
+                    ),
                     definition.keywords,
                     definition.shortcut,
                 )
             )
         for student in getattr(self.window, "students", ()):
+            student_id = str(getattr(student, "id", ""))
             commands.append(
                 PaletteCommand(
-                    f"student:{student.id}",
-                    student.full_name,
+                    f"student:{student_id}",
+                    str(getattr(student, "full_name", student_id)),
                     "Открыть карточку ученика",
-                    lambda current=student: self._student_command(current),
-                    (student.id, "ученик", "карточка"),
+                    lambda current=student: self._student_command(
+                        current
+                    ),
+                    (student_id, "ученик", "карточка"),
                 )
             )
         next_lesson = self.last_snapshot.next_lesson
@@ -798,10 +1052,21 @@ class TeacherCockpitController(QObject):
             commands.append(
                 PaletteCommand(
                     "next-lesson",
-                    f"Следующее занятие: {next_lesson.student_name}",
-                    next_lesson.starts_at.strftime("%d.%m · %H:%M"),
-                    lambda: self.navigate(AppRoute.SCHEDULE.value),
-                    ("следующее", "расписание", next_lesson.student_name),
+                    (
+                        "Следующее занятие: "
+                        f"{next_lesson.student_name}"
+                    ),
+                    next_lesson.starts_at.strftime(
+                        "%d.%m · %H:%M"
+                    ),
+                    lambda: self.navigate(
+                        AppRoute.SCHEDULE.value
+                    ),
+                    (
+                        "следующее",
+                        "расписание",
+                        next_lesson.student_name,
+                    ),
                 )
             )
         commands.extend(
@@ -809,7 +1074,10 @@ class TeacherCockpitController(QObject):
                 PaletteCommand(
                     "system:refresh",
                     "Обновить Teacher Cockpit",
-                    "Пересчитать расписание, pipeline и центр внимания",
+                    (
+                        "Пересчитать расписание, pipeline "
+                        "и центр внимания"
+                    ),
                     self.refresh,
                     ("refresh", "обновить", "состояние"),
                     "F5",
@@ -817,7 +1085,10 @@ class TeacherCockpitController(QObject):
                 PaletteCommand(
                     "system:diagnostics",
                     "Собрать диагностический пакет",
-                    "Создать безопасный ZIP без аудио и транскриптов",
+                    (
+                        "Создать безопасный ZIP без аудио "
+                        "и транскриптов"
+                    ),
                     self.window._create_support_bundle,
                     ("диагностика", "support", "zip"),
                 ),
@@ -831,9 +1102,17 @@ class TeacherCockpitController(QObject):
                 PaletteCommand(
                     "system:llm-settings",
                     "Настройки LLM-фильтрации",
-                    "Провайдер, модель и параметры повторных запросов",
+                    (
+                        "Провайдер, модель и параметры "
+                        "повторных запросов"
+                    ),
                     self.window._show_normalization_settings,
-                    ("ollama", "yandex", "модель", "настройки"),
+                    (
+                        "ollama",
+                        "yandex",
+                        "модель",
+                        "настройки",
+                    ),
                 ),
             )
         )
@@ -843,17 +1122,29 @@ class TeacherCockpitController(QObject):
         self.palette.open_with_commands(self.commands())
 
     def refresh(self) -> None:
-        route = self.navigation.current_route() if self.navigation is not None else self.current_route
+        route = (
+            self.navigation.current_route()
+            if self.navigation is not None
+            else self.current_route
+        )
         self.current_route = route
-        self.last_snapshot = build_cockpit_snapshot(self.window, route=route)
+        self.last_snapshot = build_cockpit_snapshot(
+            self.window,
+            route=route,
+        )
         self.dashboard.set_snapshot(self.last_snapshot)
         self.context_bar.set_snapshot(self.last_snapshot)
         if self.navigation is not None:
-            counts = Counter(item.route for item in self.last_snapshot.attention)
+            counts = Counter(
+                item.route
+                for item in self.last_snapshot.attention
+            )
             self.navigation.set_badges(counts)
 
 
-def install_teacher_cockpit(window: Any) -> TeacherCockpitController:
+def install_teacher_cockpit(
+    window: Any,
+) -> TeacherCockpitController:
     return TeacherCockpitController(window)
 
 
@@ -863,5 +1154,10 @@ def _install_stylesheet() -> None:
         return
     if application.property("ux6TeacherCockpitStyle"):
         return
-    application.setStyleSheet(application.styleSheet() + COCKPIT_STYLESHEET)
-    application.setProperty("ux6TeacherCockpitStyle", True)
+    application.setStyleSheet(
+        application.styleSheet() + COCKPIT_STYLESHEET
+    )
+    application.setProperty(
+        "ux6TeacherCockpitStyle",
+        True,
+    )
