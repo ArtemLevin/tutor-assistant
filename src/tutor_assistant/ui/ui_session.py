@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QByteArray, QDate, QEvent, QObject, QSettings, QTimer
+from PySide6.QtCore import QByteArray, QDate, QEvent, QObject, QRect, QSettings, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QComboBox, QMainWindow, QSplitter
 
 from .app_routes import AppRoute, parse_route
 
 
 class UISessionStore(QObject):
-    """Migration-safe persistence for window and workspace continuity."""
+    """Versioned persistence for window and workspace continuity."""
 
     schema_version = 1
 
@@ -28,12 +29,32 @@ class UISessionStore(QObject):
         self.window.installEventFilter(self)
 
     @property
+    def stored_schema(self) -> int:
+        try:
+            return int(self.settings.value("ux6/schema", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def schema_is_current(self) -> bool:
+        return self.stored_schema == self.schema_version
+
+    @property
     def initialized(self) -> bool:
-        return bool(self.settings.value("ux6/initialized", False, type=bool))
+        return self.schema_is_current and bool(
+            self.settings.value("ux6/initialized", False, type=bool)
+        )
 
     def mark_initialized(self) -> None:
         self.settings.setValue("ux6/schema", self.schema_version)
         self.settings.setValue("ux6/initialized", True)
+
+    def reset_incompatible(self) -> bool:
+        if self.stored_schema in {0, self.schema_version}:
+            return False
+        self.settings.remove("ux6")
+        self.settings.sync()
+        return True
 
     def register_splitter(self, name: str, splitter: QSplitter | None) -> None:
         if splitter is None:
@@ -42,15 +63,42 @@ class UISessionStore(QObject):
         self._splitters[name] = splitter
         splitter.splitterMoved.connect(lambda _position, _index: self.save_splitters())
 
+    @staticmethod
+    def _available_geometries() -> list[QRect]:
+        return [screen.availableGeometry() for screen in QGuiApplication.screens()]
+
+    def _ensure_window_is_visible(self) -> None:
+        available = self._available_geometries()
+        if not available:
+            return
+        frame = self.window.frameGeometry()
+        if any(rect.intersects(frame) for rect in available):
+            return
+        target = QGuiApplication.primaryScreen()
+        bounds = target.availableGeometry() if target is not None else available[0]
+        width = min(max(self.window.width(), 720), bounds.width())
+        height = min(max(self.window.height(), 520), bounds.height())
+        x = bounds.x() + max(0, (bounds.width() - width) // 2)
+        y = bounds.y() + max(0, (bounds.height() - height) // 2)
+        self.window.setGeometry(x, y, width, height)
+
     def restore_window(self) -> None:
+        self.reset_incompatible()
+        if not self.schema_is_current:
+            return
         geometry = self.settings.value("ux6/window_geometry")
         if isinstance(geometry, QByteArray) and not geometry.isEmpty():
             self.window.restoreGeometry(geometry)
+            self._ensure_window_is_visible()
 
     def save_window(self) -> None:
-        self.settings.setValue("ux6/window_geometry", self.window.saveGeometry())
+        geometry = self.window.saveGeometry()
+        if isinstance(geometry, QByteArray) and not geometry.isEmpty():
+            self.settings.setValue("ux6/window_geometry", geometry)
 
     def restore_splitters(self) -> None:
+        if not self.schema_is_current:
+            return
         for name, splitter in self._splitters.items():
             state = self.settings.value(f"ux6/splitters/{name}")
             if isinstance(state, QByteArray) and not state.isEmpty():
@@ -61,6 +109,8 @@ class UISessionStore(QObject):
             self.settings.setValue(f"ux6/splitters/{name}", splitter.saveState())
 
     def preferred_route(self, default: AppRoute = AppRoute.TODAY) -> AppRoute:
+        if not self.schema_is_current:
+            return default
         return parse_route(self.settings.value("ux6/last_route", default.value), default)
 
     def record_route(self, route: AppRoute | str) -> None:
@@ -69,6 +119,8 @@ class UISessionStore(QObject):
             self.settings.setValue("ux6/last_route", parsed.value)
 
     def preferred_mode(self, default: str) -> str:
+        if not self.schema_is_current:
+            return default
         value = str(self.settings.value("ux6/mode", default))
         return value if value in {"quick", "detailed"} else default
 
@@ -77,6 +129,8 @@ class UISessionStore(QObject):
             self.settings.setValue("ux6/mode", mode)
 
     def sidebar_collapsed(self, default: bool = False) -> bool:
+        if not self.schema_is_current:
+            return default
         return bool(self.settings.value("ux6/sidebar_collapsed", default, type=bool))
 
     def record_sidebar_collapsed(self, collapsed: bool) -> None:
@@ -102,10 +156,16 @@ class UISessionStore(QObject):
         for name in ("student_filter", "subject_filter", "status_filter"):
             combo = getattr(page, name, None)
             if isinstance(combo, QComboBox):
-                self.settings.setValue(f"ux6/materials/{name}", self._combo_value(combo))
+                self.settings.setValue(
+                    f"ux6/materials/{name}",
+                    self._combo_value(combo),
+                )
         period = getattr(page, "period_enabled", None)
         if period is not None and hasattr(period, "isChecked"):
-            self.settings.setValue("ux6/materials/period_enabled", bool(period.isChecked()))
+            self.settings.setValue(
+                "ux6/materials/period_enabled",
+                bool(period.isChecked()),
+            )
         for name in ("date_from", "date_to"):
             editor = getattr(page, name, None)
             if editor is not None and hasattr(editor, "date"):
@@ -115,6 +175,8 @@ class UISessionStore(QObject):
                 )
 
     def restore_material_filters(self, page: object) -> None:
+        if not self.schema_is_current:
+            return
         for name in ("student_filter", "subject_filter", "status_filter"):
             combo = getattr(page, name, None)
             if isinstance(combo, QComboBox):
@@ -123,7 +185,13 @@ class UISessionStore(QObject):
         period = getattr(page, "period_enabled", None)
         if period is not None and hasattr(period, "setChecked"):
             period.setChecked(
-                bool(self.settings.value("ux6/materials/period_enabled", False, type=bool))
+                bool(
+                    self.settings.value(
+                        "ux6/materials/period_enabled",
+                        False,
+                        type=bool,
+                    )
+                )
             )
         for name in ("date_from", "date_to"):
             editor = getattr(page, name, None)
