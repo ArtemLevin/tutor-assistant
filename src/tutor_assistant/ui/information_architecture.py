@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -106,7 +106,9 @@ class SidebarNavigation(QFrame):
         self.tabs = tabs
         self.setObjectName("informationArchitectureShell")
         self.setAccessibleName("Боковая навигация рабочего пространства")
-        self.setAccessibleDescription("Используйте Tab, стрелки, Home, End и Enter для выбора раздела")
+        self.setAccessibleDescription(
+            "Используйте Tab, стрелки, Home, End и Enter для выбора раздела"
+        )
         self.buttons: dict[int, QPushButton] = {}
         self.route_buttons: dict[AppRoute, QPushButton] = {}
         self.quick_button: QPushButton | None = None
@@ -137,7 +139,9 @@ class SidebarNavigation(QFrame):
         self.collapse_button.setFixedWidth(38)
         self.collapse_button.setAccessibleName("Свернуть боковую навигацию")
         self.collapse_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.collapse_button.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
+        self.collapse_button.clicked.connect(
+            lambda: self.set_collapsed(not self._collapsed)
+        )
         title_row.addWidget(self.collapse_button)
         sidebar_layout.addLayout(title_row)
 
@@ -152,11 +156,14 @@ class SidebarNavigation(QFrame):
             button = QPushButton()
             button.setObjectName("sideNavigationButton")
             button.setAccessibleName(definition.accessible_name)
-            button.setAccessibleDescription(f"Сочетание клавиш: {definition.shortcut}")
+            button.setAccessibleDescription(
+                f"Сочетание клавиш: {definition.shortcut}"
+            )
             button.setProperty("active", False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             button.setToolTip(f"{definition.title} · {definition.shortcut}")
+            button.installEventFilter(self)
             self._button_order.append(button)
             self.route_buttons[definition.route] = button
             self._button_labels[definition.route] = definition.title
@@ -166,8 +173,8 @@ class SidebarNavigation(QFrame):
                 self.buttons[definition.page_index] = button
                 button.setEnabled(definition.page_index < self.tabs.count())
             button.clicked.connect(
-                lambda _checked=False, route=definition.route, source=button: self._activate_route(
-                    route, source
+                lambda _checked=False, route=definition.route, source=button: (
+                    self._activate_route(route, source)
                 )
             )
             sidebar_layout.addWidget(button)
@@ -248,22 +255,41 @@ class SidebarNavigation(QFrame):
                 return
         page.setFocus(Qt.FocusReason.TabFocusReason)
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched in self._button_order
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(watched, QPushButton)
+            and isinstance(event, QKeyEvent)
+            and self._handle_navigation_key(watched, event)
+        ):
+            return True
+        return super().eventFilter(watched, event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         focused = QApplication.focusWidget()
-        if focused not in self._button_order:
-            super().keyPressEvent(event)
+        if (
+            isinstance(focused, QPushButton)
+            and focused in self._button_order
+            and self._handle_navigation_key(focused, event)
+        ):
             return
-        current = self._button_order.index(focused)
+        super().keyPressEvent(event)
+
+    def _handle_navigation_key(
+        self,
+        focused: QPushButton,
+        event: QKeyEvent,
+    ) -> bool:
         enabled_buttons = [button for button in self._button_order if button.isEnabled()]
-        if not enabled_buttons:
-            super().keyPressEvent(event)
-            return
-        enabled_current = enabled_buttons.index(focused) if focused in enabled_buttons else 0
+        if focused not in enabled_buttons:
+            return False
+        current = enabled_buttons.index(focused)
         key = event.key()
         if key in {Qt.Key.Key_Down, Qt.Key.Key_Right}:
-            target = enabled_buttons[(enabled_current + 1) % len(enabled_buttons)]
+            target = enabled_buttons[(current + 1) % len(enabled_buttons)]
         elif key in {Qt.Key.Key_Up, Qt.Key.Key_Left}:
-            target = enabled_buttons[(enabled_current - 1) % len(enabled_buttons)]
+            target = enabled_buttons[(current - 1) % len(enabled_buttons)]
         elif key == Qt.Key.Key_Home:
             target = enabled_buttons[0]
         elif key == Qt.Key.Key_End:
@@ -271,13 +297,12 @@ class SidebarNavigation(QFrame):
         elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space}:
             focused.click()
             event.accept()
-            return
+            return True
         else:
-            super().keyPressEvent(event)
-            return
-        del current
+            return False
         target.setFocus(Qt.FocusReason.TabFocusReason)
         event.accept()
+        return True
 
     def ordered_buttons(self) -> tuple[QPushButton, ...]:
         return tuple(self._button_order)
@@ -302,7 +327,9 @@ class SidebarNavigation(QFrame):
 
     def set_badges(self, counts: Mapping[AppRoute | str, int]) -> None:
         self._badges = {
-            AppRoute(route): max(0, int(count)) for route, count in counts.items() if int(count) > 0
+            AppRoute(route): max(0, int(count))
+            for route, count in counts.items()
+            if int(count) > 0
         }
         self._refresh_button_texts()
 
@@ -312,13 +339,17 @@ class SidebarNavigation(QFrame):
             self._refresh_button_texts()
             return
         self._collapsed = collapsed
-        self.sidebar.setFixedWidth(self.collapsed_width if collapsed else self.expanded_width)
+        self.sidebar.setFixedWidth(
+            self.collapsed_width if collapsed else self.expanded_width
+        )
         self.title.setVisible(not collapsed)
         for label in self._group_labels:
             label.setVisible(not collapsed)
         self.collapse_button.setText("»" if collapsed else "«")
         self.collapse_button.setAccessibleName(
-            "Развернуть боковую навигацию" if collapsed else "Свернуть боковую навигацию"
+            "Развернуть боковую навигацию"
+            if collapsed
+            else "Свернуть боковую навигацию"
         )
         self.command_button.setText("⌘" if collapsed else "⌘  Команды")
         self._refresh_button_texts()
@@ -331,7 +362,13 @@ class SidebarNavigation(QFrame):
         for route, button in self.route_buttons.items():
             definition = route_definition(route)
             count = self._badges.get(route, 0)
-            badge = f" {count}" if count and self._collapsed else f"  ·  {count}" if count else ""
+            badge = (
+                f" {count}"
+                if count and self._collapsed
+                else f"  ·  {count}"
+                if count
+                else ""
+            )
             if self._collapsed:
                 button.setText(f"{definition.icon}{badge}")
                 button.setStyleSheet("text-align: center;")
