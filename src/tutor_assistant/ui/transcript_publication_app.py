@@ -23,6 +23,7 @@ from ..domain import JobStatus, Lesson
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
 from . import app as base_app
+from .accessibility import install_accessibility
 from .concurrent_app import MainWindow as ConcurrentMainWindow
 from .information_architecture import install_information_architecture
 from .library_transcription import install_library_transcription_control
@@ -63,6 +64,7 @@ class MainWindow(ConcurrentMainWindow):
         self._install_header_menu()
         self.navigation_shell = install_information_architecture(self)
         self._set_mode("quick" if quick_mode else "detailed")
+        install_accessibility(self)
 
     def _install_header_menu(self) -> None:
         self.header_more_button = QPushButton("⋯")

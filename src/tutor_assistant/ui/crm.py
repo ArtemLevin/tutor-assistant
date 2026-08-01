@@ -40,6 +40,7 @@ from ..crm import (
     ScheduleRule,
     StudentProfile,
 )
+from .accessibility import sync_text_status
 from .localization import (
     contact_channel_label,
     parse_subject_list,
@@ -330,6 +331,7 @@ class StudentsPage(QWidget):
         )
         self.dirty_label.setProperty("tone", "warning" if dirty else "success")
         self.save_button.setEnabled(dirty)
+        sync_text_status(self.dirty_label, "Состояние сохранения карточки ученика")
         refresh_style(self.dirty_label)
 
     def _toggle_technical_fields(self, expanded: bool) -> None:
