@@ -58,10 +58,65 @@ jobs:
       - name: Normalize UX-4 sources
         shell: pwsh
         run: |
-          $path = 'src/tutor_assistant/ui/accessibility.py'
-          $content = [System.IO.File]::ReadAllText($path)
-          $content = $content.Replace('zip(ordered, ordered[1:])', 'zip(ordered, ordered[1:], strict=False)')
-          [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+          @'
+          from pathlib import Path
+
+          def replace(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              content = target.read_text(encoding="utf-8")
+              if content.count(old) != 1:
+                  raise RuntimeError(f"Expected one UX-4 marker in {path}")
+              target.write_text(content.replace(old, new, 1), encoding="utf-8", newline="\n")
+
+          replace(
+              "src/tutor_assistant/ui/accessibility.py",
+              "zip(ordered, ordered[1:])",
+              "zip(ordered, ordered[1:], strict=False)",
+          )
+          replace(
+              "src/tutor_assistant/ui/accessibility.py",
+              '''        if not widget.accessibleDescription().strip() and widget.toolTip().strip():
+                      widget.setAccessibleDescription(widget.toolTip().strip())
+                  if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:
+          ''',
+              '''        if not widget.accessibleDescription().strip() and widget.toolTip().strip():
+                      widget.setAccessibleDescription(widget.toolTip().strip())
+                  if isinstance(widget, QAbstractItemView):
+                      widget.setTabKeyNavigation(False)
+                  if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:
+          ''',
+          )
+          replace(
+              "src/tutor_assistant/ui/information_architecture.py",
+              "sidebar.setFixedWidth(214)",
+              "sidebar.setFixedWidth(272)",
+          )
+          replace(
+              "tests/test_ux4_accessibility_gui.py",
+              '''    assert page.search.nextInFocusChain() is page.table
+                  assert page.table.nextInFocusChain() is page.full_name
+          ''',
+              '''    assert page.search.nextInFocusChain() is page.table
+                  page.table.setFocus()
+                  QTest.keyClick(page.table, Qt.Key.Key_Tab)
+                  application.processEvents()
+                  assert QApplication.focusWidget() is page.full_name
+          ''',
+          )
+          replace(
+              "tests/test_ux4_accessibility_gui.py",
+              '''    assert page.grid.focusPolicy() != Qt.FocusPolicy.NoFocus
+                  assert page.grid.nextInFocusChain() is page.open_selected_button
+          ''',
+              '''    assert page.grid.focusPolicy() != Qt.FocusPolicy.NoFocus
+                  page.grid.setFocus()
+                  QTest.keyClick(page.grid, Qt.Key.Key_Tab)
+                  application.processEvents()
+                  assert QApplication.focusWidget() is page.open_selected_button
+          ''',
+          )
+          '@ | uv run python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run ruff format `
             src/tutor_assistant/ui/accessibility.py `
             tests/test_ux4_accessibility_gui.py `
@@ -70,6 +125,7 @@ jobs:
           uv run ruff check `
             src/tutor_assistant/ui/accessibility.py `
             src/tutor_assistant/ui/student_content.py `
+            src/tutor_assistant/ui/information_architecture.py `
             tests/test_ux4_accessibility_gui.py `
             tests/test_ux4_scaling_gui.py `
             --fix
