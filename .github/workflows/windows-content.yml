@@ -65,7 +65,7 @@ jobs:
               target = Path(path)
               content = target.read_text(encoding="utf-8")
               if content.count(old) != 1:
-                  raise RuntimeError(f"Expected one UX-4 marker in {path}")
+                  raise RuntimeError(f"Expected one UX-4 marker in {path}: {old!r}")
               target.write_text(content.replace(old, new, 1), encoding="utf-8", newline="\n")
 
           replace(
@@ -75,16 +75,8 @@ jobs:
           )
           replace(
               "src/tutor_assistant/ui/accessibility.py",
-              '''        if not widget.accessibleDescription().strip() and widget.toolTip().strip():
-                      widget.setAccessibleDescription(widget.toolTip().strip())
-                  if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:
-          ''',
-              '''        if not widget.accessibleDescription().strip() and widget.toolTip().strip():
-                      widget.setAccessibleDescription(widget.toolTip().strip())
-                  if isinstance(widget, QAbstractItemView):
-                      widget.setTabKeyNavigation(False)
-                  if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:
-          ''',
+              "        if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:\n            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)",
+              "        if isinstance(widget, QAbstractItemView):\n            widget.setTabKeyNavigation(False)\n        if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:\n            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)",
           )
           replace(
               "src/tutor_assistant/ui/information_architecture.py",
@@ -93,27 +85,13 @@ jobs:
           )
           replace(
               "tests/test_ux4_accessibility_gui.py",
-              '''    assert page.search.nextInFocusChain() is page.table
-                  assert page.table.nextInFocusChain() is page.full_name
-          ''',
-              '''    assert page.search.nextInFocusChain() is page.table
-                  page.table.setFocus()
-                  QTest.keyClick(page.table, Qt.Key.Key_Tab)
-                  application.processEvents()
-                  assert QApplication.focusWidget() is page.full_name
-          ''',
+              "    assert page.table.nextInFocusChain() is page.full_name",
+              "    page.table.setFocus()\n    QTest.keyClick(page.table, Qt.Key.Key_Tab)\n    application.processEvents()\n    assert QApplication.focusWidget() is page.full_name",
           )
           replace(
               "tests/test_ux4_accessibility_gui.py",
-              '''    assert page.grid.focusPolicy() != Qt.FocusPolicy.NoFocus
-                  assert page.grid.nextInFocusChain() is page.open_selected_button
-          ''',
-              '''    assert page.grid.focusPolicy() != Qt.FocusPolicy.NoFocus
-                  page.grid.setFocus()
-                  QTest.keyClick(page.grid, Qt.Key.Key_Tab)
-                  application.processEvents()
-                  assert QApplication.focusWidget() is page.open_selected_button
-          ''',
+              "    assert page.grid.nextInFocusChain() is page.open_selected_button",
+              "    page.grid.setFocus()\n    QTest.keyClick(page.grid, Qt.Key.Key_Tab)\n    application.processEvents()\n    assert QApplication.focusWidget() is page.open_selected_button",
           )
           '@ | uv run python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
