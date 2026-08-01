@@ -18,10 +18,15 @@ large = '''replace_once(
     "        self.quick_subject = QComboBox()\\n        self.quick_subject.setToolTip(\\"Предмет определяет папку и шаблоны материалов\\")\\n        set_subject_combo(\\n            self.quick_subject,\\n            selected=self.config.quick_start.last_subject or profile.subject,\\n        )\\n",
 )
 '''
+publication_marker = "TRANSCRIPT_PUBLICATION_APP = dedent(\n    '''"
+raw_publication_marker = "TRANSCRIPT_PUBLICATION_APP = dedent(\n    r'''"
 
 if source.count(small) != 1 or source.count(large) != 1:
     raise RuntimeError("UX-1 bootstrap patch order markers changed")
+if source.count(publication_marker) != 1:
+    raise RuntimeError("UX-1 publication template marker changed")
 source = source.replace(small, "", 1)
 source = source.replace(large, large + small, 1)
+source = source.replace(publication_marker, raw_publication_marker, 1)
 path.write_text(source, encoding="utf-8", newline="\n")
 runpy.run_path(str(path), run_name="__main__")
