@@ -98,7 +98,7 @@ class SidebarNavigation(QFrame):
     collapsed_changed = Signal(bool)
     command_palette_requested = Signal()
 
-    expanded_width = 272
+    expanded_width = 320
     collapsed_width = 72
 
     def __init__(self, tabs: QTabWidget, parent: QWidget | None = None) -> None:
@@ -136,6 +136,7 @@ class SidebarNavigation(QFrame):
         self.collapse_button.setObjectName("sideNavigationUtility")
         self.collapse_button.setFixedWidth(38)
         self.collapse_button.setAccessibleName("Свернуть боковую навигацию")
+        self.collapse_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.collapse_button.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
         title_row.addWidget(self.collapse_button)
         sidebar_layout.addLayout(title_row)
@@ -175,6 +176,7 @@ class SidebarNavigation(QFrame):
         self.command_button = QPushButton("⌘  Команды")
         self.command_button.setObjectName("sideNavigationUtility")
         self.command_button.setAccessibleName("Открыть командную палитру")
+        self.command_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.command_button.setToolTip("Командная палитра · Ctrl+K")
         self.command_button.clicked.connect(self.command_palette_requested)
         sidebar_layout.addWidget(self.command_button)
