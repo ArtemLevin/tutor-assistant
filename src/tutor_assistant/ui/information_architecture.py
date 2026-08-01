@@ -329,7 +329,7 @@ class SidebarNavigation(QFrame):
         return True
 
     def ordered_buttons(self) -> tuple[QPushButton, ...]:
-        return tuple(self._button_order)
+        return tuple(button for button in self._button_order if button.isEnabled())
 
     def focus_current_button(self) -> None:
         button = self.route_buttons.get(self.current_route())
