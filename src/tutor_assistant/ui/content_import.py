@@ -222,6 +222,8 @@ class ImportLessonDialog(QDialog):
         self.start_button.setEnabled(True)
         self.cancel_button.setEnabled(True)
         self.cancel_button.setText("Закрыть")
+        self.progress.setVisible(False)
+        self.progress.setValue(0)
         self.state.setText(details)
         self.state.setStyleSheet("color: #A33636;")
 

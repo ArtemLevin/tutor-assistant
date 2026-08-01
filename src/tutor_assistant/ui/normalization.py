@@ -57,10 +57,12 @@ class ContentFilterReviewDialog(QDialog):
 
         buttons = QDialogButtonBox()
         apply_button = buttons.addButton(
-            "Применить как новую ревизию",
+            "Применить и перейти к публикации",
             QDialogButtonBox.AcceptRole,
         )
-        apply_button.setToolTip("Перед применением можно отредактировать отфильтрованный текст")
+        apply_button.setToolTip(
+            "Перед применением можно отредактировать текст; после подтверждения откроется публикация"
+        )
         restart_button = buttons.addButton(
             "Запустить фильтрацию заново",
             QDialogButtonBox.ResetRole,

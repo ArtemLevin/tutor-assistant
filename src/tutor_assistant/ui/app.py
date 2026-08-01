@@ -791,18 +791,38 @@ class MainWindow(QMainWindow):
         quick_title.setToolTip("Быстрая запись с фоновой транскрибацией")
         top_row.addWidget(quick_title, 1)
 
-        self.quick_readiness_button = QPushButton("✓")
+        self.quick_readiness_button = QPushButton("Проверить")
         self.quick_readiness_button.setObjectName("quickStatusButton")
+        self.quick_readiness_button.setAccessibleName("Открыть подробную проверку готовности")
         self.quick_readiness_button.clicked.connect(self._show_readiness_dialog)
         top_row.addWidget(self.quick_readiness_button)
 
         self.quick_options_button = QPushButton("···")
         self.quick_options_button.setObjectName("quickIconButton")
-        self.quick_options_button.setToolTip("Профиль и предмет")
+        self.quick_options_button.setToolTip("Изменить профиль и предмет")
         self.quick_options_button.clicked.connect(self._show_quick_options_dialog)
         top_row.addWidget(self.quick_options_button)
         surface_layout.addLayout(top_row)
-        surface_layout.addSpacing(2)
+
+        quick_context = QFrame()
+        quick_context.setObjectName("infoPanel")
+        quick_context_layout = QHBoxLayout(quick_context)
+        quick_context_layout.setContentsMargins(12, 9, 12, 9)
+        quick_context_layout.setSpacing(10)
+        self.quick_profile_text = QLabel()
+        self.quick_profile_text.setObjectName("muted")
+        self.quick_subject_text = QLabel()
+        self.quick_subject_text.setObjectName("muted")
+        quick_context_layout.addWidget(self.quick_profile_text)
+        quick_context_layout.addWidget(self.quick_subject_text)
+        quick_context_layout.addStretch(1)
+        surface_layout.addWidget(quick_context)
+
+        self.quick_readiness_text = QLabel()
+        self.quick_readiness_text.setObjectName("readinessSummary")
+        self.quick_readiness_text.setWordWrap(True)
+        self.quick_readiness_text.setAccessibleName("Состояние готовности быстрого урока")
+        surface_layout.addWidget(self.quick_readiness_text)
         surface_layout.addWidget(self.quick_student)
         surface_layout.addWidget(self.quick_topic)
 
@@ -900,13 +920,24 @@ class MainWindow(QMainWindow):
             self.quick_student.currentData(),
             self.quick_topic.text(),
         )
-        self.quick_readiness_button.setText("✓" if readiness.ready else "!")
+        profile = selected_profile(self.config, self.quick_profile.currentData())
+        self.quick_profile_text.setText(f"Профиль: {profile.name}")
+        self.quick_subject_text.setText(f"Предмет: {self.quick_subject.currentText()}")
+        self.quick_readiness_button.setText("Проверить")
         self.quick_readiness_button.setProperty("tone", "ready" if readiness.ready else "blocked")
+        if readiness.ready:
+            readiness_text = "Готово к старту · данные урока и аудио проверены"
+        else:
+            blocker = readiness.blockers[0].detail if readiness.blockers else "Проверьте параметры урока"
+            readiness_text = f"Требуется действие · {blocker}"
+        self.quick_readiness_text.setText(readiness_text)
+        self.quick_readiness_text.setProperty("tone", "ready" if readiness.ready else "blocked")
         lines = [f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items]
         lines.append("")
         lines.append("Нажмите, чтобы открыть подробную проверку")
         self.quick_readiness_button.setToolTip("\n".join(lines))
         refresh_style(self.quick_readiness_button)
+        refresh_style(self.quick_readiness_text)
         if not self.quick_countdown_timer.isActive() and not (self.recorder and self.recorder.active):
             self.quick_start_button.setText("Начать занятие")
             self.quick_start_button.setEnabled(readiness.ready)
@@ -1209,7 +1240,7 @@ class MainWindow(QMainWindow):
         self.play_segment_button.clicked.connect(self.play_selected_segment)
         self.transcript.textChanged.connect(self._summary_changed)
         self.approve.setShortcut(QKeySequence("Ctrl+Return"))
-        self.approve.setToolTip("Подтвердить транскрипт · Ctrl+Enter")
+        self.approve.setToolTip("Подтвердить транскрипт и перейти к публикации · Ctrl+Enter")
         self.approve.setEnabled(False)
         self.approve.clicked.connect(self.approve_transcript)
 
@@ -1217,7 +1248,7 @@ class MainWindow(QMainWindow):
         workspace.primary_action_button.clicked.connect(
             self._handle_transcript_primary_action
         )
-        workspace.open_review_action.triggered.connect(self.open_normalization_result)
+        workspace.review_result_button.clicked.connect(self.open_normalization_result)
         workspace.restart_action.triggered.connect(
             lambda: self.normalize_current_transcript(force=True)
         )
@@ -1349,11 +1380,22 @@ class MainWindow(QMainWindow):
         self.processing_list = QListWidget()
         self.processing_list.setAlternatingRowColors(True)
         self.processing_list.setSpacing(3)
+        self.processing_list.itemSelectionChanged.connect(self._sync_processing_actions)
         self.processing_list.itemDoubleClicked.connect(self._open_processing_item)
         layout.addWidget(self.processing_list, 1)
-        hint = QLabel("Двойной клик по готовому заданию открывает транскрипт для проверки")
+        processing_actions = QHBoxLayout()
+        hint = QLabel("Выберите задание, затем откройте готовый транскрипт или повторите ошибку")
         hint.setObjectName("muted")
-        layout.addWidget(hint)
+        hint.setWordWrap(True)
+        processing_actions.addWidget(hint, 1)
+        self.processing_open_button = set_button_kind(
+            QPushButton("Открыть выбранное"),
+            "primary",
+        )
+        self.processing_open_button.setEnabled(False)
+        self.processing_open_button.clicked.connect(self._open_selected_processing_item)
+        processing_actions.addWidget(self.processing_open_button)
+        layout.addLayout(processing_actions)
         return page
 
     def _latex_tab(self) -> QWidget:
@@ -1416,17 +1458,38 @@ class MainWindow(QMainWindow):
         results.addWidget(log_box, 3)
         preview_box = QGroupBox("Предпросмотр страниц")
         preview_layout = QVBoxLayout(preview_box)
-        preview_hint = QLabel("Двойной клик открывает страницу")
+        preview_actions = QHBoxLayout()
+        preview_hint = QLabel("Выберите страницу для открытия в системном просмотрщике")
         preview_hint.setObjectName("muted")
-        preview_layout.addWidget(preview_hint)
+        preview_hint.setWordWrap(True)
+        preview_actions.addWidget(preview_hint, 1)
+        self.open_pdf_preview_button = set_button_kind(
+            QPushButton("Открыть страницу"),
+            "ghost",
+        )
+        self.open_pdf_preview_button.setEnabled(False)
+        self.open_pdf_preview_button.clicked.connect(self._open_selected_pdf_preview)
+        preview_actions.addWidget(self.open_pdf_preview_button)
+        preview_layout.addLayout(preview_actions)
         self.pdf_previews = QListWidget()
+        self.pdf_previews.itemSelectionChanged.connect(self._sync_pdf_preview_action)
         self.pdf_previews.itemDoubleClicked.connect(
-            lambda item: QDesktopServices.openUrl(QUrl.fromLocalFile(item.data(256)))
+            lambda _item: self._open_selected_pdf_preview()
         )
         preview_layout.addWidget(self.pdf_previews)
         results.addWidget(preview_box, 2)
         layout.addLayout(results, 1)
         return page
+
+    def _sync_pdf_preview_action(self) -> None:
+        if hasattr(self, "open_pdf_preview_button"):
+            self.open_pdf_preview_button.setEnabled(self.pdf_previews.currentItem() is not None)
+
+    def _open_selected_pdf_preview(self) -> None:
+        item = self.pdf_previews.currentItem()
+        if item is None:
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.data(256))))
 
     def _make_lesson(self) -> Lesson:
         if not self.topic.text().strip():
@@ -1883,6 +1946,15 @@ class MainWindow(QMainWindow):
     def _show_processing_queue(self) -> None:
         self._set_mode("detailed")
         self.tabs.setCurrentIndex(4)
+
+    def _sync_processing_actions(self) -> None:
+        if hasattr(self, "processing_open_button"):
+            self.processing_open_button.setEnabled(self.processing_list.currentItem() is not None)
+
+    def _open_selected_processing_item(self) -> None:
+        item = self.processing_list.currentItem()
+        if item is not None:
+            self._open_processing_item(item)
 
     def _open_processing_item(self, item: QListWidgetItem) -> None:
         job = self.transcription_queue.get(str(item.data(256)))
@@ -2460,8 +2532,8 @@ class MainWindow(QMainWindow):
                 NormalizationRunStatus.FAILED,
             }
         )
+        self.transcript_workspace.set_review_action(visible=False, enabled=False)
         self.transcript_workspace.set_menu_state(
-            open_result=artifact_ready,
             restart=can_start and run is not None,
             open_artifact=artifact_ready,
             show_warnings=artifact_ready,
@@ -2526,10 +2598,16 @@ class MainWindow(QMainWindow):
             return
 
         if run and run.status == NormalizationRunStatus.REVIEW_REQUIRED and artifact_ready:
-            self._transcript_primary_action = "review"
+            self._transcript_primary_action = "start"
             self.transcript_workspace.set_primary_action(
-                "Проверить результат",
+                "Запустить фильтрацию",
+                enabled=False,
+                visible=False,
+            )
+            self.transcript_workspace.set_review_action(
+                visible=True,
                 enabled=True,
+                text="Проверить результат перед применением",
             )
             review_candidates = (
                 preview.statistics.review_candidate_chunks if preview else 0
@@ -2965,7 +3043,8 @@ class MainWindow(QMainWindow):
             self.publish_button.setEnabled(True)
             self._sync_normalization_controls()
             self.transcript_workspace.select_summary()
-        self._set_status("LLM-фильтрация применена как новая ревизия")
+            self._go_to(2)
+        self._set_status("Результат проверен · транскрипт готов к публикации")
 
     def reject_normalization_result(self) -> None:
         if not self.lesson:
