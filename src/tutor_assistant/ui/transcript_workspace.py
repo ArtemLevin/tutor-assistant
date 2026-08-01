@@ -232,11 +232,11 @@ class TranscriptWorkspace(QWidget):
         summary_actions.setObjectName("transcriptToolBar")
         summary_actions_layout = QHBoxLayout(summary_actions)
         summary_actions_layout.setContentsMargins(10, 7, 10, 7)
-        summary_hint = QLabel("Подтверждённая версия будет опубликована в папке ученика")
+        summary_hint = QLabel("Финальный шаг: подтвердите текст и перейдите к публикации")
         summary_hint.setObjectName("muted")
         summary_hint.setWordWrap(True)
         self.approve_button = set_button_kind(
-            QPushButton("Подтвердить транскрипт"),
+            QPushButton("Подтвердить и перейти к публикации"),
             "primary",
         )
         summary_actions_layout.addWidget(summary_hint, 1)
@@ -289,7 +289,6 @@ class TranscriptWorkspace(QWidget):
         self.overflow_button.setObjectName("transcriptOverflowButton")
         self.overflow_button.setToolTip("Дополнительные действия")
         self.overflow_menu = QMenu(self.overflow_button)
-        self.open_review_action = self.overflow_menu.addAction("Проверить результат")
         self.restart_action = self.overflow_menu.addAction("Запустить фильтрацию заново")
         self.open_artifact_action = self.overflow_menu.addAction("Открыть текстовый файл")
         self.show_warnings_action = self.overflow_menu.addAction("Показать предупреждения")
@@ -312,6 +311,14 @@ class TranscriptWorkspace(QWidget):
         state_text.addWidget(self.process_title)
         state_text.addWidget(self.process_detail)
         state_row.addLayout(state_text, 1)
+        self.review_result_button = set_button_kind(
+            QPushButton("Проверить результат перед применением"),
+            "primary",
+        )
+        self.review_result_button.setObjectName("normalizationReviewAction")
+        self.review_result_button.setAccessibleName("Обязательная проверка результата LLM")
+        self.review_result_button.setVisible(False)
+        state_row.addWidget(self.review_result_button, 0, Qt.AlignBottom)
         self.primary_action_button = set_button_kind(
             QPushButton("Запустить фильтрацию"),
             "primary",
@@ -341,11 +348,30 @@ class TranscriptWorkspace(QWidget):
     def set_config_summary(self, text: str) -> None:
         self.config_summary.setText(text)
 
-    def set_primary_action(self, text: str, *, enabled: bool, kind: str = "primary") -> None:
+    def set_primary_action(
+        self,
+        text: str,
+        *,
+        enabled: bool,
+        kind: str = "primary",
+        visible: bool = True,
+    ) -> None:
         self.primary_action_button.setText(text)
         self.primary_action_button.setEnabled(enabled)
+        self.primary_action_button.setVisible(visible)
         self.primary_action_button.setProperty("kind", kind)
         refresh_style(self.primary_action_button)
+
+    def set_review_action(
+        self,
+        *,
+        visible: bool,
+        enabled: bool,
+        text: str = "Проверить результат перед применением",
+    ) -> None:
+        self.review_result_button.setText(text)
+        self.review_result_button.setEnabled(enabled)
+        self.review_result_button.setVisible(visible)
 
     def set_process_state(
         self,
@@ -359,6 +385,9 @@ class TranscriptWorkspace(QWidget):
         self.process_detail.setText(detail)
         self.process_card.setProperty("tone", tone)
         self.progress.setVisible(show_progress)
+        if not show_progress:
+            self.progress.setRange(0, 1)
+            self.progress.setValue(0)
         refresh_style(self.process_card)
 
     def set_progress(self, *, total: int, completed: int, title: str, detail: str) -> None:
@@ -406,13 +435,11 @@ class TranscriptWorkspace(QWidget):
     def set_menu_state(
         self,
         *,
-        open_result: bool,
         restart: bool,
         open_artifact: bool,
         show_warnings: bool,
         reject: bool,
     ) -> None:
-        self.open_review_action.setEnabled(open_result)
         self.restart_action.setEnabled(restart)
         self.open_artifact_action.setEnabled(open_artifact)
         self.show_warnings_action.setEnabled(show_warnings)

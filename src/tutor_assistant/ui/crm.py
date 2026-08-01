@@ -223,6 +223,10 @@ class StudentsPage(QWidget):
         add_guardian = set_button_kind(QPushButton("Добавить"), "ghost")
         add_guardian.clicked.connect(self._add_guardian)
         guardian_header.addWidget(add_guardian)
+        self.edit_guardian_button = set_button_kind(QPushButton("Изменить"), "ghost")
+        self.edit_guardian_button.setEnabled(False)
+        self.edit_guardian_button.clicked.connect(self._edit_guardian)
+        guardian_header.addWidget(self.edit_guardian_button)
         remove_guardian = set_button_kind(QPushButton("Удалить"), "ghost")
         remove_guardian.clicked.connect(self._remove_guardian)
         guardian_header.addWidget(remove_guardian)
@@ -233,6 +237,7 @@ class StudentsPage(QWidget):
         self.guardian_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.guardian_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.guardian_table.verticalHeader().setVisible(False)
+        self.guardian_table.itemSelectionChanged.connect(self._sync_guardian_actions)
         self.guardian_table.doubleClicked.connect(self._edit_guardian)
         editor_layout.addWidget(self.guardian_table)
 
@@ -365,6 +370,10 @@ class StudentsPage(QWidget):
             ]
             for column, value in enumerate(values):
                 self.guardian_table.setItem(row, column, QTableWidgetItem(value))
+        self._sync_guardian_actions()
+
+    def _sync_guardian_actions(self) -> None:
+        self.edit_guardian_button.setEnabled(self.guardian_table.currentRow() >= 0)
 
     def _add_guardian(self) -> None:
         dialog = GuardianDialog(parent=self)
@@ -604,6 +613,13 @@ class SchedulePage(QWidget):
         add = set_button_kind(QPushButton("Добавить занятие"), "primary")
         add.clicked.connect(lambda: self._open_dialog(self.week_start, 16))
         header.addWidget(add)
+        self.open_selected_button = set_button_kind(
+            QPushButton("Открыть выбранное"),
+            "ghost",
+        )
+        self.open_selected_button.setEnabled(False)
+        self.open_selected_button.clicked.connect(self._open_selected_cell)
+        header.addWidget(self.open_selected_button)
         layout.addLayout(header)
 
         stats = QHBoxLayout()
@@ -623,6 +639,7 @@ class SchedulePage(QWidget):
         self.grid.setSelectionMode(QTableWidget.SingleSelection)
         self.grid.setEditTriggers(QTableWidget.NoEditTriggers)
         self.grid.setShowGrid(False)
+        self.grid.currentCellChanged.connect(self._sync_schedule_action)
         self.grid.cellDoubleClicked.connect(self._cell_opened)
         for row, hour in enumerate(range(self.first_hour, self.last_hour + 1)):
             self.grid.setVerticalHeaderItem(row, QTableWidgetItem(f"{hour:02d}:00"))
@@ -632,7 +649,7 @@ class SchedulePage(QWidget):
     def refresh(self) -> None:
         end = self.week_start + timedelta(days=6)
         self.week_label.setText(
-            f"{self.week_start:%d.%m.%Y} — {end:%d.%m.%Y} · двойной клик открывает занятие"
+            f"{self.week_start:%d.%m.%Y} — {end:%d.%m.%Y} · выберите ячейку для действия"
         )
         self.grid.clearContents()
         self.cell_lessons.clear()
@@ -663,7 +680,7 @@ class SchedulePage(QWidget):
             item.setToolTip(
                 f"{lesson.student_name}\n{lesson.starts_at:%d.%m %H:%M}"
                 f"–{lesson.ends_at:%H:%M}\n{lesson.topic or lesson.subject}\n"
-                "Двойной клик — открыть"
+                "Выберите ячейку и нажмите «Открыть выбранное»"
             )
             item.setBackground(colors.get(lesson.status, QColor("#FFFFFF")))
             self.grid.setItem(row, column, item)
@@ -672,6 +689,24 @@ class SchedulePage(QWidget):
         self.students_stat.setText(f"Ученики · {stats.active_students}")
         self.lessons_stat.setText(f"Занятия · {stats.lessons_this_week}")
         self.revenue_stat.setText(f"План · {stats.planned_revenue_cents / 100:,.0f} ₽")
+        self._sync_schedule_action()
+
+    def _sync_schedule_action(self, *_args) -> None:
+        row = self.grid.currentRow()
+        column = self.grid.currentColumn()
+        selected = row >= 0 and column >= 0
+        self.open_selected_button.setEnabled(selected)
+        self.open_selected_button.setText(
+            "Открыть занятие"
+            if selected and (row, column) in self.cell_lessons
+            else "Создать в выбранное время"
+        )
+
+    def _open_selected_cell(self) -> None:
+        row = self.grid.currentRow()
+        column = self.grid.currentColumn()
+        if row >= 0 and column >= 0:
+            self._cell_opened(row, column)
 
     def _shift_week(self, days: int) -> None:
         self.week_start += timedelta(days=days)
