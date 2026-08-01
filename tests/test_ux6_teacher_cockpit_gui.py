@@ -9,8 +9,8 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QSplitter, QTabWidget, 
 
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.ui.app_routes import (
-    AppRoute,
     ROUTE_DEFINITIONS,
+    AppRoute,
     page_for_route,
     route_for_page,
 )
@@ -52,9 +52,7 @@ def _window_stub(status: JobStatus = JobStatus.REVIEW_REQUIRED):
         students=[Student(id="sofya", full_name="Софья Кальной")],
         workers=[],
         crm_store=None,
-        config=SimpleNamespace(
-            normalization=SimpleNamespace(provider="ollama")
-        ),
+        config=SimpleNamespace(normalization=SimpleNamespace(provider="ollama")),
     )
 
 
@@ -63,9 +61,7 @@ def test_route_registry_preserves_legacy_indices() -> None:
     assert page_for_route(AppRoute.MATERIALS) == 7
     assert page_for_route(AppRoute.TODAY) == 8
     assert route_for_page(3) == AppRoute.LATEX
-    assert len({definition.shortcut for definition in ROUTE_DEFINITIONS}) == len(
-        ROUTE_DEFINITIONS
-    )
+    assert len({definition.shortcut for definition in ROUTE_DEFINITIONS}) == len(ROUTE_DEFINITIONS)
 
 
 def test_sidebar_routes_badges_and_compact_mode() -> None:

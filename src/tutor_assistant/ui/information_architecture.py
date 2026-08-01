@@ -16,14 +16,13 @@ from PySide6.QtWidgets import (
 )
 
 from .app_routes import (
-    AppRoute,
     ROUTE_DEFINITIONS,
+    AppRoute,
     page_for_route,
     route_definition,
     route_for_page,
 )
 from .theme import refresh_style
-
 
 SIDEBAR_STYLESHEET = """
 QFrame#informationArchitectureShell {
@@ -107,9 +106,7 @@ class SidebarNavigation(QFrame):
         self.tabs = tabs
         self.setObjectName("informationArchitectureShell")
         self.setAccessibleName("Боковая навигация рабочего пространства")
-        self.setAccessibleDescription(
-            "Используйте Tab, стрелки, Home, End и Enter для выбора раздела"
-        )
+        self.setAccessibleDescription("Используйте Tab, стрелки, Home, End и Enter для выбора раздела")
         self.buttons: dict[int, QPushButton] = {}
         self.route_buttons: dict[AppRoute, QPushButton] = {}
         self.quick_button: QPushButton | None = None
@@ -139,9 +136,7 @@ class SidebarNavigation(QFrame):
         self.collapse_button.setObjectName("sideNavigationUtility")
         self.collapse_button.setFixedWidth(38)
         self.collapse_button.setAccessibleName("Свернуть боковую навигацию")
-        self.collapse_button.clicked.connect(
-            lambda: self.set_collapsed(not self._collapsed)
-        )
+        self.collapse_button.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
         title_row.addWidget(self.collapse_button)
         sidebar_layout.addLayout(title_row)
 
@@ -156,15 +151,11 @@ class SidebarNavigation(QFrame):
             button = QPushButton()
             button.setObjectName("sideNavigationButton")
             button.setAccessibleName(definition.accessible_name)
-            button.setAccessibleDescription(
-                f"Сочетание клавиш: {definition.shortcut}"
-            )
+            button.setAccessibleDescription(f"Сочетание клавиш: {definition.shortcut}")
             button.setProperty("active", False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            button.setToolTip(
-                f"{definition.title} · {definition.shortcut}"
-            )
+            button.setToolTip(f"{definition.title} · {definition.shortcut}")
             self._button_order.append(button)
             self.route_buttons[definition.route] = button
             self._button_labels[definition.route] = definition.title
@@ -174,8 +165,8 @@ class SidebarNavigation(QFrame):
                 self.buttons[definition.page_index] = button
                 button.setEnabled(definition.page_index < self.tabs.count())
             button.clicked.connect(
-                lambda _checked=False, route=definition.route, source=button: (
-                    self._activate_route(route, source)
+                lambda _checked=False, route=definition.route, source=button: self._activate_route(
+                    route, source
                 )
             )
             sidebar_layout.addWidget(button)
@@ -309,9 +300,7 @@ class SidebarNavigation(QFrame):
 
     def set_badges(self, counts: Mapping[AppRoute | str, int]) -> None:
         self._badges = {
-            AppRoute(route): max(0, int(count))
-            for route, count in counts.items()
-            if int(count) > 0
+            AppRoute(route): max(0, int(count)) for route, count in counts.items() if int(count) > 0
         }
         self._refresh_button_texts()
 
@@ -321,17 +310,13 @@ class SidebarNavigation(QFrame):
             self._refresh_button_texts()
             return
         self._collapsed = collapsed
-        self.sidebar.setFixedWidth(
-            self.collapsed_width if collapsed else self.expanded_width
-        )
+        self.sidebar.setFixedWidth(self.collapsed_width if collapsed else self.expanded_width)
         self.title.setVisible(not collapsed)
         for label in self._group_labels:
             label.setVisible(not collapsed)
         self.collapse_button.setText("»" if collapsed else "«")
         self.collapse_button.setAccessibleName(
-            "Развернуть боковую навигацию"
-            if collapsed
-            else "Свернуть боковую навигацию"
+            "Развернуть боковую навигацию" if collapsed else "Свернуть боковую навигацию"
         )
         self.command_button.setText("⌘" if collapsed else "⌘  Команды")
         self._refresh_button_texts()
