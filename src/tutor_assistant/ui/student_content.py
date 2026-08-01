@@ -20,9 +20,12 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -119,6 +122,7 @@ class StudentContentPage(QWidget):
     lesson_purged = Signal(str)
     lesson_trashed = Signal(str)
     trash_retention_changed = Signal(int)
+    content_changed = Signal()
 
     def __init__(
         self,
@@ -189,20 +193,24 @@ class StudentContentPage(QWidget):
         self.import_button.setToolTip("Создать карточку занятия и безопасно скопировать аудио или транскрипт")
         self.import_button.clicked.connect(self.open_import_dialog)
         heading.addWidget(self.import_button)
-        self.trash_button = set_button_kind(QPushButton("Корзина"), "ghost")
-        self.trash_button.setToolTip("Открыть удалённые занятия · Ctrl+Shift+Delete")
-        self.trash_button.clicked.connect(self.open_trash)
-        heading.addWidget(self.trash_button)
-        self.health_button = set_button_kind(QPushButton("Диагностика"), "ghost")
-        self.health_button.setToolTip("Проверить индекс, файлы и место · Ctrl+Shift+D")
-        self.health_button.clicked.connect(self.open_content_health)
-        heading.addWidget(self.health_button)
-        self.sync_button = set_button_kind(QPushButton("Проверить и восстановить"), "ghost")
-        self.sync_button.setToolTip(
-            "Восстановить файлы и индекс архива; карточки SQLite не перезаписываются с диска"
-        )
-        self.sync_button.clicked.connect(self.synchronize)
-        heading.addWidget(self.sync_button)
+        self.maintenance_button = set_button_kind(QPushButton("Обслуживание"), "ghost")
+        self.maintenance_button.setAccessibleName("Меню обслуживания архива материалов")
+        self.maintenance_menu = QMenu(self.maintenance_button)
+        self.trash_action = self.maintenance_menu.addAction("Корзина")
+        self.trash_action.setShortcut(QKeySequence("Ctrl+Shift+Delete"))
+        self.trash_action.triggered.connect(self.open_trash)
+        self.health_action = self.maintenance_menu.addAction("Диагностика архива")
+        self.health_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.health_action.triggered.connect(self.open_content_health)
+        self.maintenance_menu.addSeparator()
+        self.sync_action = self.maintenance_menu.addAction("Проверить и восстановить")
+        self.sync_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.sync_action.triggered.connect(self.synchronize)
+        self.maintenance_button.setMenu(self.maintenance_menu)
+        heading.addWidget(self.maintenance_button)
+        self.trash_button = self.trash_action
+        self.health_button = self.health_action
+        self.sync_button = self.sync_action
         self.refresh_button = set_button_kind(QPushButton("Обновить"), "primary")
         self.refresh_button.setToolTip("Обновить список из локальной базы без обхода файлов")
         self.refresh_button.clicked.connect(self.refresh)
@@ -299,27 +307,25 @@ class StudentContentPage(QWidget):
         self.next_button.clicked.connect(self.next_page)
         paging.addWidget(self.next_button)
         list_layout.addLayout(paging)
-        layout.addWidget(list_panel, 1)
 
-        self.details_dialog = LessonContentDialog(self)
-        self.details_dialog.close_blocked.connect(
-            lambda: self.status_changed.emit(
-                "Завершите редактирование транскрипта перед закрытием карточки",
-                "warning",
-            )
-        )
-        self.details_dialog.finished.connect(self._details_dialog_closed)
-        dialog_layout = QVBoxLayout(self.details_dialog)
-        dialog_layout.setContentsMargins(12, 12, 12, 12)
+        self.content_splitter = QSplitter(Qt.Horizontal)
+        self.content_splitter.setObjectName("materialsSplitView")
+        self.content_splitter.setAccessibleName("Список и содержимое материалов")
+        self.content_splitter.addWidget(list_panel)
+
+        details_scroll = QScrollArea()
+        details_scroll.setObjectName("materialsDetailsScroll")
+        details_scroll.setWidgetResizable(True)
         details = QFrame()
         details.setObjectName("contentDetails")
         details_layout = QVBoxLayout(details)
         details_layout.setContentsMargins(18, 16, 18, 16)
         details_layout.setSpacing(10)
         details_header = QHBoxLayout()
-        details_title = QLabel("Содержимое занятия")
-        details_title.setObjectName("tileTitle")
-        details_header.addWidget(details_title, 1)
+        self.details_title = QLabel("Выберите занятие")
+        self.details_title.setObjectName("tileTitle")
+        self.details_title.setWordWrap(True)
+        details_header.addWidget(self.details_title, 1)
         self.edit_metadata_button = set_button_kind(QPushButton("Изменить карточку"), "ghost")
         self.edit_metadata_button.setEnabled(False)
         self.edit_metadata_button.clicked.connect(self.open_metadata_editor)
@@ -328,9 +334,6 @@ class StudentContentPage(QWidget):
         self.delete_lesson_button.setEnabled(False)
         self.delete_lesson_button.clicked.connect(self.delete_selected_lesson)
         details_header.addWidget(self.delete_lesson_button)
-        self.close_details_button = set_button_kind(QPushButton("Закрыть карточку"), "ghost")
-        self.close_details_button.clicked.connect(self.details_dialog.close)
-        details_header.addWidget(self.close_details_button)
         details_layout.addLayout(details_header)
         metadata_form = QFormLayout()
         metadata_form.setVerticalSpacing(6)
@@ -415,7 +418,12 @@ class StudentContentPage(QWidget):
         transcript_actions_layout.addWidget(self.save_transcript_button)
         self.transcript_actions.setVisible(False)
         details_layout.addWidget(self.transcript_actions)
-        dialog_layout.addWidget(details)
+        details_scroll.setWidget(details)
+        self.content_splitter.addWidget(details_scroll)
+        self.content_splitter.setSizes([660, 560])
+        self.content_splitter.setStretchFactor(0, 3)
+        self.content_splitter.setStretchFactor(1, 2)
+        layout.addWidget(self.content_splitter, 1)
         self._clear_details()
 
     def _install_shortcuts(self) -> None:
@@ -997,8 +1005,6 @@ class StudentContentPage(QWidget):
         self.edit_transcript_button.setEnabled(False)
         self.history_button.setEnabled(False)
         self.delete_lesson_button.setEnabled(False)
-        self.close_details_button.setEnabled(False)
-        self.details_dialog.set_close_allowed(False)
         self.transcript.setReadOnly(False)
         self.transcript.blockSignals(True)
         self.transcript.setPlainText(text)
@@ -1135,8 +1141,6 @@ class StudentContentPage(QWidget):
         self._cancel_after_draft = False
         self._transcript_base_revision = None
         self.table.setEnabled(True)
-        self.close_details_button.setEnabled(True)
-        self.details_dialog.set_close_allowed(True)
         self.delete_lesson_button.setEnabled(self._current_content is not None)
         self.transcript.setEnabled(True)
         self.transcript.setReadOnly(True)
@@ -1346,17 +1350,14 @@ class StudentContentPage(QWidget):
                 self.table.setItem(row, column, item)
             if lesson.lesson_id == selected:
                 selected_row = row
-        details_visible = self.details_dialog.isVisible()
-        if selected_row >= 0 and details_visible:
+        if selected_row >= 0:
             self.table.selectRow(selected_row)
         else:
             self.table.clearSelection()
         self.table.blockSignals(False)
-        if selected_row >= 0 and details_visible:
+        if selected_row >= 0:
             self._load_selected(activate=False)
         elif not self._transcript_editing:
-            if details_visible:
-                self.details_dialog.close()
             self._selected_lesson_id = None
             self._clear_details()
 
@@ -1401,12 +1402,7 @@ class StudentContentPage(QWidget):
             self.playback_panel.stop(clear_source=True)
             self._clear_details()
         self._selected_lesson_id = lesson_id
-        self.details_dialog.setWindowTitle(f"Содержимое занятия · {lesson_id}")
-        if not self.details_dialog.isVisible():
-            self.details_dialog.open()
-        if activate:
-            self.details_dialog.raise_()
-            self.details_dialog.activateWindow()
+        self.details_title.setText(f"Загружаю занятие · {lesson_id}")
         self._detail_request += 1
         request_id = self._detail_request
         self.transcript_state.setText("Загружаю содержимое занятия…")
@@ -1421,7 +1417,7 @@ class StudentContentPage(QWidget):
             return
         self._current_content = result
         lesson = result.lesson
-        self.details_dialog.setWindowTitle(f"Содержимое занятия · {lesson.topic}")
+        self.details_title.setText(lesson.topic or "Содержимое занятия")
         self.metadata["student"].setText(lesson.student.full_name)
         self.metadata["date"].setText(lesson.lesson_date.strftime("%d.%m.%Y"))
         self.metadata["subject"].setText(subject_label(lesson.subject))
@@ -1509,6 +1505,7 @@ class StudentContentPage(QWidget):
                 if result.draft
                 else "Для занятия нет проиндексированного транскрипта"
             )
+        self.content_changed.emit()
 
     def _detail_failed(self, request_id: int, details: str) -> None:
         if request_id != self._detail_request:
@@ -1519,6 +1516,8 @@ class StudentContentPage(QWidget):
 
     def _clear_details(self) -> None:
         self._current_content = None
+        if hasattr(self, "details_title"):
+            self.details_title.setText("Выберите занятие")
         for label in getattr(self, "metadata", {}).values():
             label.setText("—")
         if hasattr(self, "files_table"):
@@ -1544,11 +1543,15 @@ class StudentContentPage(QWidget):
             button = getattr(self, button_name, None)
             if button is not None:
                 button.setEnabled(False)
+        self.content_changed.emit()
 
     def close_details(self) -> None:
-        self.details_dialog.close()
-
-    def _details_dialog_closed(self, _result: int) -> None:
+        if self._transcript_editing:
+            self.status_changed.emit(
+                "Завершите редактирование транскрипта перед очисткой карточки",
+                "warning",
+            )
+            return
         self.playback_panel.stop(clear_source=True)
         self.table.clearSelection()
         self._selected_lesson_id = None
