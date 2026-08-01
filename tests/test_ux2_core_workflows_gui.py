@@ -1,3 +1,5 @@
+"""GUI contracts for the UX-2 core workflow redesign."""
+
 from __future__ import annotations
 
 import inspect
