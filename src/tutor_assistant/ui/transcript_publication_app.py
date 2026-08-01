@@ -4,7 +4,19 @@ import logging
 from pathlib import Path
 
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QMessageBox
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..audio_files import finalize_readable_audio
 from ..domain import JobStatus, Lesson
@@ -12,7 +24,9 @@ from ..publisher import publication_payload_files
 from ..recording import DualRecorder
 from . import app as base_app
 from .concurrent_app import MainWindow as ConcurrentMainWindow
+from .information_architecture import install_information_architecture
 from .library_transcription import install_library_transcription_control
+from .theme import set_button_kind
 
 _AUDIO_FORMAT_OPTIONS = (
     ("M4A · AAC 96 кбит/с · рекомендуется", "m4a"),
@@ -35,29 +49,114 @@ _TRANSCRIPTION_BLOCKED_STATUSES = {
 
 
 class MainWindow(ConcurrentMainWindow):
-    """Production window with transcript-only publication and audio delivery controls."""
+    """Production window with the UX-1 navigation and transcript-only publication."""
 
     def __init__(self, config_path):
         super().__init__(config_path)
         base_app.DualRecorder = self._create_configured_recorder
         install_library_transcription_control(self.student_content_page)
         self._install_audio_format_selector()
-        self.open_pr_button.setVisible(False)
-        self.publish_button.setText("Опубликовать transcript.txt в main")
-        self.publish_button.setToolTip(
-            "Передать в приватный репозиторий только подтверждённый transcript.txt"
+
+    def _build(self) -> None:
+        super()._build()
+        quick_mode = self.content_stack.currentWidget() is self.quick_page
+        self._install_header_menu()
+        self.navigation_shell = install_information_architecture(self)
+        self._set_mode("quick" if quick_mode else "detailed")
+
+    def _install_header_menu(self) -> None:
+        self.header_more_button = QPushButton("⋯")
+        self.header_more_button.setObjectName("headerMoreButton")
+        self.header_more_button.setAccessibleName("Дополнительные действия приложения")
+        self.header_more_button.setToolTip("Диагностика, журнал и настройки")
+        menu = QMenu(self.header_more_button)
+        menu.addAction("Собрать диагностический пакет").triggered.connect(
+            lambda _checked=False: self._create_support_bundle()
         )
-        publication_page = self.tabs.widget(2)
-        for label in publication_page.findChildren(QLabel):
-            if label.text() == "Опубликуйте материалы":
-                label.setText("Опубликуйте транскрипт")
-            elif label.text() == (
-                "Приложение создаст изолированную ветку занятия и draft pull request для проверки."
-            ):
-                label.setText(
-                    "После подтверждения в main будет записан один файл transcript.txt. "
-                    "Аудио и служебные материалы останутся локально."
-                )
+        menu.addAction("Открыть журнал приложения").triggered.connect(
+            lambda _checked=False: self._open_logs()
+        )
+        menu.addSeparator()
+        menu.addAction("Настройки LLM-фильтрации").triggered.connect(
+            lambda _checked=False: self._show_normalization_settings()
+        )
+        self.header_more_button.setMenu(menu)
+        self.header_layout.addWidget(self.header_more_button)
+
+    def _set_mode(self, mode: str) -> None:
+        super()._set_mode(mode)
+        if not hasattr(self, "header_more_button"):
+            return
+        quick = mode == "quick"
+        self.header_eyebrow.setVisible(False)
+        self.header_subtitle.setVisible(False)
+        self.support_button.setVisible(False)
+        self.logs_button.setVisible(False)
+        self.quick_mode_button.setVisible(False)
+        self.app_status.setVisible(not quick)
+        self.detailed_mode_button.setVisible(quick)
+        self.detailed_mode_button.setText("Рабочее пространство")
+        self.detailed_mode_button.setFixedWidth(190)
+        self.detailed_mode_button.setToolTip(
+            "Открыть транскрипты, публикацию, учеников, расписание и материалы"
+        )
+        self.header_more_button.setVisible(True)
+
+    def _publish_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(2, 4, 2, 4)
+        layout.setSpacing(12)
+        layout.addWidget(
+            self._page_heading(
+                "Опубликуйте транскрипт",
+                "После подтверждения в main будет записан один файл transcript.txt. "
+                "Аудио и служебные материалы останутся локально.",
+            )
+        )
+        layout.addStretch(1)
+        card_row = QHBoxLayout()
+        card_row.addStretch(1)
+        card = QGroupBox("Готовность транскрипта")
+        card.setMaximumWidth(720)
+        card.setMinimumWidth(560)
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(14)
+        intro = QLabel("Публикация станет доступна после подтверждения транскрипта")
+        intro.setObjectName("muted")
+        intro.setWordWrap(True)
+        card_layout.addWidget(intro)
+        summary_panel = QFrame()
+        summary_panel.setObjectName("infoPanel")
+        summary_panel_layout = QVBoxLayout(summary_panel)
+        summary_panel_layout.setContentsMargins(16, 14, 16, 14)
+        self.publish_summary = QLabel("Сначала создайте и подтвердите транскрипт.")
+        self.publish_summary.setWordWrap(True)
+        summary_panel_layout.addWidget(self.publish_summary)
+        card_layout.addWidget(summary_panel)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.open_pr_button = set_button_kind(QPushButton("Открыть pull request"), "ghost")
+        self.open_pr_button.setVisible(False)
+        self.open_pr_button.setEnabled(False)
+        self.open_pr_button.clicked.connect(self._open_current_pr)
+        actions.addWidget(self.open_pr_button)
+        self.publish_button = set_button_kind(
+            QPushButton("Опубликовать transcript.txt в main"),
+            "primary",
+        )
+        self.publish_button.setToolTip(
+            "Передать в приватный репозиторий подтверждённый transcript.txt"
+        )
+        self.publish_button.setEnabled(False)
+        self.publish_button.clicked.connect(self.publish)
+        actions.addWidget(self.publish_button)
+        card_layout.addLayout(actions)
+        card_row.addWidget(card)
+        card_row.addStretch(1)
+        layout.addLayout(card_row)
+        layout.addStretch(2)
+        return page
 
     def _create_configured_recorder(self, *args, **kwargs) -> DualRecorder:
         kwargs["output_format"] = self.config.recording.output_format
@@ -191,13 +290,13 @@ class MainWindow(ConcurrentMainWindow):
             f"Ветка: {result.branch}\n"
             f"Commit: {result.commit[:12]}\n"
             f"Путь: {result.repository_path}\n\n"
-            "Остальные файлы занятия сохранены только локально."
+            "Остальные файлы занятия сохранены локально."
         )
         if result.warnings:
             details += "\n\n" + "\n".join(result.warnings)
         QMessageBox.information(self, "Публикация завершена", details)
         self.latex_monitor_status.setText(
-            "Удалённая публикация содержит только transcript.txt; производные материалы не отправляются"
+            "Удалённая публикация содержит transcript.txt; производные материалы остаются локально"
         )
         self._set_status("transcript.txt опубликован в main")
         self.publish_summary.setText(details)

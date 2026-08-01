@@ -39,9 +39,17 @@ from ..crm import (
     ScheduleRule,
     StudentProfile,
 )
+from .localization import (
+    contact_channel_label,
+    parse_subject_list,
+    select_subject,
+    set_subject_combo,
+    subject_label,
+    subject_list_text,
+    subject_value,
+)
 from .theme import set_button_kind
 
-SUBJECTS = ["mathematics", "physics", "chemistry"]
 WEEKDAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 
 
@@ -184,7 +192,7 @@ class StudentsPage(QWidget):
         self.target_score.setRange(0, 100)
         self.target_score.setSpecialValueText("—")
         self.subjects = QLineEdit()
-        self.subjects.setPlaceholderText("mathematics, physics")
+        self.subjects.setPlaceholderText("Математика, Физика")
         self.timezone = QLineEdit("Europe/Moscow")
         self.repository_folder = QLineEdit()
         self.repository_folder.setPlaceholderText("students/student_slug")
@@ -280,7 +288,7 @@ class StudentsPage(QWidget):
                 str(profile.grade or "—"),
                 profile.exam or "—",
                 profile.goal or "—",
-                ", ".join(profile.subjects) or "—",
+                subject_list_text(profile.subjects) or "—",
                 f"{profile.default_rate_cents / 100:,.0f} ₽" if profile.default_rate_cents else "—",
                 primary.phone if primary else "—",
             ]
@@ -337,7 +345,7 @@ class StudentsPage(QWidget):
         self.exam.setCurrentText(profile.exam)
         self.goal.setText(profile.goal)
         self.target_score.setValue(profile.target_score or 0)
-        self.subjects.setText(", ".join(profile.subjects))
+        self.subjects.setText(subject_list_text(profile.subjects))
         self.timezone.setText(profile.timezone)
         self.repository_folder.setText(profile.repository_folder or "")
         self.rate.setValue(profile.default_rate_cents / 100)
@@ -353,7 +361,7 @@ class StudentsPage(QWidget):
                 ("★ " if guardian.is_primary else "") + guardian.full_name,
                 guardian.relationship,
                 guardian.phone,
-                guardian.preferred_contact,
+                contact_channel_label(guardian.preferred_contact),
             ]
             for column, value in enumerate(values):
                 self.guardian_table.setItem(row, column, QTableWidgetItem(value))
@@ -399,7 +407,7 @@ class StudentsPage(QWidget):
                 goal=self.goal.text().strip(),
                 exam=self.exam.currentText().strip(),
                 target_score=self.target_score.value() or None,
-                subjects=[item.strip() for item in self.subjects.text().split(",") if item.strip()],
+                subjects=parse_subject_list(self.subjects.text()),
                 timezone=self.timezone.text().strip() or "Europe/Moscow",
                 repository_folder=self.repository_folder.text().strip() or None,
                 default_rate_cents=round(self.rate.value() * 100),
@@ -463,7 +471,7 @@ class ScheduleDialog(QDialog):
             self.duration.addItem(f"{minutes} минут", minutes)
         self.subject = QComboBox()
         self.subject.setEditable(True)
-        self.subject.addItems(SUBJECTS)
+        set_subject_combo(self.subject)
         self.topic = QLineEdit()
         self.meeting = QLineEdit()
         self.meeting.setPlaceholderText("Ссылка на видеозвонок")
@@ -490,7 +498,7 @@ class ScheduleDialog(QDialog):
             )
             self.start_time.setTime(QTime(lesson.starts_at.hour, lesson.starts_at.minute))
             self.duration.setCurrentIndex(max(0, self.duration.findData(lesson.duration_minutes)))
-            self.subject.setCurrentText(lesson.subject)
+            select_subject(self.subject, lesson.subject)
             self.topic.setText(lesson.topic)
             self.meeting.setText(lesson.meeting_url)
             self.rate.setValue(lesson.rate_cents / 100)
@@ -521,7 +529,7 @@ class ScheduleDialog(QDialog):
         if profile:
             self.rate.setValue(profile.default_rate_cents / 100)
             if profile.subjects:
-                self.subject.setCurrentText(profile.subjects[0])
+                select_subject(self.subject, profile.subjects[0])
             if not self.topic.text() and profile.goal:
                 self.topic.setPlaceholderText(profile.goal)
 
@@ -545,7 +553,7 @@ class ScheduleDialog(QDialog):
             student_name=profile.full_name if profile else self.student.currentText(),
             starts_at=starts_at,
             duration_minutes=int(self.duration.currentData()),
-            subject=self.subject.currentText().strip(),
+            subject=subject_value(self.subject.currentText()),
             topic=self.topic.text().strip(),
             meeting_url=self.meeting.text().strip(),
             status=self.lesson.status if self.lesson else "planned",
@@ -649,7 +657,7 @@ class SchedulePage(QWidget):
             if not (0 <= row < self.grid.rowCount()):
                 continue
             item = QTableWidgetItem(
-                f"{lesson.starts_at:%H:%M}  {lesson.student_name}\n{lesson.subject}"
+                f"{lesson.starts_at:%H:%M}  {lesson.student_name}\n{subject_label(lesson.subject)}"
                 + (f" · {lesson.topic}" if lesson.topic else "")
             )
             item.setToolTip(
