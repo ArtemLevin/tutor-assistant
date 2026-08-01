@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tutor_assistant.content import StudentContentService
@@ -94,6 +95,8 @@ def test_student_card_dirty_state_and_field_hierarchy(
 
     assert page.technical_panel.isHidden()
     assert page.dirty_label.text() == "Все изменения сохранены"
+    assert page.dirty_label.accessibleName() == "Состояние сохранения карточки ученика"
+    assert page.technical_toggle.accessibleName() == "Показать технические параметры ученика"
     page.full_name.setText("Анна Петрова")
     page.full_name.textEdited.emit("Анна Петрова")
     assert page._dirty
@@ -122,6 +125,7 @@ def test_student_card_dirty_state_and_field_hierarchy(
 
     page.technical_toggle.setChecked(True)
     assert not page.technical_panel.isHidden()
+    assert page.technical_toggle.accessibleName() == "Скрыть технические параметры ученика"
     page.close()
 
 
@@ -155,12 +159,17 @@ def test_materials_are_embedded_in_split_view_with_maintenance_menu(
     application.processEvents()
 
     assert page.content_splitter.count() == 2
+    assert page.content_splitter.accessibleName() == "Список и содержимое материалов"
+    assert page.maintenance_button.accessibleName() == "Меню обслуживания архива материалов"
     assert page.maintenance_button.menu() is page.maintenance_menu
     assert [action.text() for action in page.maintenance_menu.actions() if action.text()] == [
         "Корзина",
         "Диагностика архива",
         "Проверить и восстановить",
     ]
+    assert page.trash_action.shortcut() == QKeySequence("Ctrl+Shift+Delete")
+    assert page.health_action.shortcut() == QKeySequence("Ctrl+Shift+D")
+    assert page.sync_action.shortcut() == QKeySequence("Ctrl+Shift+R")
     page.table.selectRow(0)
     application.processEvents()
     assert page.details_title.text() == "Split view"
@@ -192,10 +201,14 @@ def test_schedule_uses_half_hour_rows_and_duration_spans(
     application.processEvents()
 
     assert page.grid.rowCount() == 32
+    assert page.grid.verticalHeaderItem(0).text() == "08:00"
+    assert page.grid.verticalHeaderItem(31).text() == "23:30"
     row = page._row_for_time(16, 30)
     assert page.grid.verticalHeaderItem(row).text() == "16:30"
     assert page.grid.rowSpan(row, 0) == 3
-    assert page.cell_lessons[(row + 2, 0)].student_id == "student"
+    lesson_id = page.cell_lessons[(row, 0)].id
+    assert page.cell_lessons[(row + 1, 0)].id == lesson_id
+    assert page.cell_lessons[(row + 2, 0)].id == lesson_id
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
     page.close()
