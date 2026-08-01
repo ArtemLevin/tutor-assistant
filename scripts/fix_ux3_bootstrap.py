@@ -3,6 +3,20 @@ from pathlib import Path
 path = Path(__file__).with_name("apply_ux3_crm_materials.py")
 content = path.read_text(encoding="utf-8")
 
+regex_old = '''    updated, count = re.subn(pattern, replacement, content, count=1, flags=re.S)
+'''
+regex_new = '''    updated, count = re.subn(
+        pattern,
+        lambda _match: replacement,
+        content,
+        count=1,
+        flags=re.S,
+    )
+'''
+if content.count(regex_old) != 1:
+    raise RuntimeError("UX-3 regex replacement helper was not found exactly once")
+content = content.replace(regex_old, regex_new, 1)
+
 refresh_old = '''replace_once(
     "src/tutor_assistant/ui/crm.py",
     \'\'\'    def refresh(self) -> None:
