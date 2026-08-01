@@ -61,6 +61,7 @@ from ..content_browser import (
 )
 from ..domain import JobStatus, Student
 from ..playback import PlaybackController, SegmentLoadResult, load_playback_segments
+from .accessibility import sync_text_status
 from .content_edit import (
     LessonMetadataEdit,
     MetadataEditDialog,
@@ -1418,6 +1419,7 @@ class StudentContentPage(QWidget):
         self._current_content = result
         lesson = result.lesson
         self.details_title.setText(lesson.topic or "Содержимое занятия")
+        sync_text_status(self.details_title, "Содержимое выбранного занятия")
         self.metadata["student"].setText(lesson.student.full_name)
         self.metadata["date"].setText(lesson.lesson_date.strftime("%d.%m.%Y"))
         self.metadata["subject"].setText(subject_label(lesson.subject))
@@ -1518,6 +1520,7 @@ class StudentContentPage(QWidget):
         self._current_content = None
         if hasattr(self, "details_title"):
             self.details_title.setText("Выберите занятие")
+            sync_text_status(self.details_title, "Содержимое выбранного занятия")
         for label in getattr(self, "metadata", {}).values():
             label.setText("—")
         if hasattr(self, "files_table"):

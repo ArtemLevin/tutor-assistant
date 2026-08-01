@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -45,8 +46,8 @@ QFrame#informationArchitectureShell {
 }
 
 QFrame#sideNavigation {
-    min-width: 214px;
-    max-width: 214px;
+    min-width: 272px;
+    max-width: 272px;
     background: #FFFFFF;
     border: 1px solid #E2E8F0;
     border-radius: 16px;
@@ -111,8 +112,13 @@ class SidebarNavigation(QFrame):
         super().__init__(parent)
         self.tabs = tabs
         self.setObjectName("informationArchitectureShell")
+        self.setAccessibleName("Боковая навигация рабочего пространства")
+        self.setAccessibleDescription(
+            "Используйте Tab, стрелки, Home, End и Enter для выбора раздела"
+        )
         self.buttons: dict[int, QPushButton] = {}
         self.quick_button: QPushButton | None = None
+        self._button_order: list[QPushButton] = []
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -140,13 +146,19 @@ class SidebarNavigation(QFrame):
             button.setAccessibleName(entry.accessible_name)
             button.setProperty("active", False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self._button_order.append(button)
             if entry.page_index is None:
                 self.quick_button = button
-                button.clicked.connect(self.quick_requested.emit)
+                button.clicked.connect(
+                    lambda _checked=False, source=button: self._activate_quick(source)
+                )
             else:
                 self.buttons[entry.page_index] = button
                 button.clicked.connect(
-                    lambda _checked=False, index=entry.page_index: self.tabs.setCurrentIndex(index)
+                    lambda _checked=False, index=entry.page_index, source=button: (
+                        self._activate_page(index, source)
+                    )
                 )
             sidebar_layout.addWidget(button)
 
@@ -158,6 +170,58 @@ class SidebarNavigation(QFrame):
         self.tabs.currentChanged.connect(self._sync_active)
         self._sync_active(self.tabs.currentIndex())
         _install_stylesheet()
+
+    def _activate_quick(self, source: QPushButton) -> None:
+        self.quick_requested.emit()
+        if source.hasFocus():
+            QTimer.singleShot(0, source.setFocus)
+
+    def _activate_page(self, index: int, source: QPushButton) -> None:
+        self.tabs.setCurrentIndex(index)
+        if source.hasFocus():
+            QTimer.singleShot(0, self._focus_current_page)
+
+    def _focus_current_page(self) -> None:
+        page = self.tabs.currentWidget()
+        if page is None:
+            return
+        for candidate in page.findChildren(QWidget):
+            if (
+                candidate.isVisibleTo(page)
+                and candidate.isEnabled()
+                and candidate.focusPolicy() != Qt.FocusPolicy.NoFocus
+            ):
+                candidate.setFocus(Qt.FocusReason.TabFocusReason)
+                return
+        page.setFocus(Qt.FocusReason.TabFocusReason)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        focused = QApplication.focusWidget()
+        if focused not in self._button_order:
+            super().keyPressEvent(event)
+            return
+        current = self._button_order.index(focused)
+        key = event.key()
+        if key in {Qt.Key.Key_Down, Qt.Key.Key_Right}:
+            target = self._button_order[(current + 1) % len(self._button_order)]
+        elif key in {Qt.Key.Key_Up, Qt.Key.Key_Left}:
+            target = self._button_order[(current - 1) % len(self._button_order)]
+        elif key == Qt.Key.Key_Home:
+            target = self._button_order[0]
+        elif key == Qt.Key.Key_End:
+            target = self._button_order[-1]
+        elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space}:
+            focused.click()
+            event.accept()
+            return
+        else:
+            super().keyPressEvent(event)
+            return
+        target.setFocus(Qt.FocusReason.TabFocusReason)
+        event.accept()
+
+    def ordered_buttons(self) -> tuple[QPushButton, ...]:
+        return tuple(self._button_order)
 
     def _sync_active(self, current_index: int) -> None:
         for index, button in self.buttons.items():

@@ -78,6 +78,7 @@ from ..security.credentials import (
 )
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
+from .accessibility import sync_text_status
 from .crm import SchedulePage, StudentsPage
 from .localization import select_subject, set_subject_combo, subject_value
 from .normalization import NormalizationReviewDialog
@@ -361,6 +362,9 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, message: str, tone: str = "success") -> None:
         set_status(self.app_status, message, tone)
+        sync_text_status(self.app_status, "Состояние приложения")
+        self.statusBar().setAccessibleName("Строка состояния приложения")
+        self.statusBar().setAccessibleDescription(message)
         self.statusBar().showMessage(message)
         if hasattr(self, "header_title"):
             self.header_title.setToolTip(message)
@@ -932,6 +936,8 @@ class MainWindow(QMainWindow):
             readiness_text = f"Требуется действие · {blocker}"
         self.quick_readiness_text.setText(readiness_text)
         self.quick_readiness_text.setProperty("tone", "ready" if readiness.ready else "blocked")
+        sync_text_status(self.quick_readiness_text, "Готовность быстрого урока")
+        self.quick_readiness_button.setAccessibleDescription(readiness_text)
         lines = [f"{'✓' if item.ready else '!'} {item.label}: {item.detail}" for item in readiness.items]
         lines.append("")
         lines.append("Нажмите, чтобы открыть подробную проверку")
