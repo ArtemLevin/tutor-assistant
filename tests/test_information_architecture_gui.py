@@ -42,9 +42,9 @@ def test_sidebar_groups_pages_and_keeps_tab_indices() -> None:
     navigation = SidebarNavigation(tabs)
 
     assert tabs.tabBar().isHidden()
-    assert navigation.button_for_page(0).text() == "Подготовка занятия"
-    assert navigation.button_for_page(5).text() == "Ученики"
-    assert navigation.button_for_page(3).text() == "PDF и LaTeX"
+    assert navigation.button_for_page(0).text().endswith("Подготовка занятия")
+    assert navigation.button_for_page(5).text().endswith("Ученики")
+    assert navigation.button_for_page(3).text().endswith("PDF и LaTeX")
 
     navigation.button_for_page(6).click()
 
@@ -73,6 +73,7 @@ def test_production_window_builds_publication_policy_directly() -> None:
     source = inspect.getsource(MainWindow)
 
     assert "install_information_architecture" in source
+    assert "install_teacher_cockpit" in source
     assert "Опубликуйте транскрипт" in source
     assert "Опубликовать transcript.txt в main" in source
     assert "findChildren(QLabel)" not in source
