@@ -375,7 +375,16 @@ class MainWindow(QMainWindow):
 
     def _set_mode(self, mode: str) -> None:
         quick = mode == "quick"
-        self.content_stack.setCurrentIndex(0 if quick else 1)
+        target = (
+            self.quick_page
+            if quick
+            else getattr(self, "navigation_shell", self.tabs)
+        )
+        target_index = self.content_stack.indexOf(target)
+        if target_index >= 0:
+            self.content_stack.setCurrentWidget(target)
+        else:
+            self.content_stack.setCurrentIndex(0 if quick else 1)
         self.support_button.setVisible(not quick)
         self.logs_button.setVisible(not quick)
         self.app_status.setVisible(not quick)
