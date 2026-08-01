@@ -1,0 +1,132 @@
+name: UX6 keyboard fix
+
+on:
+  push:
+    branches:
+      - feature/ux6-teacher-cockpit
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/ux6-teacher-cockpit
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch deterministic sidebar keyboard navigation
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path('src/tutor_assistant/ui/information_architecture.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'from PySide6.QtCore import Qt, QTimer, Signal',
+              'from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal',
+          )
+          text = text.replace(
+              '            button.setToolTip(f"{definition.title} · {definition.shortcut}")\n'
+              '            self._button_order.append(button)',
+              '            button.setToolTip(f"{definition.title} · {definition.shortcut}")\n'
+              '            button.installEventFilter(self)\n'
+              '            self._button_order.append(button)',
+          )
+          old = '''    def keyPressEvent(self, event: QKeyEvent) -> None:
+        focused = QApplication.focusWidget()
+        if focused not in self._button_order:
+            super().keyPressEvent(event)
+            return
+        current = self._button_order.index(focused)
+        enabled_buttons = [button for button in self._button_order if button.isEnabled()]
+        if not enabled_buttons:
+            super().keyPressEvent(event)
+            return
+        enabled_current = enabled_buttons.index(focused) if focused in enabled_buttons else 0
+        key = event.key()
+        if key in {Qt.Key.Key_Down, Qt.Key.Key_Right}:
+            target = enabled_buttons[(enabled_current + 1) % len(enabled_buttons)]
+        elif key in {Qt.Key.Key_Up, Qt.Key.Key_Left}:
+            target = enabled_buttons[(enabled_current - 1) % len(enabled_buttons)]
+        elif key == Qt.Key.Key_Home:
+            target = enabled_buttons[0]
+        elif key == Qt.Key.Key_End:
+            target = enabled_buttons[-1]
+        elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space}:
+            focused.click()
+            event.accept()
+            return
+        else:
+            super().keyPressEvent(event)
+            return
+        del current
+        target.setFocus(Qt.FocusReason.TabFocusReason)
+        event.accept()
+'''
+          new = '''    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched in self._button_order
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(watched, QPushButton)
+            and isinstance(event, QKeyEvent)
+        ):
+            if self._handle_navigation_key(watched, event):
+                return True
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        focused = QApplication.focusWidget()
+        if isinstance(focused, QPushButton) and focused in self._button_order:
+            if self._handle_navigation_key(focused, event):
+                return
+        super().keyPressEvent(event)
+
+    def _handle_navigation_key(self, focused: QPushButton, event: QKeyEvent) -> bool:
+        enabled_buttons = [button for button in self._button_order if button.isEnabled()]
+        if focused not in enabled_buttons:
+            return False
+        current = enabled_buttons.index(focused)
+        key = event.key()
+        if key in {Qt.Key.Key_Down, Qt.Key.Key_Right}:
+            target = enabled_buttons[(current + 1) % len(enabled_buttons)]
+        elif key in {Qt.Key.Key_Up, Qt.Key.Key_Left}:
+            target = enabled_buttons[(current - 1) % len(enabled_buttons)]
+        elif key == Qt.Key.Key_Home:
+            target = enabled_buttons[0]
+        elif key == Qt.Key.Key_End:
+            target = enabled_buttons[-1]
+        elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space}:
+            focused.click()
+            event.accept()
+            return True
+        else:
+            return False
+        target.setFocus(Qt.FocusReason.TabFocusReason)
+        event.accept()
+        return True
+'''
+          if old not in text:
+              raise SystemExit('keyboard block not found')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          '@ | python
+      - run: python -m pip install uv
+      - run: uv sync --extra desktop --group dev
+      - run: uv run ruff check src/tutor_assistant/ui/information_architecture.py --fix
+      - run: uv run ruff format src/tutor_assistant/ui/information_architecture.py
+      - run: uv run pytest -q tests/test_ux4_accessibility_gui.py tests/test_ux4_scaling_gui.py tests/test_ux6_teacher_cockpit_gui.py tests/test_information_architecture_gui.py
+      - name: Commit fix
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/tutor_assistant/ui/information_architecture.py
+          git commit -m "fix(ui): handle sidebar keys at button event level"
+          git push origin HEAD:feature/ux6-teacher-cockpit
