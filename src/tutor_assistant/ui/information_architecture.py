@@ -113,9 +113,7 @@ class SidebarNavigation(QFrame):
         self.tabs = tabs
         self.setObjectName("informationArchitectureShell")
         self.setAccessibleName("Боковая навигация рабочего пространства")
-        self.setAccessibleDescription(
-            "Используйте Tab, стрелки, Home, End и Enter для выбора раздела"
-        )
+        self.setAccessibleDescription("Используйте Tab, стрелки, Home, End и Enter для выбора раздела")
         self.buttons: dict[int, QPushButton] = {}
         self.quick_button: QPushButton | None = None
         self._button_order: list[QPushButton] = []
@@ -150,14 +148,12 @@ class SidebarNavigation(QFrame):
             self._button_order.append(button)
             if entry.page_index is None:
                 self.quick_button = button
-                button.clicked.connect(
-                    lambda _checked=False, source=button: self._activate_quick(source)
-                )
+                button.clicked.connect(lambda _checked=False, source=button: self._activate_quick(source))
             else:
                 self.buttons[entry.page_index] = button
                 button.clicked.connect(
-                    lambda _checked=False, index=entry.page_index, source=button: (
-                        self._activate_page(index, source)
+                    lambda _checked=False, index=entry.page_index, source=button: self._activate_page(
+                        index, source
                     )
                 )
             sidebar_layout.addWidget(button)
@@ -171,13 +167,17 @@ class SidebarNavigation(QFrame):
         self._sync_active(self.tabs.currentIndex())
         _install_stylesheet()
 
-    def _activate_quick(self, source: QPushButton) -> None:
+    def _activate_quick(self, _source: QPushButton) -> None:
         self.quick_requested.emit()
-        if source.hasFocus():
-            QTimer.singleShot(0, source.setFocus)
 
     def _activate_page(self, index: int, source: QPushButton) -> None:
+        if not 0 <= index < self.tabs.count():
+            return
+        self.tabs.setVisible(True)
         self.tabs.setCurrentIndex(index)
+        current_page = self.tabs.currentWidget()
+        if current_page is not None:
+            current_page.setVisible(True)
         if source.hasFocus():
             QTimer.singleShot(0, self._focus_current_page)
 
@@ -223,6 +223,12 @@ class SidebarNavigation(QFrame):
     def ordered_buttons(self) -> tuple[QPushButton, ...]:
         return tuple(self._button_order)
 
+    def focus_current_button(self) -> None:
+        button = self.buttons.get(self.tabs.currentIndex())
+        if button is None or not button.isEnabled():
+            return
+        button.setFocus(Qt.FocusReason.TabFocusReason)
+
     def _sync_active(self, current_index: int) -> None:
         for index, button in self.buttons.items():
             button.setProperty("active", index == current_index)
@@ -236,10 +242,34 @@ def install_information_architecture(window) -> SidebarNavigation:
     tabs = window.tabs
     stack = window.content_stack
     was_detailed = stack.currentWidget() is tabs
-    navigation = SidebarNavigation(tabs)
-    navigation.quick_requested.connect(lambda: window._set_mode("quick"))
+
+    # QStackedWidget explicitly hides inactive pages. Remove the tab widget first,
+    # then reparent it into the navigation shell and restore its own visibility.
     stack.removeWidget(tabs)
+    navigation = SidebarNavigation(tabs)
     stack.insertWidget(1, navigation)
+    tabs.setVisible(True)
+    tabs.setEnabled(True)
+
+    def open_quick_mode() -> None:
+        window._set_mode("quick")
+        target = getattr(window, "quick_student", None)
+        if isinstance(target, QWidget):
+            QTimer.singleShot(
+                0,
+                lambda: target.setFocus(Qt.FocusReason.TabFocusReason),
+            )
+
+    navigation.quick_requested.connect(open_quick_mode)
+    detailed_button = getattr(window, "detailed_mode_button", None)
+    if isinstance(detailed_button, QPushButton):
+        detailed_button.clicked.connect(
+            lambda _checked=False: QTimer.singleShot(
+                0,
+                navigation.focus_current_button,
+            )
+        )
+
     if was_detailed:
         stack.setCurrentWidget(navigation)
     return navigation
