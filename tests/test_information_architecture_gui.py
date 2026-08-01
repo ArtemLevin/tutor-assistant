@@ -39,6 +39,22 @@ def test_sidebar_groups_pages_and_keeps_tab_indices() -> None:
     assert navigation.button_for_page(0).property("active") is False
 
 
+def test_sidebar_emits_quick_lesson_request() -> None:
+    _application()
+    tabs = QTabWidget()
+    for index in range(8):
+        tabs.addTab(QWidget(), f"Page {index}")
+    navigation = SidebarNavigation(tabs)
+    requests: list[bool] = []
+    navigation.quick_requested.connect(lambda: requests.append(True))
+
+    assert navigation.quick_button is not None
+    navigation.quick_button.click()
+
+    assert requests == [True]
+    assert tabs.currentIndex() == 0
+
+
 def test_production_window_builds_publication_policy_directly() -> None:
     source = inspect.getsource(MainWindow)
 
