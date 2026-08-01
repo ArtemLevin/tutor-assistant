@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (
 from .app_routes import AppRoute, route_definition
 from .localization import subject_label
 from .teacher_cockpit_data import (
+    STATUS_TITLES,
     CockpitSnapshot,
     PipelineStage,
-    STATUS_TITLES,
     format_dashboard_timestamp,
 )
 from .theme import refresh_style, set_button_kind
