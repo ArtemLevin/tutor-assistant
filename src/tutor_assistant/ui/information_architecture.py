@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -222,6 +222,9 @@ class SidebarNavigation(QFrame):
         self._sync_active(self.tabs.currentIndex())
         self._refresh_button_texts()
         _install_stylesheet()
+        application = QApplication.instance()
+        if isinstance(application, QApplication):
+            application.installEventFilter(self)
 
     def _activate_route(self, route: AppRoute, source: QPushButton) -> None:
         if route == AppRoute.QUICK_LESSON:
@@ -280,6 +283,18 @@ class SidebarNavigation(QFrame):
                 candidate.setFocus(Qt.FocusReason.TabFocusReason)
                 return
         page.setFocus(Qt.FocusReason.TabFocusReason)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.KeyPress:
+            focused = QApplication.focusWidget()
+            if (
+                isinstance(focused, QPushButton)
+                and focused in self._button_order
+                and self._handle_navigation_key(focused, event.key())
+            ):
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         focused = QApplication.focusWidget()
