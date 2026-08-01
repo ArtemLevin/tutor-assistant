@@ -86,6 +86,10 @@ def install_library_transcription_control(page) -> QPushButton:
         )
 
     page.files_table.itemSelectionChanged.connect(sync)
-    page.details_dialog.finished.connect(lambda _result: sync())
+    content_changed = getattr(page, "content_changed", None)
+    if content_changed is not None:
+        content_changed.connect(sync)
+    elif hasattr(page, "details_dialog"):
+        page.details_dialog.finished.connect(lambda _result: sync())
     button.clicked.connect(request)
     return button

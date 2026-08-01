@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -48,7 +49,7 @@ from .localization import (
     subject_list_text,
     subject_value,
 )
-from .theme import set_button_kind
+from .theme import refresh_style, set_button_kind
 
 WEEKDAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 
@@ -124,6 +125,9 @@ class StudentsPage(QWidget):
         self.store = store
         self.guardians: list[Guardian] = []
         self.current_id: str | None = None
+        self._dirty = False
+        self._loading_form = False
+        self._restoring_selection = False
         self._build()
         self.refresh()
 
@@ -171,12 +175,17 @@ class StudentsPage(QWidget):
         editor_layout = QVBoxLayout(editor)
         editor_layout.setContentsMargins(20, 18, 20, 18)
         editor_layout.setSpacing(12)
+        editor_header = QHBoxLayout()
         editor_title = QLabel("Карточка ученика")
         editor_title.setObjectName("tileTitle")
-        editor_layout.addWidget(editor_title)
+        editor_header.addWidget(editor_title, 1)
+        self.dirty_label = QLabel("Все изменения сохранены")
+        self.dirty_label.setObjectName("dirtyState")
+        self.dirty_label.setProperty("tone", "success")
+        self.dirty_label.setAccessibleName("Состояние сохранения карточки ученика")
+        editor_header.addWidget(self.dirty_label)
+        editor_layout.addLayout(editor_header)
 
-        form = QFormLayout()
-        form.setVerticalSpacing(9)
         self.student_id = QLineEdit()
         self.student_id.setPlaceholderText("student_slug")
         self.full_name = QLineEdit()
@@ -202,19 +211,40 @@ class StudentsPage(QWidget):
         self.rate.setSuffix(" ₽")
         self.active = QCheckBox("Активный ученик")
         self.active.setChecked(True)
-        form.addRow("ID", self.student_id)
-        form.addRow("ФИО", self.full_name)
-        form.addRow("Класс", self.grade)
-        form.addRow("Школа", self.school)
-        form.addRow("Экзамен", self.exam)
-        form.addRow("Цель", self.goal)
-        form.addRow("Целевой балл", self.target_score)
-        form.addRow("Предметы", self.subjects)
-        form.addRow("Часовой пояс", self.timezone)
-        form.addRow("Папка репозитория", self.repository_folder)
-        form.addRow("Ставка", self.rate)
-        form.addRow("", self.active)
-        editor_layout.addLayout(form)
+
+        regular_group = QGroupBox("Учебная карточка")
+        regular_group.setObjectName("crmRegularFields")
+        regular_form = QFormLayout(regular_group)
+        regular_form.setVerticalSpacing(9)
+        regular_form.addRow("ФИО", self.full_name)
+        regular_form.addRow("Класс", self.grade)
+        regular_form.addRow("Школа", self.school)
+        regular_form.addRow("Экзамен", self.exam)
+        regular_form.addRow("Цель", self.goal)
+        regular_form.addRow("Целевой балл", self.target_score)
+        regular_form.addRow("Предметы", self.subjects)
+        regular_form.addRow("Ставка", self.rate)
+        regular_form.addRow("", self.active)
+        editor_layout.addWidget(regular_group)
+
+        self.technical_toggle = set_button_kind(
+            QPushButton("Технические параметры ▸"),
+            "ghost",
+        )
+        self.technical_toggle.setCheckable(True)
+        self.technical_toggle.setAccessibleName("Показать технические параметры ученика")
+        self.technical_toggle.toggled.connect(self._toggle_technical_fields)
+        editor_layout.addWidget(self.technical_toggle)
+
+        self.technical_panel = QFrame()
+        self.technical_panel.setObjectName("crmTechnicalFields")
+        technical_form = QFormLayout(self.technical_panel)
+        technical_form.setVerticalSpacing(9)
+        technical_form.addRow("ID", self.student_id)
+        technical_form.addRow("Часовой пояс", self.timezone)
+        technical_form.addRow("Папка репозитория", self.repository_folder)
+        self.technical_panel.setVisible(False)
+        editor_layout.addWidget(self.technical_panel)
 
         guardian_header = QHBoxLayout()
         guardian_title = QLabel("Родители и представители")
@@ -259,15 +289,92 @@ class StudentsPage(QWidget):
         self.materials_button.clicked.connect(self._open_materials)
         actions.addWidget(self.materials_button)
         actions.addStretch(1)
-        save = set_button_kind(QPushButton("Сохранить карточку"), "primary")
-        save.clicked.connect(self._save)
-        actions.addWidget(save)
+        self.save_button = set_button_kind(QPushButton("Сохранить карточку"), "primary")
+        self.save_button.setEnabled(False)
+        self.save_button.clicked.connect(self._save)
+        actions.addWidget(self.save_button)
         editor_layout.addLayout(actions)
         editor_layout.addStretch(1)
         editor_scroll.setWidget(editor)
         splitter.addWidget(editor_scroll)
         splitter.setSizes([650, 500])
         layout.addWidget(splitter, 1)
+        self._connect_dirty_tracking()
+
+    def _connect_dirty_tracking(self) -> None:
+        for widget in (
+            self.student_id,
+            self.full_name,
+            self.school,
+            self.goal,
+            self.subjects,
+            self.timezone,
+            self.repository_folder,
+        ):
+            widget.textEdited.connect(self._mark_dirty)
+        self.grade.valueChanged.connect(self._mark_dirty)
+        self.exam.currentTextChanged.connect(self._mark_dirty)
+        self.target_score.valueChanged.connect(self._mark_dirty)
+        self.rate.valueChanged.connect(self._mark_dirty)
+        self.active.toggled.connect(self._mark_dirty)
+        self.notes.textChanged.connect(self._mark_dirty)
+
+    def _mark_dirty(self, *_args) -> None:
+        if not self._loading_form:
+            self._set_dirty(True)
+
+    def _set_dirty(self, dirty: bool) -> None:
+        self._dirty = dirty
+        self.dirty_label.setText(
+            "Есть несохранённые изменения" if dirty else "Все изменения сохранены"
+        )
+        self.dirty_label.setProperty("tone", "warning" if dirty else "success")
+        self.save_button.setEnabled(dirty)
+        refresh_style(self.dirty_label)
+
+    def _toggle_technical_fields(self, expanded: bool) -> None:
+        self.technical_panel.setVisible(expanded)
+        self.technical_toggle.setText(
+            "Технические параметры ▾" if expanded else "Технические параметры ▸"
+        )
+        self.technical_toggle.setAccessibleName(
+            "Скрыть технические параметры ученика"
+            if expanded
+            else "Показать технические параметры ученика"
+        )
+
+    def _confirm_card_transition(self) -> bool:
+        if not self._dirty:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Несохранённые изменения",
+            "Карточка ученика изменена. Сохранить изменения перед переходом?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if answer == QMessageBox.Save:
+            return self._save()
+        if answer == QMessageBox.Discard:
+            self._set_dirty(False)
+            return True
+        return False
+
+    def _restore_current_selection(self) -> None:
+        self._restoring_selection = True
+        self.table.blockSignals(True)
+        try:
+            if self.current_id is None:
+                self.table.clearSelection()
+                return
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item and item.data(Qt.UserRole) == self.current_id:
+                    self.table.selectRow(row)
+                    return
+        finally:
+            self.table.blockSignals(False)
+            self._restoring_selection = False
 
     def refresh(self) -> None:
         query = self.search.text().strip().casefold() if hasattr(self, "search") else ""
@@ -307,7 +414,10 @@ class StudentsPage(QWidget):
                     self.table.selectRow(row)
                     break
 
-    def new_student(self) -> None:
+    def new_student(self, _checked: bool = False, *, force: bool = False) -> None:
+        if not force and not self._confirm_card_transition():
+            return
+        self._loading_form = True
         self.current_id = None
         self.materials_button.setEnabled(False)
         self.student_id.setEnabled(True)
@@ -330,16 +440,26 @@ class StudentsPage(QWidget):
         self.notes.clear()
         self.guardians = []
         self._render_guardians()
+        self._loading_form = False
+        self._set_dirty(False)
         self.full_name.setFocus()
 
     def _load_selected(self) -> None:
+        if self._restoring_selection:
+            return
         items = self.table.selectedItems()
         if not items:
             return
         student_id = str(items[0].data(Qt.UserRole))
+        if student_id == self.current_id:
+            return
+        if not self._confirm_card_transition():
+            self._restore_current_selection()
+            return
         profile = self.store.get_student(student_id)
         if profile is None:
             return
+        self._loading_form = True
         self.current_id = profile.id
         self.materials_button.setEnabled(True)
         self.student_id.setText(profile.id)
@@ -358,6 +478,8 @@ class StudentsPage(QWidget):
         self.notes.setPlainText(profile.notes)
         self.guardians = self.store.list_guardians(profile.id)
         self._render_guardians()
+        self._loading_form = False
+        self._set_dirty(False)
 
     def _render_guardians(self) -> None:
         self.guardian_table.setRowCount(len(self.guardians))
@@ -382,6 +504,7 @@ class StudentsPage(QWidget):
                 self.guardians = [item.model_copy(update={"is_primary": False}) for item in self.guardians]
             self.guardians.append(dialog.value())
             self._render_guardians()
+            self._set_dirty(True)
 
     def _edit_guardian(self) -> None:
         row = self.guardian_table.currentRow()
@@ -394,19 +517,21 @@ class StudentsPage(QWidget):
                 self.guardians = [item.model_copy(update={"is_primary": False}) for item in self.guardians]
             self.guardians[row] = updated
             self._render_guardians()
+            self._set_dirty(True)
 
     def _remove_guardian(self) -> None:
         row = self.guardian_table.currentRow()
         if row >= 0:
             self.guardians.pop(row)
             self._render_guardians()
+            self._set_dirty(True)
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
         name = self.full_name.text().strip()
         student_id = self.student_id.text().strip() or _slugify(name)
         if not name or not student_id:
             QMessageBox.warning(self, "Карточка", "Укажите ФИО и ID ученика")
-            return
+            return False
         try:
             profile = StudentProfile(
                 id=student_id,
@@ -426,20 +551,24 @@ class StudentsPage(QWidget):
             self.store.save_student(profile, self.guardians)
         except Exception as exc:
             QMessageBox.critical(self, "Карточка", str(exc))
-            return
+            return False
         self.current_id = student_id
         self.materials_button.setEnabled(True)
         self.student_id.setEnabled(False)
+        self._set_dirty(False)
         self.refresh()
         self.changed.emit()
+        return True
 
     def _archive(self) -> None:
         if not self.current_id:
             return
+        if not self._confirm_card_transition():
+            return
         if QMessageBox.question(self, "Архив", "Переместить ученика в архив?") == QMessageBox.Yes:
             self.store.archive_student(self.current_id)
             self.current_id = None
-            self.new_student()
+            self.new_student(force=True)
             self.refresh()
             self.changed.emit()
 
@@ -454,6 +583,7 @@ class ScheduleDialog(QDialog):
         store: CrmStore,
         selected_date: date,
         selected_hour: int = 16,
+        selected_minute: int = 0,
         lesson: ScheduledLesson | None = None,
         parent=None,
     ) -> None:
@@ -474,7 +604,10 @@ class ScheduleDialog(QDialog):
         self.lesson_date = QDateEdit()
         self.lesson_date.setCalendarPopup(True)
         self.lesson_date.setDate(QDate(selected_date.year, selected_date.month, selected_date.day))
-        self.start_time = QTimeEdit(QTime(selected_hour, 0))
+        self.start_time = QTimeEdit(QTime(selected_hour, selected_minute))
+        self.start_time.setDisplayFormat("HH:mm")
+        self.start_time.setTimeRange(QTime(0, 0), QTime(23, 30))
+        self.start_time.editingFinished.connect(self._snap_start_time)
         self.duration = QComboBox()
         for minutes in (60, 90, 120):
             self.duration.addItem(f"{minutes} минут", minutes)
@@ -533,6 +666,12 @@ class ScheduleDialog(QDialog):
         if not lesson:
             self._student_changed()
 
+    def _snap_start_time(self) -> None:
+        clock = self.start_time.time()
+        total = clock.hour() * 60 + clock.minute()
+        rounded = min(23 * 60 + 30, ((total + 15) // 30) * 30)
+        self.start_time.setTime(QTime(rounded // 60, rounded % 60))
+
     def _student_changed(self) -> None:
         profile = self.store.get_student(str(self.student.currentData()))
         if profile:
@@ -576,6 +715,7 @@ class SchedulePage(QWidget):
 
     first_hour = 8
     last_hour = 23
+    slot_minutes = 30
 
     def __init__(self, store: CrmStore, parent=None) -> None:
         super().__init__(parent)
@@ -611,7 +751,7 @@ class SchedulePage(QWidget):
         next_button.clicked.connect(lambda: self._shift_week(7))
         header.addWidget(next_button)
         add = set_button_kind(QPushButton("Добавить занятие"), "primary")
-        add.clicked.connect(lambda: self._open_dialog(self.week_start, 16))
+        add.clicked.connect(lambda: self._open_dialog(self.week_start, 16, 0))
         header.addWidget(add)
         self.open_selected_button = set_button_kind(
             QPushButton("Открыть выбранное"),
@@ -632,7 +772,7 @@ class SchedulePage(QWidget):
         stats.addStretch(1)
         layout.addLayout(stats)
 
-        self.grid = QTableWidget(self.last_hour - self.first_hour + 1, 7)
+        self.grid = QTableWidget(self._row_count(), 7)
         self.grid.setObjectName("scheduleGrid")
         self.grid.verticalHeader().setVisible(True)
         self.grid.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -641,16 +781,32 @@ class SchedulePage(QWidget):
         self.grid.setShowGrid(False)
         self.grid.currentCellChanged.connect(self._sync_schedule_action)
         self.grid.cellDoubleClicked.connect(self._cell_opened)
-        for row, hour in enumerate(range(self.first_hour, self.last_hour + 1)):
-            self.grid.setVerticalHeaderItem(row, QTableWidgetItem(f"{hour:02d}:00"))
-            self.grid.setRowHeight(row, 58)
+        for row in range(self._row_count()):
+            hour, minute = self._time_for_row(row)
+            self.grid.setVerticalHeaderItem(row, QTableWidgetItem(f"{hour:02d}:{minute:02d}"))
+            self.grid.setRowHeight(row, 34)
         layout.addWidget(self.grid, 1)
+
+    @classmethod
+    def _row_count(cls) -> int:
+        return ((cls.last_hour - cls.first_hour + 1) * 60) // cls.slot_minutes
+
+    @classmethod
+    def _row_for_time(cls, hour: int, minute: int) -> int:
+        offset = hour * 60 + minute - cls.first_hour * 60
+        return max(0, int(round(offset / cls.slot_minutes)))
+
+    @classmethod
+    def _time_for_row(cls, row: int) -> tuple[int, int]:
+        total = cls.first_hour * 60 + row * cls.slot_minutes
+        return divmod(total, 60)
 
     def refresh(self) -> None:
         end = self.week_start + timedelta(days=6)
         self.week_label.setText(
             f"{self.week_start:%d.%m.%Y} — {end:%d.%m.%Y} · выберите ячейку для действия"
         )
+        self.grid.clearSpans()
         self.grid.clearContents()
         self.cell_lessons.clear()
         today = date.today()
@@ -668,23 +824,37 @@ class SchedulePage(QWidget):
             "completed": QColor("#E8F7F0"),
             "cancelled": QColor("#F2F4F7"),
         }
+        status_names = {
+            "planned": "Запланировано",
+            "in_progress": "Идёт занятие",
+            "completed": "Завершено",
+            "cancelled": "Отменено",
+        }
         for lesson in self.store.lessons_for_week(self.week_start):
-            row = lesson.starts_at.hour - self.first_hour
+            row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
             column = lesson.starts_at.weekday()
             if not (0 <= row < self.grid.rowCount()):
                 continue
+            row_span = max(1, (lesson.duration_minutes + self.slot_minutes - 1) // self.slot_minutes)
+            row_span = min(row_span, self.grid.rowCount() - row)
             item = QTableWidgetItem(
-                f"{lesson.starts_at:%H:%M}  {lesson.student_name}\n{subject_label(lesson.subject)}"
+                f"{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}  {lesson.student_name}\n"
+                f"{subject_label(lesson.subject)}"
                 + (f" · {lesson.topic}" if lesson.topic else "")
+                + f"\n{status_names.get(lesson.status, lesson.status)}"
             )
+            item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
             item.setToolTip(
                 f"{lesson.student_name}\n{lesson.starts_at:%d.%m %H:%M}"
                 f"–{lesson.ends_at:%H:%M}\n{lesson.topic or lesson.subject}\n"
-                "Выберите ячейку и нажмите «Открыть выбранное»"
+                "Выберите занятие и нажмите «Открыть занятие»"
             )
             item.setBackground(colors.get(lesson.status, QColor("#FFFFFF")))
             self.grid.setItem(row, column, item)
-            self.cell_lessons[(row, column)] = lesson
+            if row_span > 1:
+                self.grid.setSpan(row, column, row_span, 1)
+            for occupied_row in range(row, row + row_span):
+                self.cell_lessons[(occupied_row, column)] = lesson
         stats = self.store.stats(self.week_start)
         self.students_stat.setText(f"Ученики · {stats.active_students}")
         self.lessons_stat.setText(f"Занятия · {stats.lessons_this_week}")
@@ -719,12 +889,29 @@ class SchedulePage(QWidget):
 
     def _cell_opened(self, row: int, column: int) -> None:
         selected_date = self.week_start + timedelta(days=column)
-        self._open_dialog(selected_date, self.first_hour + row, self.cell_lessons.get((row, column)))
+        selected_hour, selected_minute = self._time_for_row(row)
+        self._open_dialog(
+            selected_date,
+            selected_hour,
+            selected_minute,
+            self.cell_lessons.get((row, column)),
+        )
 
     def _open_dialog(
-        self, selected_date: date, selected_hour: int, lesson: ScheduledLesson | None = None
+        self,
+        selected_date: date,
+        selected_hour: int,
+        selected_minute: int = 0,
+        lesson: ScheduledLesson | None = None,
     ) -> None:
-        dialog = ScheduleDialog(self.store, selected_date, selected_hour, lesson, self)
+        dialog = ScheduleDialog(
+            self.store,
+            selected_date,
+            selected_hour,
+            selected_minute,
+            lesson,
+            self,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
         value = dialog.value()
