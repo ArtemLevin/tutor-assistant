@@ -28,12 +28,18 @@ jobs:
         run: python -m pip install uv
 
       - name: Apply reviewed UI fixes
-        run: python scripts/apply_ui_review_patch.py
+        shell: pwsh
+        run: |
+          python scripts/apply_ui_review_patch.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/apply_ui_review_followup.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Remove bootstrap infrastructure
         shell: pwsh
         run: |
           Remove-Item scripts/apply_ui_review_patch.py
+          Remove-Item scripts/apply_ui_review_followup.py
           git checkout origin/main -- .github/workflows/windows-content.yml
 
       - name: Synchronize lock file
