@@ -2,131 +2,112 @@ name: Windows student content
 
 on:
   pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  ux4-bootstrap:
-    if: github.event_name == 'pull_request' && github.head_ref == 'feature/ux4-accessibility'
+  content:
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: feature/ux4-accessibility
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install uv
         run: python -m pip install uv
 
-      - name: Correct UX-4 patch markers
-        shell: pwsh
-        run: |
-          $path = 'scripts/apply_ux4_patch.py'
-          $content = [System.IO.File]::ReadAllText($path)
-          $content = $content.Replace('subject_label, subject_value', 'subject_label')
-          $content = $content.Replace('Текущая версия: **0.21.0**.', 'Текущая версия: **0.19.0**.')
-          [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+      - name: Check lock file
+        run: uv lock --check
 
-      - name: Apply UX-4 implementation
-        run: python scripts/apply_ux4_patch.py
-
-      - name: Remove temporary code files
-        shell: pwsh
-        run: |
-          Remove-Item scripts/apply_ux4_patch.py
-          Remove-Item scripts/sitecustomize.py -ErrorAction SilentlyContinue
-          Remove-Item .github/workflows/windows-accessibility-scaling.yml
-
-      - name: Synchronize lock file
-        run: uv lock
-
-      - name: Install desktop and test dependencies
+      - name: Install test and desktop dependencies
         run: uv sync --extra desktop --group dev
 
-      - name: Normalize UX-4 sources
+      - name: Lint
         shell: pwsh
         run: |
-          @'
-          from pathlib import Path
-
-          def replace(path: str, old: str, new: str) -> None:
-              target = Path(path)
-              content = target.read_text(encoding="utf-8")
-              if content.count(old) != 1:
-                  raise RuntimeError(f"Expected one UX-4 marker in {path}: {old!r}")
-              target.write_text(content.replace(old, new, 1), encoding="utf-8", newline="\n")
-
-          replace(
-              "src/tutor_assistant/ui/accessibility.py",
-              "zip(ordered, ordered[1:])",
-              "zip(ordered, ordered[1:], strict=False)",
-          )
-          replace(
-              "src/tutor_assistant/ui/accessibility.py",
-              "        if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:\n            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)",
-              "        if isinstance(widget, QAbstractItemView):\n            widget.setTabKeyNavigation(False)\n        if isinstance(widget, QAbstractButton):\n            widget.setMinimumHeight(max(widget.minimumHeight(), 38))\n        if widget.focusPolicy() == Qt.FocusPolicy.NoFocus:\n            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)",
-          )
-          replace(
-              "src/tutor_assistant/ui/information_architecture.py",
-              "    min-width: 214px;\n    max-width: 214px;",
-              "    min-width: 272px;\n    max-width: 272px;",
-          )
-          replace(
-              "tests/test_ux4_accessibility_gui.py",
-              "    assert page.table.nextInFocusChain() is page.full_name",
-              "    page.table.setFocus()\n    QTest.keyClick(page.table, Qt.Key.Key_Tab)\n    application.processEvents()\n    assert QApplication.focusWidget() is page.full_name",
-          )
-          replace(
-              "tests/test_ux4_accessibility_gui.py",
-              "    assert page.grid.nextInFocusChain() is page.open_selected_button",
-              "    page.grid.setFocus()\n    QTest.keyClick(page.grid, Qt.Key.Key_Tab)\n    application.processEvents()\n    assert QApplication.focusWidget() is page.open_selected_button",
-          )
-          '@ | uv run python -
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run ruff format `
-            src/tutor_assistant/ui/accessibility.py `
-            tests/test_ux4_accessibility_gui.py `
-            tests/test_ux4_scaling_gui.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run ruff check `
-            src/tutor_assistant/ui/accessibility.py `
-            src/tutor_assistant/ui/student_content.py `
-            src/tutor_assistant/ui/information_architecture.py `
-            tests/test_ux4_accessibility_gui.py `
-            tests/test_ux4_scaling_gui.py `
-            --fix
+          uv run ruff check . --output-format=concise 2>&1 | Tee-Object ruff-report.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Lint
-        run: uv run ruff check .
+      - name: Upload Ruff report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-ruff-report
+          path: ruff-report.txt
+          if-no-files-found: ignore
 
       - name: Compile Python sources
         run: uv run python -m compileall -q src/tutor_assistant tests
 
-      - name: Focused UX-4 tests
-        run: uv run pytest -q tests/test_ux4_accessibility_gui.py tests/test_ux4_scaling_gui.py
+      - name: Privacy import smoke
+        run: >-
+          uv run python -c "from tutor_assistant.security import CloudConsentSession, credential_status, redact_text; assert redact_text('Authorization: Api-Key demo-secret-value') == 'Authorization: Api-Key [REDACTED]'; assert CloudConsentSession(); assert callable(credential_status)"
 
-      - name: Full test suite
-        run: uv run pytest -q
+      - name: Added secret scan
+        if: github.event_name == 'pull_request'
+        run: uv run python scripts/scan_added_secrets.py ${{ github.event.pull_request.base.sha }}
 
-      - name: Validate whitespace
-        shell: bash
-        run: git diff --check
-
-      - name: Commit validated implementation
+      - name: Filtering, checkpoint and privacy contracts
         shell: pwsh
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: implement UX-4 accessibility"
-          git push origin HEAD:feature/ux4-accessibility
+          uv run pytest -q --tb=short --junitxml=contract-report.xml `
+            tests/test_filtering_feature_contracts.py `
+            tests/test_subject_aware_filtering.py `
+            tests/test_subject_manifest_compatibility.py `
+            tests/test_normalization_provider_gui.py `
+            tests/test_normalization_checkpoint_migration.py `
+            tests/test_normalization_checkpoint_store.py `
+            tests/test_normalization_resume.py `
+            tests/test_normalization_progress_gui.py `
+            tests/test_transcript_workspace_gui.py `
+            tests/test_credential_store.py `
+            tests/test_cloud_consent.py `
+            tests/test_cloud_privacy_migration.py `
+            tests/test_cloud_request_envelope.py `
+            tests/test_sensitive_data_redaction.py `
+            tests/test_privacy_support_bundle.py `
+            tests/test_privacy_doctor.py `
+            tests/test_cloud_consent_cli.py `
+            tests/test_cloud_service_consent.py 2>&1 | Tee-Object contract-output.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload contract diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-contract-diagnostics
+          path: |
+            contract-report.xml
+            contract-output.txt
+          if-no-files-found: ignore
+
+      - name: Validate patch whitespace
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
+
+      - name: Full test suite
+        run: uv run pytest --junitxml=pytest-report.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-py${{ matrix.python-version }}-pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore
