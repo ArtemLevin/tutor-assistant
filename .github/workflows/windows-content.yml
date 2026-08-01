@@ -88,8 +88,8 @@ jobs:
           )
           replace(
               "src/tutor_assistant/ui/information_architecture.py",
-              "sidebar.setFixedWidth(214)",
-              "sidebar.setFixedWidth(272)",
+              "    min-width: 214px;\n    max-width: 214px;",
+              "    min-width: 272px;\n    max-width: 272px;",
           )
           replace(
               "tests/test_ux4_accessibility_gui.py",
