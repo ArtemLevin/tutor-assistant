@@ -62,17 +62,17 @@ jobs:
           $content = [System.IO.File]::ReadAllText($path)
           $content = $content.Replace('zip(ordered, ordered[1:])', 'zip(ordered, ordered[1:], strict=False)')
           [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+          uv run ruff format `
+            src/tutor_assistant/ui/accessibility.py `
+            tests/test_ux4_accessibility_gui.py `
+            tests/test_ux4_scaling_gui.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           uv run ruff check `
             src/tutor_assistant/ui/accessibility.py `
             src/tutor_assistant/ui/student_content.py `
             tests/test_ux4_accessibility_gui.py `
             tests/test_ux4_scaling_gui.py `
             --fix
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          uv run ruff format `
-            src/tutor_assistant/ui/accessibility.py `
-            tests/test_ux4_accessibility_gui.py `
-            tests/test_ux4_scaling_gui.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Lint
