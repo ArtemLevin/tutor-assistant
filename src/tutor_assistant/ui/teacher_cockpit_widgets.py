@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -300,6 +301,14 @@ class TeacherCockpitPage(QWidget):
             self.route_requested.emit(str(route))
 
     def set_snapshot(self, snapshot: CockpitSnapshot) -> None:
+        focused_pipeline_key = next(
+            (
+                key
+                for key, button in self.pipeline.buttons.items()
+                if QApplication.focusWidget() is button
+            ),
+            None,
+        )
         self.subtitle.setText(format_dashboard_timestamp(snapshot.created_at))
         if snapshot.next_lesson is None:
             self.hero_time.setText("Следующее занятие")
@@ -367,3 +376,7 @@ class TeacherCockpitPage(QWidget):
         if restore_row >= 0:
             self.attention_list.setCurrentRow(restore_row)
         self.attention_count.setText(str(len(snapshot.attention)))
+        if focused_pipeline_key in self.pipeline.buttons:
+            self.pipeline.buttons[focused_pipeline_key].setFocus(
+                Qt.FocusReason.OtherFocusReason
+            )
