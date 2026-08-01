@@ -220,6 +220,6 @@ class UISessionStore(QObject):
         self.settings.sync()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is self.window and event.type() == QEvent.Type.Close:
+        if watched is getattr(self, "window", None) and event.type() == QEvent.Type.Close:
             self.save_all()
         return super().eventFilter(watched, event)
