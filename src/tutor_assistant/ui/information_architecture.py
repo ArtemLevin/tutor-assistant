@@ -257,10 +257,9 @@ class SidebarNavigation(QFrame):
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         if (
-            watched in self._button_order
+            isinstance(watched, QPushButton)
+            and watched.objectName() == "sideNavigationButton"
             and event.type() == QEvent.Type.KeyPress
-            and isinstance(watched, QPushButton)
-            and isinstance(event, QKeyEvent)
             and self._handle_navigation_key(watched, event)
         ):
             return True
