@@ -206,9 +206,9 @@ def test_schedule_uses_half_hour_rows_and_duration_spans(
     row = page._row_for_time(16, 30)
     assert page.grid.verticalHeaderItem(row).text() == "16:30"
     assert page.grid.rowSpan(row, 0) == 3
-    lesson_id = page.cell_lessons[(row, 0)].id
-    assert page.cell_lessons[(row + 1, 0)].id == lesson_id
-    assert page.cell_lessons[(row + 2, 0)].id == lesson_id
+    lesson = page.cell_lessons[(row, 0)]
+    assert page.cell_lessons[(row + 1, 0)] is lesson
+    assert page.cell_lessons[(row + 2, 0)] is lesson
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
     page.close()
