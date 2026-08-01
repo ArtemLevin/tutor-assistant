@@ -375,7 +375,11 @@ class MainWindow(QMainWindow):
 
     def _set_mode(self, mode: str) -> None:
         quick = mode == "quick"
-        target = self.quick_page if quick else getattr(self, "navigation_shell", self.tabs)
+        target = (
+            self.quick_page
+            if quick
+            else getattr(self, "navigation_shell", self.tabs)
+        )
         target_index = self.content_stack.indexOf(target)
         if target_index >= 0:
             self.content_stack.setCurrentWidget(target)
@@ -998,7 +1002,9 @@ class MainWindow(QMainWindow):
         student_index = self.student.findData(self.quick_student.currentData())
         if student_index >= 0:
             self.student.setCurrentIndex(student_index)
-        selected_subject = subject_value(self.quick_subject.currentData() or self.quick_subject.currentText())
+        selected_subject = subject_value(
+            self.quick_subject.currentData() or self.quick_subject.currentText()
+        )
         select_subject(self.subject, selected_subject)
         self.topic.setText(self.quick_topic.text().strip())
         self.lesson_date.setDate(QDate.currentDate())
@@ -1254,11 +1260,19 @@ class MainWindow(QMainWindow):
         self.approve.clicked.connect(self.approve_transcript)
 
         workspace.settings_button.clicked.connect(self._show_normalization_settings)
-        workspace.primary_action_button.clicked.connect(self._handle_transcript_primary_action)
+        workspace.primary_action_button.clicked.connect(
+            self._handle_transcript_primary_action
+        )
         workspace.review_result_button.clicked.connect(self.open_normalization_result)
-        workspace.restart_action.triggered.connect(lambda: self.normalize_current_transcript(force=True))
-        workspace.open_artifact_action.triggered.connect(self._open_normalization_artifact)
-        workspace.show_warnings_action.triggered.connect(self.open_normalization_result)
+        workspace.restart_action.triggered.connect(
+            lambda: self.normalize_current_transcript(force=True)
+        )
+        workspace.open_artifact_action.triggered.connect(
+            self._open_normalization_artifact
+        )
+        workspace.show_warnings_action.triggered.connect(
+            self.open_normalization_result
+        )
         workspace.reject_action.triggered.connect(self.reject_normalization_result)
 
         compatibility = QWidget(page)
@@ -1271,15 +1285,21 @@ class MainWindow(QMainWindow):
         self.normalization_provider.setCurrentIndex(
             self.normalization_provider.findData(self.config.normalization.provider)
         )
-        self.normalization_provider.currentIndexChanged.connect(self._normalization_provider_changed)
+        self.normalization_provider.currentIndexChanged.connect(
+            self._normalization_provider_changed
+        )
 
         self.normalization_model = QComboBox(compatibility)
         self.normalization_model.setEditable(True)
 
         self.normalization_retry_requests = QSpinBox(compatibility)
         self.normalization_retry_requests.setRange(0, 3)
-        self.normalization_retry_requests.setValue(self.config.normalization.retry_requests)
-        self.normalization_retry_requests.valueChanged.connect(self._normalization_retry_requests_changed)
+        self.normalization_retry_requests.setValue(
+            self.config.normalization.retry_requests
+        )
+        self.normalization_retry_requests.valueChanged.connect(
+            self._normalization_retry_requests_changed
+        )
 
         self.normalization_provider_hint = QLabel(compatibility)
         self.save_yandex_key_button = QPushButton(compatibility)
@@ -1468,7 +1488,9 @@ class MainWindow(QMainWindow):
         preview_layout.addLayout(preview_actions)
         self.pdf_previews = QListWidget()
         self.pdf_previews.itemSelectionChanged.connect(self._sync_pdf_preview_action)
-        self.pdf_previews.itemDoubleClicked.connect(lambda _item: self._open_selected_pdf_preview())
+        self.pdf_previews.itemDoubleClicked.connect(
+            lambda _item: self._open_selected_pdf_preview()
+        )
         preview_layout.addWidget(self.pdf_previews)
         results.addWidget(preview_box, 2)
         layout.addLayout(results, 1)
@@ -2239,8 +2261,7 @@ class MainWindow(QMainWindow):
     def _normalization_preview(self, run):
         if (
             run is None
-            or run.status
-            not in {
+            or run.status not in {
                 NormalizationRunStatus.REVIEW_REQUIRED,
                 NormalizationRunStatus.APPROVED,
             }
@@ -2293,7 +2314,9 @@ class MainWindow(QMainWindow):
         )
 
     def _normalization_retry_requests_changed(self, value: int) -> None:
-        updated = self.config.normalization.model_copy(update={"retry_requests": value})
+        updated = self.config.normalization.model_copy(
+            update={"retry_requests": value}
+        )
         self._replace_normalization_config(updated)
         self._set_status(f"Повторных запросов LLM при ошибке: {value}")
 
@@ -2401,7 +2424,9 @@ class MainWindow(QMainWindow):
             return
         try:
             save_yandex_api_key(self.config.normalization, value)
-            updated = self.config.normalization.model_copy(update={"credential_source": "system_store"})
+            updated = self.config.normalization.model_copy(
+                update={"credential_source": "system_store"}
+            )
             self._replace_normalization_config(updated)
             self._sync_normalization_provider_ui()
             self._sync_normalization_controls()
@@ -2465,7 +2490,9 @@ class MainWindow(QMainWindow):
         if clicked is once_button:
             return self._cloud_consent_session.grant(request, CloudConsentScope.ONCE)
         if clicked is session_button:
-            updated = self.config.normalization.model_copy(update={"cloud_policy": "allow_for_session"})
+            updated = self.config.normalization.model_copy(
+                update={"cloud_policy": "allow_for_session"}
+            )
             self._replace_normalization_config(updated)
             return self._cloud_consent_session.grant(request, CloudConsentScope.SESSION)
         return None
@@ -2483,9 +2510,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "transcript_workspace"):
             return
         self._sync_transcript_workspace_context()
-        self.transcript_workspace.set_config_summary(self._normalization_settings_summary())
+        self.transcript_workspace.set_config_summary(
+            self._normalization_settings_summary()
+        )
 
-        run = self.normalization_service.runs.latest(self.lesson.lesson_id) if self.lesson else None
+        run = (
+            self.normalization_service.runs.latest(self.lesson.lesson_id)
+            if self.lesson
+            else None
+        )
         task_running = self._normalization_cancellation is not None
         provider_error = provider_configuration_error(self.config.normalization)
         can_start = bool(
@@ -2496,7 +2529,9 @@ class MainWindow(QMainWindow):
             and not provider_error
         )
         artifact_ready = bool(
-            run and run.artifact_path and (self.content_service.workspace / run.artifact_path).is_file()
+            run
+            and run.artifact_path
+            and (self.content_service.workspace / run.artifact_path).is_file()
         )
         preview = self._normalization_preview(run)
 
@@ -2589,8 +2624,12 @@ class MainWindow(QMainWindow):
                 enabled=True,
                 text="Проверить результат перед применением",
             )
-            review_candidates = preview.statistics.review_candidate_chunks if preview else 0
-            fallback_chunks = preview.statistics.source_fallback_chunks if preview else 0
+            review_candidates = (
+                preview.statistics.review_candidate_chunks if preview else 0
+            )
+            fallback_chunks = (
+                preview.statistics.source_fallback_chunks if preview else 0
+            )
             warnings = len(preview.quality.warnings) if preview else 0
             self.transcript_workspace.set_process_state(
                 "Фильтрация завершена · требуется проверка",
@@ -2599,7 +2638,11 @@ class MainWindow(QMainWindow):
                     f"fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
                     "Результат не будет применён без вашего подтверждения."
                 ),
-                tone=("warning" if review_candidates or fallback_chunks or warnings else "success"),
+                tone=(
+                    "warning"
+                    if review_candidates or fallback_chunks or warnings
+                    else "success"
+                ),
             )
             return
 
@@ -2731,7 +2774,9 @@ class MainWindow(QMainWindow):
             cloud_consent=cloud_consent,
         )
         worker.progress.connect(self._normalization_progress_updated)
-        worker.resume_confirmation_required.connect(self._normalization_resume_confirmation_required)
+        worker.resume_confirmation_required.connect(
+            self._normalization_resume_confirmation_required
+        )
         worker.succeeded.connect(
             lambda result, expected=lesson_id: self._normalization_ready(
                 result,
@@ -2744,7 +2789,10 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _pump_auto_normalization(self) -> None:
-        if self.config.normalization.provider == "yandex_ai_studio" and self._pending_auto_normalizations:
+        if (
+            self.config.normalization.provider == "yandex_ai_studio"
+            and self._pending_auto_normalizations
+        ):
             self._set_status(
                 "Облачная автофильтрация ожидает ручного согласия преподавателя",
                 "warning",
@@ -2771,7 +2819,9 @@ class MainWindow(QMainWindow):
             cancellation=token,
         )
         worker.progress.connect(self._normalization_progress_updated)
-        worker.resume_confirmation_required.connect(self._normalization_resume_confirmation_required)
+        worker.resume_confirmation_required.connect(
+            self._normalization_resume_confirmation_required
+        )
         worker.succeeded.connect(
             lambda result, expected=lesson_id: self._normalization_ready(
                 result,
@@ -2789,7 +2839,11 @@ class MainWindow(QMainWindow):
             if progress.current_chunk is not None and progress.total_chunks
             else "Подготовка блоков"
         )
-        attempt = f" · попытка {progress.current_attempt}" if progress.current_attempt is not None else ""
+        attempt = (
+            f" · попытка {progress.current_attempt}"
+            if progress.current_attempt is not None
+            else ""
+        )
         detail = (
             f"{current} · готово {progress.completed_chunks} · "
             f"восстановлено {progress.reused_chunks} · "
@@ -2865,7 +2919,11 @@ class MainWindow(QMainWindow):
                 f"Fallback-блоков: {fallback_chunks} · предупреждений: {warnings}. "
                 "Проверьте результат перед применением."
             ),
-            tone=("warning" if result.transcript.quality.requires_manual_attention else "success"),
+            tone=(
+                "warning"
+                if result.transcript.quality.requires_manual_attention
+                else "success"
+            ),
         )
         self._set_status(
             (

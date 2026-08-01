@@ -113,7 +113,9 @@ class SidebarNavigation(QFrame):
         self.tabs = tabs
         self.setObjectName("informationArchitectureShell")
         self.setAccessibleName("Боковая навигация рабочего пространства")
-        self.setAccessibleDescription("Используйте Tab, стрелки, Home, End и Enter для выбора раздела")
+        self.setAccessibleDescription(
+            "Используйте Tab, стрелки, Home, End и Enter для выбора раздела"
+        )
         self.buttons: dict[int, QPushButton] = {}
         self.quick_button: QPushButton | None = None
         self._button_order: list[QPushButton] = []
@@ -148,12 +150,14 @@ class SidebarNavigation(QFrame):
             self._button_order.append(button)
             if entry.page_index is None:
                 self.quick_button = button
-                button.clicked.connect(lambda _checked=False, source=button: self._activate_quick(source))
+                button.clicked.connect(
+                    lambda _checked=False, source=button: self._activate_quick(source)
+                )
             else:
                 self.buttons[entry.page_index] = button
                 button.clicked.connect(
-                    lambda _checked=False, index=entry.page_index, source=button: self._activate_page(
-                        index, source
+                    lambda _checked=False, index=entry.page_index, source=button: (
+                        self._activate_page(index, source)
                     )
                 )
             sidebar_layout.addWidget(button)
@@ -243,8 +247,8 @@ def install_information_architecture(window) -> SidebarNavigation:
     stack = window.content_stack
     was_detailed = stack.currentWidget() is tabs
 
-    # QStackedWidget explicitly hides inactive pages. Remove the tab widget first,
-    # then reparent it into the navigation shell and restore its own visibility.
+    # QStackedWidget hides inactive pages explicitly. Detach the tabs first,
+    # then reparent them into the navigation shell and restore visibility.
     stack.removeWidget(tabs)
     navigation = SidebarNavigation(tabs)
     stack.insertWidget(1, navigation)

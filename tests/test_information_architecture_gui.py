@@ -78,7 +78,6 @@ def test_production_window_builds_publication_policy_directly() -> None:
     assert "findChildren(QLabel)" not in source
     assert "label.text() ==" not in source
 
-
 class _NavigationWindowHarness:
     def __init__(self) -> None:
         self.quick_page = QWidget()
@@ -99,10 +98,16 @@ class _NavigationWindowHarness:
         self.content_stack.addWidget(self.quick_page)
         self.content_stack.addWidget(self.tabs)
         self.content_stack.setCurrentWidget(self.quick_page)
-        self.detailed_mode_button.clicked.connect(lambda _checked=False: self._set_mode("detailed"))
+        self.detailed_mode_button.clicked.connect(
+            lambda _checked=False: self._set_mode("detailed")
+        )
 
     def _set_mode(self, mode: str) -> None:
-        target = self.quick_page if mode == "quick" else getattr(self, "navigation_shell", self.tabs)
+        target = (
+            self.quick_page
+            if mode == "quick"
+            else getattr(self, "navigation_shell", self.tabs)
+        )
         self.content_stack.setCurrentWidget(target)
 
 
@@ -142,7 +147,9 @@ def test_workspace_and_quick_mode_restore_keyboard_focus() -> None:
     window.detailed_mode_button.setFocus()
     QTest.keyClick(window.detailed_mode_button, Qt.Key.Key_Space)
     application.processEvents()
-    active_button = window.navigation_shell.button_for_page(window.tabs.currentIndex())
+    active_button = window.navigation_shell.button_for_page(
+        window.tabs.currentIndex()
+    )
     assert active_button is not None
     assert QApplication.focusWidget() is active_button
 
