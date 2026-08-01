@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QDialog,
@@ -65,6 +65,8 @@ class CommandPalette(QDialog):
         self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName("Поиск по командам")
         self.search.textChanged.connect(self._filter)
+        self.search.returnPressed.connect(self.execute_current)
+        self.search.installEventFilter(self)
         root.addWidget(self.search)
 
         self.results = QListWidget()
@@ -72,6 +74,7 @@ class CommandPalette(QDialog):
         self.results.setAccessibleName("Результаты командной палитры")
         self.results.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.results.itemActivated.connect(lambda _item: self.execute_current())
+        self.results.installEventFilter(self)
         root.addWidget(self.results, 1)
 
         footer = QLabel("↑ ↓ — выбор · Enter — выполнить · Esc — закрыть")
@@ -121,8 +124,31 @@ class CommandPalette(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             item.setToolTip(command.subtitle)
             self.results.addItem(item)
-        if self.results.count():
-            self.results.setCurrentRow(0)
+        self._select_first_enabled()
+
+    def _enabled_rows(self) -> list[int]:
+        return [
+            row
+            for row, command in enumerate(self._visible_commands)
+            if command.enabled
+        ]
+
+    def _select_first_enabled(self) -> None:
+        enabled_rows = self._enabled_rows()
+        self.results.setCurrentRow(enabled_rows[0] if enabled_rows else -1)
+
+    def _move_selection(self, delta: int) -> None:
+        enabled_rows = self._enabled_rows()
+        if not enabled_rows:
+            return
+        current = self.results.currentRow()
+        if current not in enabled_rows:
+            target = enabled_rows[0 if delta >= 0 else -1]
+        else:
+            position = enabled_rows.index(current)
+            target = enabled_rows[(position + delta) % len(enabled_rows)]
+        self.results.setCurrentRow(target)
+        self.results.setFocus(Qt.FocusReason.TabFocusReason)
 
     def execute_current(self) -> None:
         row = self.results.currentRow()
@@ -134,23 +160,35 @@ class CommandPalette(QDialog):
         self.accept()
         command.callback()
 
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(watched, event)
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.reject()
+            return True
+        if key in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
             self.execute_current()
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Down:
-            self.results.setFocus(Qt.FocusReason.TabFocusReason)
-            current = max(0, self.results.currentRow())
-            self.results.setCurrentRow(min(self.results.count() - 1, current + 1))
-            event.accept()
-            return
-        if event.key() == Qt.Key.Key_Up and self.results.hasFocus():
-            current = max(0, self.results.currentRow())
-            if current == 0:
+            return True
+        if key == Qt.Key.Key_Down:
+            self._move_selection(1)
+            return True
+        if key == Qt.Key.Key_Up:
+            enabled_rows = self._enabled_rows()
+            if (
+                watched is self.results
+                and enabled_rows
+                and self.results.currentRow() == enabled_rows[0]
+            ):
                 self.search.setFocus(Qt.FocusReason.TabFocusReason)
             else:
-                self.results.setCurrentRow(current - 1)
+                self._move_selection(-1)
+            return True
+        return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
             event.accept()
             return
         super().keyPressEvent(event)
