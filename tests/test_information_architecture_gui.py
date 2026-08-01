@@ -106,7 +106,7 @@ def test_sidebar_utility_buttons_are_keyboard_accessible() -> None:
     navigation.command_button.setFocus()
     QTest.keyClick(
         navigation.command_button,
-        Qt.Key.Key_Return,
+        Qt.Key.Key_Space,
     )
     application.processEvents()
     assert palette_requests == [True]
