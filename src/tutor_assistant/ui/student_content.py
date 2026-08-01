@@ -66,6 +66,7 @@ from .content_edit import (
 from .content_health import ContentHealthDialog
 from .content_import import ImportLessonDialog
 from .content_trash import ContentTrashDialog
+from .localization import subject_label
 from .playback import PlaybackPanel, QtPlaybackBackend
 from .theme import set_button_kind
 
@@ -485,7 +486,7 @@ class StudentContentPage(QWidget):
         self.subject_filter.clear()
         self.subject_filter.addItem("Все предметы", None)
         for subject in sorted(subjects, key=str.casefold):
-            self.subject_filter.addItem(subject, subject)
+            self.subject_filter.addItem(subject_label(subject), subject)
         subject_index = self.subject_filter.findData(selected_subject)
         self.subject_filter.setCurrentIndex(max(0, subject_index))
         self.subject_filter.blockSignals(False)
@@ -1335,7 +1336,7 @@ class StudentContentPage(QWidget):
             values = (
                 lesson.lesson_date.strftime("%d.%m.%Y"),
                 lesson.student.full_name,
-                lesson.subject,
+                subject_label(lesson.subject),
                 lesson.topic,
                 status_label(lesson.status),
             )
@@ -1423,7 +1424,7 @@ class StudentContentPage(QWidget):
         self.details_dialog.setWindowTitle(f"Содержимое занятия · {lesson.topic}")
         self.metadata["student"].setText(lesson.student.full_name)
         self.metadata["date"].setText(lesson.lesson_date.strftime("%d.%m.%Y"))
-        self.metadata["subject"].setText(lesson.subject)
+        self.metadata["subject"].setText(subject_label(lesson.subject))
         self.metadata["topic"].setText(lesson.topic)
         self.metadata["status"].setText(status_label(lesson.status))
         self.metadata["lesson_id"].setText(lesson.lesson_id)

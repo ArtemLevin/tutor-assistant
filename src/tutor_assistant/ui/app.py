@@ -79,6 +79,7 @@ from ..security.credentials import (
 from ..transcript_editing import select_verified_text
 from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .crm import SchedulePage, StudentsPage
+from .localization import select_subject, set_subject_combo, subject_value
 from .normalization import NormalizationReviewDialog
 from .normalization_provider import (
     provider_configuration_error,
@@ -534,9 +535,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Расписание", "Ученик отсутствует в активных карточках")
             return
         self.quick_student.setCurrentIndex(student_index)
-        subject_index = self.quick_subject.findText(subject)
-        if subject_index >= 0:
-            self.quick_subject.setCurrentIndex(subject_index)
+        select_subject(self.quick_subject, subject)
         self.quick_topic.setText(topic.strip() or subject)
         self._scheduled_occurrence_id = occurrence_id
         self._set_mode("quick")
@@ -702,7 +701,7 @@ class MainWindow(QMainWindow):
         index = self.student.findData(lesson.student.id)
         if index >= 0:
             self.student.setCurrentIndex(index)
-        index = self.subject.findText(lesson.subject)
+        index = self.subject.findData(lesson.subject)
         if index >= 0:
             self.subject.setCurrentIndex(index)
         self.topic.setText(lesson.topic)
@@ -770,11 +769,10 @@ class MainWindow(QMainWindow):
         self.quick_student.setToolTip("Выберите ученика для нового занятия")
         self.quick_subject = QComboBox()
         self.quick_subject.setToolTip("Предмет определяет папку и шаблоны материалов")
-        self.quick_subject.addItems(["mathematics", "physics", "chemistry"])
-        subject = self.config.quick_start.last_subject or profile.subject
-        subject_index = self.quick_subject.findText(subject)
-        if subject_index >= 0:
-            self.quick_subject.setCurrentIndex(subject_index)
+        set_subject_combo(
+            self.quick_subject,
+            selected=self.config.quick_start.last_subject or profile.subject,
+        )
         self.quick_topic = QLineEdit(self.config.quick_start.last_topic)
         self.quick_topic.setPlaceholderText("Тема занятия")
         self.quick_topic.setToolTip("Кратко укажите тему — она попадёт в карточку занятия")
@@ -888,9 +886,7 @@ class MainWindow(QMainWindow):
             index = self.quick_student.findData(profile.student_id)
             if index >= 0:
                 self.quick_student.setCurrentIndex(index)
-        index = self.quick_subject.findText(profile.subject)
-        if index >= 0:
-            self.quick_subject.setCurrentIndex(index)
+        select_subject(self.quick_subject, profile.subject)
         self._refresh_quick_readiness()
 
     def _refresh_quick_readiness(self) -> None:
@@ -960,14 +956,15 @@ class MainWindow(QMainWindow):
         student_index = self.student.findData(self.quick_student.currentData())
         if student_index >= 0:
             self.student.setCurrentIndex(student_index)
-        subject_index = self.subject.findText(self.quick_subject.currentText())
-        if subject_index >= 0:
-            self.subject.setCurrentIndex(subject_index)
+        selected_subject = subject_value(
+            self.quick_subject.currentData() or self.quick_subject.currentText()
+        )
+        select_subject(self.subject, selected_subject)
         self.topic.setText(self.quick_topic.text().strip())
         self.lesson_date.setDate(QDate.currentDate())
         self.config.quick_start.default_profile_id = str(self.quick_profile.currentData())
         self.config.quick_start.last_student_id = self.quick_student.currentData()
-        self.config.quick_start.last_subject = self.quick_subject.currentText()
+        self.config.quick_start.last_subject = selected_subject
         self.config.quick_start.last_topic = self.quick_topic.text().strip()
         self.config.save(self.config_path)
 
@@ -1054,7 +1051,7 @@ class MainWindow(QMainWindow):
         for item in self.students:
             self.student.addItem(item.full_name, item.id)
         self.subject = QComboBox()
-        self.subject.addItems(["mathematics", "physics", "chemistry"])
+        set_subject_combo(self.subject)
         self.topic = QLineEdit()
         self.topic.setPlaceholderText("Например: логарифмические неравенства")
         self.lesson_date = QDateEdit()
@@ -1438,7 +1435,7 @@ class MainWindow(QMainWindow):
         value = self.lesson_date.date()
         lesson = Lesson(
             student=selected,
-            subject=self.subject.currentText(),
+            subject=subject_value(self.subject.currentData() or self.subject.currentText()),
             topic=self.topic.text().strip(),
             lesson_date=date(value.year(), value.month(), value.day()),
         )
