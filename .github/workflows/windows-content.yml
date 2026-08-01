@@ -39,13 +39,12 @@ jobs:
       - name: Apply UX-4 implementation
         run: python scripts/apply_ux4_patch.py
 
-      - name: Remove temporary infrastructure
+      - name: Remove temporary code files
         shell: pwsh
         run: |
           Remove-Item scripts/apply_ux4_patch.py
           Remove-Item scripts/sitecustomize.py -ErrorAction SilentlyContinue
-          Remove-Item .github/workflows/ux4-bootstrap.yml
-          git checkout origin/main -- .github/workflows/windows-content.yml
+          Remove-Item .github/workflows/windows-accessibility-scaling.yml
 
       - name: Synchronize lock file
         run: uv lock
