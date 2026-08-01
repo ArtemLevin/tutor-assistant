@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -92,6 +92,30 @@ QPushButton#headerMoreButton {
 """
 
 
+class SidebarButton(QPushButton):
+    navigation_key_pressed = Signal(int)
+
+    navigation_keys = {
+        Qt.Key.Key_Down,
+        Qt.Key.Key_Right,
+        Qt.Key.Key_Up,
+        Qt.Key.Key_Left,
+        Qt.Key.Key_Home,
+        Qt.Key.Key_End,
+        Qt.Key.Key_Return,
+        Qt.Key.Key_Enter,
+        Qt.Key.Key_Space,
+    }
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        if key in self.navigation_keys:
+            self.navigation_key_pressed.emit(key)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class SidebarNavigation(QFrame):
     quick_requested = Signal()
     route_changed = Signal(str)
@@ -153,7 +177,7 @@ class SidebarNavigation(QFrame):
                 group_label.setObjectName("sideNavigationGroup")
                 sidebar_layout.addWidget(group_label)
                 self._group_labels.append(group_label)
-            button = QPushButton()
+            button = SidebarButton()
             button.setObjectName("sideNavigationButton")
             button.setAccessibleName(definition.accessible_name)
             button.setAccessibleDescription(
@@ -163,7 +187,9 @@ class SidebarNavigation(QFrame):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             button.setToolTip(f"{definition.title} · {definition.shortcut}")
-            button.installEventFilter(self)
+            button.navigation_key_pressed.connect(
+                lambda key, source=button: self._handle_navigation_key(source, key)
+            )
             self._button_order.append(button)
             self.route_buttons[definition.route] = button
             self._button_labels[definition.route] = definition.title
@@ -255,36 +281,22 @@ class SidebarNavigation(QFrame):
                 return
         page.setFocus(Qt.FocusReason.TabFocusReason)
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if (
-            isinstance(watched, QPushButton)
-            and watched.objectName() == "sideNavigationButton"
-            and event.type() == QEvent.Type.KeyPress
-            and self._handle_navigation_key(watched, event)
-        ):
-            return True
-        return super().eventFilter(watched, event)
-
     def keyPressEvent(self, event: QKeyEvent) -> None:
         focused = QApplication.focusWidget()
         if (
             isinstance(focused, QPushButton)
             and focused in self._button_order
-            and self._handle_navigation_key(focused, event)
+            and self._handle_navigation_key(focused, event.key())
         ):
+            event.accept()
             return
         super().keyPressEvent(event)
 
-    def _handle_navigation_key(
-        self,
-        focused: QPushButton,
-        event: QKeyEvent,
-    ) -> bool:
+    def _handle_navigation_key(self, focused: QPushButton, key: int) -> bool:
         enabled_buttons = [button for button in self._button_order if button.isEnabled()]
         if focused not in enabled_buttons:
             return False
         current = enabled_buttons.index(focused)
-        key = event.key()
         if key in {Qt.Key.Key_Down, Qt.Key.Key_Right}:
             target = enabled_buttons[(current + 1) % len(enabled_buttons)]
         elif key in {Qt.Key.Key_Up, Qt.Key.Key_Left}:
@@ -295,12 +307,10 @@ class SidebarNavigation(QFrame):
             target = enabled_buttons[-1]
         elif key in {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space}:
             focused.click()
-            event.accept()
             return True
         else:
             return False
         target.setFocus(Qt.FocusReason.TabFocusReason)
-        event.accept()
         return True
 
     def ordered_buttons(self) -> tuple[QPushButton, ...]:
