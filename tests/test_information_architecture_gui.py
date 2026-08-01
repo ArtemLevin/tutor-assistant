@@ -78,6 +78,7 @@ def test_production_window_builds_publication_policy_directly() -> None:
     assert "findChildren(QLabel)" not in source
     assert "label.text() ==" not in source
 
+
 class _NavigationWindowHarness:
     def __init__(self) -> None:
         self.quick_page = QWidget()
