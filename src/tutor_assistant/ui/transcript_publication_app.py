@@ -27,6 +27,7 @@ from .accessibility import install_accessibility
 from .concurrent_app import MainWindow as ConcurrentMainWindow
 from .information_architecture import install_information_architecture
 from .library_transcription import install_library_transcription_control
+from .teacher_cockpit import install_teacher_cockpit
 from .theme import set_button_kind
 
 _AUDIO_FORMAT_OPTIONS = (
@@ -50,7 +51,7 @@ _TRANSCRIPTION_BLOCKED_STATUSES = {
 
 
 class MainWindow(ConcurrentMainWindow):
-    """Production window with the UX-1 navigation and transcript-only publication."""
+    """Production window with the UX-6 teacher cockpit and transcript publication."""
 
     def __init__(self, config_path):
         super().__init__(config_path)
@@ -60,10 +61,14 @@ class MainWindow(ConcurrentMainWindow):
 
     def _build(self) -> None:
         super()._build()
-        quick_mode = self.content_stack.currentWidget() is self.quick_page
+        default_mode = (
+            "quick" if self.content_stack.currentWidget() is self.quick_page else "detailed"
+        )
         self._install_header_menu()
+        self.teacher_cockpit = install_teacher_cockpit(self)
         self.navigation_shell = install_information_architecture(self)
-        self._set_mode("quick" if quick_mode else "detailed")
+        self.teacher_cockpit.bind_navigation(self.navigation_shell)
+        self.teacher_cockpit.restore_session(default_mode)
         install_accessibility(self)
 
     def _install_header_menu(self) -> None:
@@ -72,6 +77,10 @@ class MainWindow(ConcurrentMainWindow):
         self.header_more_button.setAccessibleName("Дополнительные действия приложения")
         self.header_more_button.setToolTip("Диагностика, журнал и настройки")
         menu = QMenu(self.header_more_button)
+        menu.addAction("Открыть командную палитру").triggered.connect(
+            lambda _checked=False: self._open_command_palette()
+        )
+        menu.addSeparator()
         menu.addAction("Собрать диагностический пакет").triggered.connect(
             lambda _checked=False: self._create_support_bundle()
         )
@@ -84,6 +93,16 @@ class MainWindow(ConcurrentMainWindow):
         )
         self.header_more_button.setMenu(menu)
         self.header_layout.addWidget(self.header_more_button)
+
+    def _open_command_palette(self) -> None:
+        cockpit = getattr(self, "teacher_cockpit", None)
+        if cockpit is not None:
+            cockpit.open_palette()
+
+    def _refresh_teacher_cockpit(self) -> None:
+        cockpit = getattr(self, "teacher_cockpit", None)
+        if cockpit is not None:
+            cockpit.refresh()
 
     def _set_mode(self, mode: str) -> None:
         super()._set_mode(mode)
@@ -100,9 +119,14 @@ class MainWindow(ConcurrentMainWindow):
         self.detailed_mode_button.setText("Рабочее пространство")
         self.detailed_mode_button.setFixedWidth(190)
         self.detailed_mode_button.setToolTip(
-            "Открыть транскрипты, публикацию, учеников, расписание и материалы"
+            "Открыть обзор дня, транскрипты, учеников, расписание и материалы"
         )
         self.header_more_button.setVisible(True)
+        cockpit = getattr(self, "teacher_cockpit", None)
+        if cockpit is not None:
+            cockpit.context_bar.setVisible(not quick)
+            if cockpit.session is not None:
+                cockpit.session.record_mode(mode)
 
     def _publish_tab(self) -> QWidget:
         page = QWidget()
@@ -199,6 +223,7 @@ class MainWindow(ConcurrentMainWindow):
         finally:
             if not (self.recorder and self.recorder.active):
                 self.audio_output_format.setEnabled(True)
+            self._refresh_teacher_cockpit()
 
     def _recording_ready_impl(self, result, recorded_lesson, source_recorder, reason=None) -> None:
         readable = finalize_readable_audio(
@@ -207,18 +232,21 @@ class MainWindow(ConcurrentMainWindow):
             recorded_lesson.lesson_date,
         )
         super()._recording_ready_impl(readable, recorded_lesson, source_recorder, reason)
+        self._refresh_teacher_cockpit()
 
     def _recording_ready(self, *args, **kwargs) -> None:
         try:
             super()._recording_ready(*args, **kwargs)
         finally:
             self.audio_output_format.setEnabled(True)
+            self._refresh_teacher_cockpit()
 
     def _recording_stop_failed(self, *args, **kwargs) -> None:
         try:
             super()._recording_stop_failed(*args, **kwargs)
         finally:
             self.audio_output_format.setEnabled(True)
+            self._refresh_teacher_cockpit()
 
     def _recovery_ready(self, result) -> None:
         lesson_id = result.session_file.parent.parent.name
@@ -230,6 +258,7 @@ class MainWindow(ConcurrentMainWindow):
                 lesson.lesson_date,
             )
         super()._recovery_ready(result)
+        self._refresh_teacher_cockpit()
 
     def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
         if lesson.status in _TRANSCRIPTION_BLOCKED_STATUSES:
@@ -248,14 +277,17 @@ class MainWindow(ConcurrentMainWindow):
             )
         super()._queue_imported_audio(lesson, audio)
         self.student_content_page.refresh_if_loaded()
+        self._refresh_teacher_cockpit()
 
     def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
         super()._background_transcription_ready(job_id, lesson)
         self.student_content_page.refresh_if_loaded()
+        self._refresh_teacher_cockpit()
 
     def _background_transcription_failed(self, job_id: str, details: str) -> None:
         super()._background_transcription_failed(job_id, details)
         self.student_content_page.refresh_if_loaded()
+        self._refresh_teacher_cockpit()
 
     def approve_transcript(self) -> None:
         super().approve_transcript()
@@ -271,6 +303,7 @@ class MainWindow(ConcurrentMainWindow):
             "Ветка: main\n"
             "Аудио, JSON, TEX, PDF, изображения и журналы останутся на компьютере."
         )
+        self._refresh_teacher_cockpit()
 
     def publish(self) -> None:
         if not self.lesson or self.lesson.status != JobStatus.READY:
@@ -285,6 +318,7 @@ class MainWindow(ConcurrentMainWindow):
         worker.finished.connect(lambda: self._worker_finished(worker))
         self.workers.append(worker)
         worker.start()
+        self._refresh_teacher_cockpit()
 
     def _publication_ready(self, result) -> None:
         details = (
@@ -308,8 +342,12 @@ class MainWindow(ConcurrentMainWindow):
             result.commit,
             result.repository_path,
         )
+        self._refresh_teacher_cockpit()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        cockpit = getattr(self, "teacher_cockpit", None)
+        if cockpit is not None and cockpit.session is not None:
+            cockpit.session.save_all()
         super().closeEvent(event)
         if event.isAccepted():
             base_app.DualRecorder = DualRecorder
