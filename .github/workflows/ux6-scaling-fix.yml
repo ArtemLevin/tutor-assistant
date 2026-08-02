@@ -1,0 +1,46 @@
+name: UX6 scaling fix
+
+on:
+  push:
+    branches:
+      - fix/ux6-scaling-focus
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: windows-2025
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/ux6-scaling-focus
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Patch sidebar focus and width
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          path = Path('src/tutor_assistant/ui/information_architecture.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('    expanded_width = 272\n', '    expanded_width = 320\n')
+          text = text.replace('        self.collapse_button.setAccessibleName("Свернуть боковую навигацию")\n', '        self.collapse_button.setAccessibleName("Свернуть боковую навигацию")\n        self.collapse_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)\n')
+          text = text.replace('        self.command_button.setAccessibleName("Открыть командную палитру")\n', '        self.command_button.setAccessibleName("Открыть командную палитру")\n        self.command_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)\n')
+          path.write_text(text, encoding='utf-8')
+          '@ | python
+      - run: python -m pip install uv
+      - run: uv sync --extra desktop --group dev
+      - run: uv run ruff check .
+      - run: uv run pytest -q tests/test_ux4_accessibility_gui.py tests/test_ux4_scaling_gui.py tests/test_ux6_teacher_cockpit_gui.py tests/test_information_architecture_gui.py
+      - name: Commit
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/tutor_assistant/ui/information_architecture.py
+          git commit -m "fix(ui): preserve sidebar focus and scaling geometry"
+          git push origin HEAD:fix/ux6-scaling-focus
