@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 
 from PySide6.QtWidgets import QMessageBox
 
-from .lesson_journal import LessonJournalPage
+from .lesson_journal_ux import LessonJournalUXPage
 
 
-def install_lesson_journal(window) -> LessonJournalPage:
-    page = LessonJournalPage(
+def install_lesson_journal(window) -> LessonJournalUXPage:
+    page = LessonJournalUXPage(
         window.crm_store,
         lesson_store=window.pipeline.store,
     )
