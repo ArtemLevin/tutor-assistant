@@ -96,8 +96,8 @@ def test_ux_journal_uses_compact_table_and_month_default(
     ]
     assert page.table.columnCount() == 7
     assert page.period_filter.currentData() == "this_month"
-    assert not page.payment_filter.isVisible()
-    assert not page.homework_filter.isVisible()
+    assert page.payment_filter.isHidden()
+    assert page.homework_filter.isHidden()
     page.close()
 
 
@@ -249,12 +249,12 @@ def test_advanced_filters_have_count_and_persist_expanded_state(
     page.homework_filter.setCurrentIndex(page.homework_filter.findData("review"))
     page.refresh()
     assert page.filters_toggle.text() == "Фильтры · 2"
-    assert page.payment_filter.isVisible()
+    assert not page.payment_filter.isHidden()
     page.close()
 
     restored = LessonJournalUXPage(store)
     assert restored.filters_toggle.isChecked()
-    assert restored.payment_filter.isVisible()
+    assert not restored.payment_filter.isHidden()
     assert restored.payment_filter.currentData() == "unpaid_past"
     assert restored.homework_filter.currentData() == "review"
     restored.close()
