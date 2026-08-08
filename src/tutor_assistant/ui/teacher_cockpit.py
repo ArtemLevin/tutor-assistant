@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QSplitter
 
 from .app_routes import ROUTE_DEFINITIONS, AppRoute
 from .command_palette import CommandPalette, PaletteCommand
+from .lesson_journal_integration import install_lesson_journal
 from .teacher_cockpit_data import (
     AttentionItem,
     CockpitSnapshot,
@@ -51,6 +52,7 @@ class TeacherCockpitController(QObject):
         self.dashboard_index = self.window.tabs.addTab(self.dashboard, "09  Сегодня")
         if self.dashboard_index != 8:
             raise RuntimeError("Экран «Сегодня» должен сохранять legacy-индексы 0–7")
+        self.journal = install_lesson_journal(self.window)
         self.window.centralWidget().layout().insertWidget(1, self.context_bar)
 
         self.dashboard.route_requested.connect(self.navigate)
@@ -84,8 +86,10 @@ class TeacherCockpitController(QObject):
         self.session.restore_window()
         materials = getattr(self.window.student_content_page, "content_splitter", None)
         students = self.window.crm_students_page.findChild(QSplitter)
+        journal = self.journal.findChild(QSplitter)
         self.session.register_splitter("materials", materials)
         self.session.register_splitter("students", students)
+        self.session.register_splitter("journal", journal)
         navigation.set_collapsed(self.session.sidebar_collapsed())
         navigation.collapsed_changed.connect(self.session.record_sidebar_collapsed)
         navigation.route_changed.connect(self.session.record_route)
@@ -130,6 +134,10 @@ class TeacherCockpitController(QObject):
             search.setText(str(getattr(student, "full_name", "")))
             search.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
+    def _journal_command(self, view: str) -> None:
+        self.journal.apply_smart_view(view)
+        self.navigate(AppRoute.JOURNAL.value)
+
     def commands(self) -> list[PaletteCommand]:
         commands = [
             PaletteCommand(
@@ -166,6 +174,27 @@ class TeacherCockpitController(QObject):
             )
         commands.extend(
             (
+                PaletteCommand(
+                    "journal:attention",
+                    "Занятия, требующие внимания",
+                    "Долги, просроченное ДЗ и незавершённые статусы",
+                    lambda: self._journal_command("attention"),
+                    ("журнал", "внимание", "долги", "дз"),
+                ),
+                PaletteCommand(
+                    "journal:unpaid",
+                    "Неоплаченные занятия",
+                    "Открыть прошедшие занятия с задолженностью",
+                    lambda: self._journal_command("unpaid"),
+                    ("журнал", "оплата", "долг", "финансы"),
+                ),
+                PaletteCommand(
+                    "journal:homework-review",
+                    "ДЗ на проверку",
+                    "Показать полученные домашние работы",
+                    lambda: self._journal_command("homework_review"),
+                    ("журнал", "дз", "домашняя работа", "проверка"),
+                ),
                 PaletteCommand(
                     "system:refresh",
                     "Обновить Teacher Cockpit",

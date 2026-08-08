@@ -13,6 +13,7 @@ class AppRoute(StrEnum):
     PROCESSING = "processing"
     STUDENTS = "students"
     SCHEDULE = "schedule"
+    JOURNAL = "journal"
     MATERIALS = "materials"
     LATEX = "latex"
 
@@ -109,6 +110,16 @@ ROUTE_DEFINITIONS: tuple[RouteDefinition, ...] = (
         "Ctrl+7",
         6,
         ("календарь", "занятия", "неделя"),
+    ),
+    RouteDefinition(
+        AppRoute.JOURNAL,
+        "УЧЕНИКИ",
+        "Журнал занятий",
+        "≡",
+        "Открыть журнал занятий",
+        "Ctrl+9",
+        9,
+        ("история", "поиск", "фильтр", "оплата", "домашняя работа", "дз"),
     ),
     RouteDefinition(
         AppRoute.MATERIALS,
