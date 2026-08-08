@@ -8,6 +8,7 @@ from tutor_assistant.crm import (
     CrmStore,
     Guardian,
     ScheduleConflict,
+    ScheduledLesson,
     ScheduleRule,
     StudentProfile,
 )
@@ -151,3 +152,103 @@ def test_overlapping_weekly_rules_are_rejected(store: CrmStore) -> None:
                 valid_from=date(2026, 7, 1),
             )
         )
+
+
+def test_existing_crm_database_adds_paid_column(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            """
+            CREATE TABLE crm_lesson_occurrences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_id INTEGER,
+                original_date TEXT,
+                student_id TEXT NOT NULL,
+                starts_at TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                topic TEXT NOT NULL DEFAULT '',
+                meeting_secret TEXT,
+                status TEXT NOT NULL DEFAULT 'planned',
+                rate_cents INTEGER NOT NULL DEFAULT 0,
+                lesson_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(rule_id, original_date)
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO crm_lesson_occurrences (
+                student_id, starts_at, duration_minutes, subject,
+                created_at, updated_at
+            ) VALUES ('legacy', '2026-08-03T16:00:00', 60, 'mathematics', 'now', 'now')
+            """
+        )
+
+    store = CrmStore(path, TestCodec())
+
+    with sqlite3.connect(store.path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(crm_lesson_occurrences)")}
+        paid = db.execute("SELECT paid FROM crm_lesson_occurrences").fetchone()[0]
+    assert "paid" in columns
+    assert paid == 0
+
+
+def test_recurring_payment_materializes_only_selected_date(store: CrmStore) -> None:
+    store.sync_students([Student(id="paid-student", full_name="Оплата")])
+    store.save_schedule_rule(
+        ScheduleRule(
+            student_id="paid-student",
+            weekday=1,
+            start_minute=16 * 60,
+            valid_from=date(2026, 8, 1),
+            rate_cents=300_000,
+        )
+    )
+    first_week = date(2026, 8, 3)
+    lesson = store.lessons_for_week(first_week)[0]
+    assert lesson.occurrence_id is None
+    assert lesson.paid is False
+
+    occurrence_id = store.set_lesson_paid(lesson, True)
+
+    paid_lesson = store.lessons_for_week(first_week)[0]
+    next_lesson = store.lessons_for_week(date(2026, 8, 10))[0]
+    assert paid_lesson.occurrence_id == occurrence_id
+    assert paid_lesson.paid is True
+    assert next_lesson.occurrence_id is None
+    assert next_lesson.paid is False
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0] == 1
+
+    store.set_lesson_paid(paid_lesson, True)
+    store.set_lesson_paid(paid_lesson, False)
+    assert store.lessons_for_week(first_week)[0].paid is False
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0] == 1
+
+
+def test_paid_state_survives_occurrence_detail_edit(store: CrmStore) -> None:
+    store.sync_students([Student(id="one-off-paid", full_name="Разовое занятие")])
+    week_start = date(2026, 8, 3)
+    occurrence_id = store.save_one_off(
+        ScheduledLesson(
+            student_id="one-off-paid",
+            student_name="Разовое занятие",
+            starts_at=datetime(2026, 8, 5, 17, 0),
+            duration_minutes=60,
+            subject="mathematics",
+            topic="Исходная тема",
+        )
+    )
+    lesson = store.lessons_for_week(week_start)[0]
+    store.set_lesson_paid(lesson, True)
+
+    edited = lesson.model_copy(update={"topic": "Новая тема", "paid": True})
+    store.update_occurrence_details(occurrence_id, edited)
+
+    restored = store.lessons_for_week(week_start)[0]
+    assert restored.topic == "Новая тема"
+    assert restored.paid is True
