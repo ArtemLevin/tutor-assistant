@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
 
-from PySide6.QtCore import QDate, Qt, QTime, Signal
+from PySide6.QtCore import QDate, QSignalBlocker, Qt, QTime, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -708,6 +708,7 @@ class ScheduleDialog(QDialog):
             meeting_url=self.meeting.text().strip(),
             status=self.lesson.status if self.lesson else "planned",
             rate_cents=round(self.rate.value() * 100),
+            paid=self.lesson.paid if self.lesson else False,
             lesson_id=self.lesson.lesson_id if self.lesson else None,
         )
 
@@ -783,6 +784,7 @@ class SchedulePage(QWidget):
         self.grid.setShowGrid(False)
         self.grid.currentCellChanged.connect(self._sync_schedule_action)
         self.grid.cellDoubleClicked.connect(self._cell_opened)
+        self.grid.itemChanged.connect(self._payment_state_changed)
         for row in range(self._row_count()):
             hour, minute = self._time_for_row(row)
             self.grid.setVerticalHeaderItem(row, QTableWidgetItem(f"{hour:02d}:{minute:02d}"))
@@ -808,6 +810,7 @@ class SchedulePage(QWidget):
         self.week_label.setText(
             f"{self.week_start:%d.%m.%Y} — {end:%d.%m.%Y} · выберите ячейку для действия"
         )
+        signal_blocker = QSignalBlocker(self.grid)
         self.grid.clearSpans()
         self.grid.clearContents()
         self.cell_lessons.clear()
@@ -839,19 +842,32 @@ class SchedulePage(QWidget):
                 continue
             row_span = max(1, (lesson.duration_minutes + self.slot_minutes - 1) // self.slot_minutes)
             row_span = min(row_span, self.grid.rowCount() - row)
+            payment_label = "Оплачено" if lesson.paid else "Не оплачено"
             item = QTableWidgetItem(
                 f"{lesson.starts_at:%H:%M}–{lesson.ends_at:%H:%M}  {lesson.student_name}\n"
                 f"{subject_label(lesson.subject)}"
                 + (f" · {lesson.topic}" if lesson.topic else "")
-                + f"\n{status_names.get(lesson.status, lesson.status)}"
+                + f"\n{status_names.get(lesson.status, lesson.status)} · {payment_label}"
             )
             item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
             item.setToolTip(
                 f"{lesson.student_name}\n{lesson.starts_at:%d.%m %H:%M}"
                 f"–{lesson.ends_at:%H:%M}\n{lesson.topic or lesson.subject}\n"
+                f"Оплата: {payment_label}\n"
+                "Галочка в слоте отмечает оплату занятия. "
                 "Выберите занятие и нажмите «Открыть занятие»"
             )
-            item.setBackground(colors.get(lesson.status, QColor("#FFFFFF")))
+            item.setCheckState(
+                Qt.CheckState.Checked if lesson.paid else Qt.CheckState.Unchecked
+            )
+            if lesson.status == "cancelled":
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                item.setBackground(colors["cancelled"])
+            elif not lesson.paid:
+                item.setBackground(QColor("#FFF0F0"))
+                item.setForeground(QColor("#9B2C2C"))
+            else:
+                item.setBackground(colors.get(lesson.status, QColor("#FFFFFF")))
             self.grid.setItem(row, column, item)
             if row_span > 1:
                 self.grid.setSpan(row, column, row_span, 1)
@@ -861,7 +877,34 @@ class SchedulePage(QWidget):
         self.students_stat.setText(f"Ученики · {stats.active_students}")
         self.lessons_stat.setText(f"Занятия · {stats.lessons_this_week}")
         self.revenue_stat.setText(f"План · {stats.planned_revenue_cents / 100:,.0f} ₽")
+        del signal_blocker
         self._sync_schedule_action()
+
+    def _payment_state_changed(self, item: QTableWidgetItem) -> None:
+        lesson = self.cell_lessons.get((item.row(), item.column()))
+        if lesson is None or lesson.status == "cancelled":
+            return
+        paid = item.checkState() == Qt.CheckState.Checked
+        if paid == lesson.paid:
+            return
+        previous = lesson.paid
+        try:
+            occurrence_id = self.store.set_lesson_paid(lesson, paid)
+        except Exception as exc:
+            signal_blocker = QSignalBlocker(self.grid)
+            item.setCheckState(
+                Qt.CheckState.Checked if previous else Qt.CheckState.Unchecked
+            )
+            del signal_blocker
+            QMessageBox.critical(
+                self,
+                "Оплата занятия",
+                f"Не удалось сохранить состояние оплаты: {exc}",
+            )
+            return
+        lesson.occurrence_id = occurrence_id
+        lesson.paid = paid
+        self.refresh()
 
     def _sync_schedule_action(self, *_args) -> None:
         row = self.grid.currentRow()
