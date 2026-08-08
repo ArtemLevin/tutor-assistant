@@ -19,13 +19,13 @@ from .journal_keyboard import JournalKeyboardController
 from .journal_widgets import (
     ATTENTION_TEXT_ROLE,
     ATTENTION_TONE_ROLE,
-    STATUS_TEXT_ROLE,
-    STATUS_TONE_ROLE,
     JournalEmptyState,
     JournalStatusDelegate,
     JournalStatusDescriptor,
     JournalToastBar,
     JournalTone,
+    STATUS_TEXT_ROLE,
+    STATUS_TONE_ROLE,
 )
 from .lesson_journal import LESSON_STATUS_LABELS
 from .lesson_journal_ux import JournalSmartView, JournalViewAnchor
