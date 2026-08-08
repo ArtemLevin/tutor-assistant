@@ -5,11 +5,11 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 
-from .lesson_journal_ux_stable import LessonJournalUXStablePage
+from .lesson_journal_interactions import LessonJournalInteractionPage
 
 
-def install_lesson_journal(window) -> LessonJournalUXStablePage:
-    page = LessonJournalUXStablePage(
+def install_lesson_journal(window) -> LessonJournalInteractionPage:
+    page = LessonJournalInteractionPage(
         window.crm_store,
         lesson_store=window.pipeline.store,
     )
@@ -29,7 +29,7 @@ def install_lesson_journal(window) -> LessonJournalUXStablePage:
     return page
 
 
-def _restore_extended_period(page: LessonJournalUXStablePage) -> None:
+def _restore_extended_period(page: LessonJournalInteractionPage) -> None:
     state = getattr(page, "_pending_ux_state", None)
     if not isinstance(state, dict):
         return
