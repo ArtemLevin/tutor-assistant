@@ -82,6 +82,8 @@ def test_payment_mutation_has_one_step_undo(
     store.save_one_off(_lesson(starts_at))
     page = LessonJournalInteractionPage(store)
     _show_range(page, today - timedelta(days=3), today)
+    page.show()
+    application.processEvents()
 
     item = page.table.item(0, 4)
     item.setCheckState(Qt.CheckState.Checked)
