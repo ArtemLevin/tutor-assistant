@@ -225,9 +225,9 @@ class LessonJournalService:
         except Exception:
             return {}
         return {
-            str(getattr(lesson, "lesson_id")): lesson
+            str(lesson.lesson_id): lesson
             for lesson in lessons
-            if getattr(lesson, "lesson_id", None)
+            if lesson.lesson_id
         }
 
     @staticmethod
