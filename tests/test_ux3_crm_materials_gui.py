@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
@@ -7,12 +8,13 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QKeySequence
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tutor_assistant.content import StudentContentService
-from tutor_assistant.crm import CrmStore, ScheduledLesson, StudentProfile
+from tutor_assistant.crm import CrmStore, ScheduledLesson, ScheduleRule, StudentProfile
 from tutor_assistant.domain import Lesson, Student
 from tutor_assistant.playback import PlaybackController
 from tutor_assistant.ui.crm import SchedulePage, StudentsPage
@@ -211,4 +213,78 @@ def test_schedule_uses_half_hour_rows_and_duration_spans(
     assert page.cell_lessons[(row + 2, 0)] is lesson
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
+    page.close()
+
+
+def test_schedule_payment_checkbox_persists_and_isolates_recurring_dates(
+    tmp_path: Path,
+    application: QApplication,
+) -> None:
+    store = CrmStore(tmp_path / "schedule-payment.sqlite3", TestCodec())
+    store.save_student(StudentProfile(id="student", full_name="Ученик"), [])
+    store.save_schedule_rule(
+        ScheduleRule(
+            student_id="student",
+            weekday=0,
+            start_minute=16 * 60,
+            duration_minutes=90,
+            subject="mathematics",
+            topic="Оплата занятия",
+            valid_from=date(2026, 8, 1),
+            rate_cents=300_000,
+        )
+    )
+    page = SchedulePage(store)
+    page.week_start = date(2026, 8, 3)
+
+    with sqlite3.connect(store.path) as db:
+        before_refresh = db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0]
+    page.refresh()
+    with sqlite3.connect(store.path) as db:
+        after_refresh = db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0]
+    assert before_refresh == after_refresh == 0
+
+    page.show()
+    application.processEvents()
+    row = page._row_for_time(16, 0)
+    item = page.grid.item(row, 0)
+    assert item is not None
+    assert item.checkState() == Qt.CheckState.Unchecked
+    assert "Не оплачено" in item.text()
+    assert item.background().color().name().upper() == "#FFF0F0"
+    assert page.grid.rowSpan(row, 0) == 3
+
+    page.grid.setCurrentCell(row, 0)
+    QTest.keyClick(page.grid, Qt.Key.Key_Space)
+    application.processEvents()
+
+    paid_item = page.grid.item(row, 0)
+    assert paid_item is not None
+    assert paid_item.checkState() == Qt.CheckState.Checked
+    assert "Оплачено" in paid_item.text()
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0] == 1
+        assert db.execute("SELECT paid FROM crm_lesson_occurrences").fetchone()[0] == 1
+
+    page.week_start = date(2026, 8, 10)
+    page.refresh()
+    next_row = page._row_for_time(16, 0)
+    next_item = page.grid.item(next_row, 0)
+    assert next_item is not None
+    assert next_item.checkState() == Qt.CheckState.Unchecked
+
+    page.week_start = date(2026, 8, 3)
+    page.refresh()
+    restored_item = page.grid.item(row, 0)
+    assert restored_item is not None
+    assert restored_item.checkState() == Qt.CheckState.Checked
+
+    paid_lesson = page.cell_lessons[(row, 0)]
+    assert paid_lesson.occurrence_id is not None
+    store.update_occurrence(paid_lesson.occurrence_id, status="cancelled")
+    page.refresh()
+    cancelled = page.grid.item(row, 0)
+    assert cancelled is not None
+    assert not bool(cancelled.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    assert cancelled.background().color().name().upper() == "#F2F4F7"
     page.close()

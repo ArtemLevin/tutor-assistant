@@ -185,6 +185,7 @@ class ScheduledLesson(BaseModel):
     meeting_url: str = ""
     status: str = "planned"
     rate_cents: int = 0
+    paid: bool = False
     lesson_id: str | None = None
 
     @property
@@ -313,6 +314,7 @@ class CrmStore:
                     meeting_secret TEXT,
                     status TEXT NOT NULL DEFAULT 'planned',
                     rate_cents INTEGER NOT NULL DEFAULT 0,
+                    paid INTEGER NOT NULL DEFAULT 0,
                     lesson_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -326,6 +328,19 @@ class CrmStore:
                 CREATE INDEX IF NOT EXISTS crm_occurrences_start
                     ON crm_lesson_occurrences(starts_at);
                 """
+            )
+            self._ensure_schema_upgrades(db)
+
+    @staticmethod
+    def _ensure_schema_upgrades(db: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(crm_lesson_occurrences)")
+        }
+        if "paid" not in columns:
+            db.execute(
+                "ALTER TABLE crm_lesson_occurrences "
+                "ADD COLUMN paid INTEGER NOT NULL DEFAULT 0"
             )
 
     @staticmethod
@@ -604,8 +619,8 @@ class CrmStore:
                 """
                 INSERT INTO crm_lesson_occurrences (
                     rule_id, original_date, student_id, starts_at, duration_minutes, subject,
-                    topic, meeting_secret, status, rate_cents, lesson_id, created_at, updated_at
-                ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    topic, meeting_secret, status, rate_cents, paid, lesson_id, created_at, updated_at
+                ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lesson.student_id,
@@ -616,6 +631,7 @@ class CrmStore:
                     self.codec.encrypt(lesson.meeting_url),
                     lesson.status,
                     lesson.rate_cents,
+                    int(lesson.paid),
                     lesson.lesson_id,
                     now,
                     now,
@@ -670,8 +686,8 @@ class CrmStore:
                 """
                 INSERT INTO crm_lesson_occurrences (
                     rule_id, original_date, student_id, starts_at, duration_minutes, subject,
-                    topic, meeting_secret, status, rate_cents, lesson_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    topic, meeting_secret, status, rate_cents, paid, lesson_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(rule_id, original_date) DO NOTHING
                 """,
                 (
@@ -685,6 +701,7 @@ class CrmStore:
                     self.codec.encrypt(lesson.meeting_url),
                     lesson.status,
                     lesson.rate_cents,
+                    int(lesson.paid),
                     lesson.lesson_id,
                     now,
                     now,
@@ -695,6 +712,23 @@ class CrmStore:
                 (lesson.rule_id, original_date.isoformat()),
             ).fetchone()
         return int(row["id"])
+
+    def set_lesson_paid(self, lesson: ScheduledLesson, paid: bool) -> int:
+        occurrence_id = self.ensure_occurrence(lesson)
+
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute(
+                    """
+                    UPDATE crm_lesson_occurrences
+                    SET paid=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (int(paid), self._now(), occurrence_id),
+                )
+
+        self._retry(operation)
+        return occurrence_id
 
     def update_occurrence(
         self,
@@ -734,6 +768,7 @@ class CrmStore:
             meeting_url=self.codec.decrypt(row["meeting_secret"]) or "",
             status=row["status"],
             rate_cents=row["rate_cents"],
+            paid=bool(row["paid"]),
             lesson_id=row["lesson_id"],
         )
 
