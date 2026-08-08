@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tutor_assistant.crm import CrmStore, ScheduleRule, ScheduledLesson
+from tutor_assistant.crm import CrmStore, ScheduledLesson, ScheduleRule
 from tutor_assistant.domain import Student
 from tutor_assistant.lesson_journal import (
     HomeworkStatus,
