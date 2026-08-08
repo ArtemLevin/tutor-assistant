@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 
 from .lesson_journal_ux import LessonJournalUXPage
@@ -12,6 +13,7 @@ def install_lesson_journal(window) -> LessonJournalUXPage:
         window.crm_store,
         lesson_store=window.pipeline.store,
     )
+    _restore_extended_period(page)
     index = window.tabs.addTab(page, "10  Журнал занятий")
     if index != 9:
         raise RuntimeError("Журнал занятий должен использовать page index 9")
@@ -25,6 +27,23 @@ def install_lesson_journal(window) -> LessonJournalUXPage:
     )
     window.crm_students_page.changed.connect(page.refresh)
     return page
+
+
+def _restore_extended_period(page: LessonJournalUXPage) -> None:
+    state = getattr(page, "_pending_ux_state", None)
+    if not isinstance(state, dict):
+        return
+    period = str(state.get("period", ""))
+    if not period or page.period_filter.currentData() == period:
+        return
+    index = page.period_filter.findData(period)
+    if index < 0:
+        return
+    blocker = QSignalBlocker(page.period_filter)
+    page.period_filter.setCurrentIndex(index)
+    del blocker
+    page._apply_period_preset()
+    page.refresh()
 
 
 def _open_lesson(window, lesson_id: str) -> None:
