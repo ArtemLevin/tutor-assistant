@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QDateTime, Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QSplitter, QStackedWidget, QTableWidgetItem, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QSplitter,
+    QStackedWidget,
+    QTableWidgetItem,
+    QWidget,
+)
 
 from ..crm import ScheduledLesson
 from ..lesson_journal import HomeworkStatus, LessonJournalResult, LessonJournalRow
@@ -124,7 +131,7 @@ class LessonJournalInteractionPage(LessonJournalUXStablePage):
         self.filters_toggle.setAccessibleDescription(
             "Раскрывает оплату, домашнюю работу, статус занятия, время, обработку и ресурсы."
         )
-        for view, button in self._smart_buttons.items():
+        for button in self._smart_buttons.values():
             button.setAccessibleName(f"Быстрое представление: {button.text()}")
             button.setAccessibleDescription(
                 "Переключает журнал на это представление и сохраняет базовые фильтры."
@@ -158,7 +165,7 @@ class LessonJournalInteractionPage(LessonJournalUXStablePage):
             self.open_materials_button,
             self.open_schedule_button,
         ]
-        for first, second in zip(chain, chain[1:]):
+        for first, second in zip(chain, chain[1:], strict=False):
             QWidget.setTabOrder(first, second)
 
     def keyboard_focus_zones(self) -> list[QWidget]:
@@ -298,7 +305,11 @@ class LessonJournalInteractionPage(LessonJournalUXStablePage):
 
             payment = self.table.item(row_index, 4)
             if payment is not None:
-                amount = f"{lesson.rate_cents / 100:,.0f} рублей" if lesson.rate_cents else "без ставки"
+                amount = (
+                    f"{lesson.rate_cents / 100:,.0f} рублей"
+                    if lesson.rate_cents
+                    else "без ставки"
+                )
                 payment_text = "Оплачено" if lesson.paid else "Не оплачено"
                 if not lesson.paid and lesson.status != "cancelled" and lesson.ends_at < now:
                     payment_text += ". Имеется задолженность"
@@ -371,7 +382,11 @@ class LessonJournalInteractionPage(LessonJournalUXStablePage):
             )
         else:
             period = str(self.period_filter.currentData() or "this_month")
-            title = "В этом месяце занятий нет" if period == "this_month" else "В выбранном периоде занятий нет"
+            title = (
+                "В этом месяце занятий нет"
+                if period == "this_month"
+                else "В выбранном периоде занятий нет"
+            )
             self.empty_state.configure(
                 title=title,
                 description="Выберите другой период или откройте расписание.",
@@ -544,7 +559,10 @@ class LessonJournalInteractionPage(LessonJournalUXStablePage):
         try:
             pending.undo()
         except Exception as exc:
-            self.toast.show_message(f"Не удалось отменить изменение: {exc}", undo_available=False)
+            self.toast.show_message(
+                f"Не удалось отменить изменение: {exc}",
+                undo_available=False,
+            )
         else:
             self.refresh(preserve_context=anchor is not None, anchor=anchor)
             self.toast.show_message("Последнее изменение отменено", undo_available=False)
