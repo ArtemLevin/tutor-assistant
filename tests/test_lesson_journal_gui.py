@@ -11,7 +11,7 @@ pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QComboBox
 
-from tutor_assistant.crm import CrmStore, ScheduleRule, ScheduledLesson, StudentProfile
+from tutor_assistant.crm import CrmStore, ScheduledLesson, ScheduleRule, StudentProfile
 from tutor_assistant.ui.app_routes import AppRoute, page_for_route, route_for_page
 from tutor_assistant.ui.lesson_journal import LessonJournalPage
 
