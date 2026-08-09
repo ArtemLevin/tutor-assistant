@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
+
 from .lesson_journal_closeout import LessonJournalCloseoutPage
 
 
 class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
-    """Production closeout page with explicit detail synchronization after render."""
+    """Production closeout page with explicit lifecycle and keyboard stabilization."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(self.close_current_lesson)
+        self.closeout_shortcuts.append(shortcut)
 
     def _sync_closeout_details(self) -> None:
         if not getattr(self, "_closeout_ready", False):
