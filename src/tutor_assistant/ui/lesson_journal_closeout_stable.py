@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QDate, QSignalBlocker, Qt, QTime
+from PySide6.QtCore import QDate, QSignalBlocker, QTime, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QWidget
 
@@ -148,7 +148,7 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
             "Отменить изменения",
             QMessageBox.ButtonRole.DestructiveRole,
         )
-        stay = box.addButton("Остаться", QMessageBox.ButtonRole.RejectRole)
+        box.addButton("Остаться", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(save)
         box.exec()
         clicked = box.clickedButton()
