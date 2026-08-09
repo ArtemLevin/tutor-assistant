@@ -9,7 +9,7 @@ The closeout layer completes the operational lesson workflow after a lesson has 
 Closeout data lives in the local CRM SQLite database in `crm_lesson_closeout` and is keyed by `occurrence_id`.
 
 - `attendance` stores the explicit attendance state.
-- `teacher_note_secret` is encoded through the CRM secret codec.
+- `teacher_note_ciphertext` stores the teacher note encoded through the CRM secret codec.
 - `closed_at` marks a completed pedagogical closeout.
 - `updated_at` records the latest administrative change.
 
