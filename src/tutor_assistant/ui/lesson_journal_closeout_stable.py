@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QDate, QSignalBlocker, QTime, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QComboBox, QLabel, QLayout, QPushButton, QWidget
 
 from ..lesson_closeout import ATTENDANCE_LABELS, AttendanceStatus, LessonCloseoutMeta
 from .journal_closeout import CloseoutJournalRow
@@ -54,6 +54,83 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
         self._sync_closeout_details()
         self._last_applied_filter_state = self.filter_state()
         self._update_note_state()
+
+    @classmethod
+    def _layout_containing_widget(
+        cls,
+        layout: QLayout,
+        target: QWidget,
+    ) -> QLayout | None:
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            if item.widget() is target:
+                return layout
+            child = item.layout()
+            if child is not None:
+                found = cls._layout_containing_widget(child, target)
+                if found is not None:
+                    return found
+        return None
+
+    def _required_layout_for(self, target: QWidget, description: str) -> QLayout:
+        layout = self.layout()
+        if layout is None:
+            raise RuntimeError("Основной layout журнала занятий недоступен")
+        found = self._layout_containing_widget(layout, target)
+        if found is None:
+            raise RuntimeError(f"Не найден layout для {description}")
+        return found
+
+    def _install_unfinished_view(self) -> None:
+        anchor = self._smart_buttons[JournalSmartView.ALL]
+        smart_layout = self._required_layout_for(anchor, "быстрых представлений")
+        self.unfinished_button = QPushButton("Незавершённые")
+        self.unfinished_button.setObjectName("journalSmartButton")
+        self.unfinished_button.setCheckable(True)
+        self.unfinished_button.setAccessibleName(
+            "Быстрое представление: Незавершённые занятия"
+        )
+        self.unfinished_button.setAccessibleDescription(
+            "Показывает прошедшие занятия, для которых требуется завершение или посещаемость."
+        )
+        self.smart_group.addButton(self.unfinished_button)
+        smart_indices = [
+            smart_layout.indexOf(button)
+            for button in self._smart_buttons.values()
+            if smart_layout.indexOf(button) >= 0
+        ]
+        insert_at = max(smart_indices, default=0) + 1
+        smart_layout.insertWidget(insert_at, self.unfinished_button)
+        self.unfinished_button.clicked.connect(self.apply_unfinished_view)
+
+    def _install_attendance_filter(self) -> None:
+        advanced_row = self._required_layout_for(
+            self.status_filter,
+            "расширенных фильтров",
+        )
+        self.attendance_filter = QComboBox()
+        self.attendance_filter.setAccessibleName("Фильтр журнала по посещаемости")
+        self.attendance_filter.addItem("Любая посещаемость", "all")
+        for status in AttendanceStatus:
+            self.attendance_filter.addItem(ATTENDANCE_LABELS[status], status.value)
+        insert_at = max(0, advanced_row.indexOf(self.status_filter) + 1)
+        advanced_row.insertWidget(insert_at, self.attendance_filter)
+        self._advanced_widgets = (*self._advanced_widgets, self.attendance_filter)
+        self.attendance_filter.setVisible(self.filters_toggle.isChecked())
+        self.attendance_filter.currentIndexChanged.connect(self._schedule_refresh)
+
+    def _install_closeout_summary(self) -> None:
+        summary_layout = self._required_layout_for(
+            self.summary_attention,
+            "сводных показателей",
+        )
+        self.summary_unfinished = QLabel()
+        self.summary_unfinished.setObjectName("journalSummaryPill")
+        self.summary_unfinished.setProperty("tone", "warning")
+        self.summary_unfinished.setAccessibleName("Незавершённые занятия")
+        insert_at = max(0, summary_layout.indexOf(self.summary_attention) + 1)
+        summary_layout.insertWidget(insert_at, self.summary_unfinished)
+        self.summary_unfinished.hide()
 
     def _draft_values_dirty(self) -> bool:
         if self._loaded_lesson is None or not hasattr(self, "detail_attendance"):
@@ -465,6 +542,10 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
     def _guard_navigation(self) -> bool:
         return not self._note_dirty or self._resolve_dirty_before_context_change()
 
+    def confirm_closeout_before_exit(self) -> bool:
+        """Resolve an outstanding closeout draft before its owning window exits."""
+        return self._guard_navigation()
+
     def _open_selected_lesson(self) -> None:
         if self._guard_navigation():
             super()._open_selected_lesson()
@@ -478,7 +559,7 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
             super()._open_selected_schedule()
 
     def closeEvent(self, event) -> None:
-        if self._note_dirty and not self._resolve_dirty_before_context_change():
+        if not self.confirm_closeout_before_exit():
             event.ignore()
             return
         super().closeEvent(event)
