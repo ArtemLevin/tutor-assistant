@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 from tutor_assistant.crm import CrmStore, ScheduledLesson, StudentProfile
 from tutor_assistant.lesson_closeout import AttendanceStatus
 from tutor_assistant.ui.journal_closeout import CloseoutJournalFilter
-from tutor_assistant.ui.lesson_journal_closeout import LessonJournalCloseoutPage
+from tutor_assistant.ui.lesson_journal_closeout_stable import LessonJournalCloseoutStablePage
 
 
 class TestCodec:
@@ -61,7 +61,7 @@ def _lesson(starts_at: datetime, *, topic: str = "Производная") -> Sc
     )
 
 
-def _show_range(page: LessonJournalCloseoutPage, start: date, end: date) -> None:
+def _show_range(page: LessonJournalCloseoutStablePage, start: date, end: date) -> None:
     page.restore_filter_state(
         {
             "period": "custom",
@@ -79,7 +79,7 @@ def test_closeout_query_filters_attendance_and_unfinished(tmp_path: Path) -> Non
     second = _lesson(datetime.combine(today - timedelta(days=1), time(16, 0)), topic="B")
     store.save_one_off(first)
     store.save_one_off(second)
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     page.closeout_service.close_lesson(
         first,
         attendance=AttendanceStatus.PRESENT,
@@ -116,7 +116,7 @@ def test_closeout_controls_dirty_state_and_accessibility(
     store = _store(tmp_path, "closeout-controls.sqlite3")
     today = date.today()
     store.save_one_off(_lesson(datetime.combine(today - timedelta(days=1), time(16, 0))))
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
     page.show()
     application.processEvents()
@@ -148,7 +148,7 @@ def test_attendance_change_and_closeout_support_undo(
     today = date.today()
     starts_at = datetime.combine(today - timedelta(days=1), time(16, 0))
     store.save_one_off(_lesson(starts_at))
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
     page.show()
     application.processEvents()
@@ -190,7 +190,7 @@ def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
     store.save_one_off(
         _lesson(datetime.combine(today - timedelta(days=1), time(16, 0)), topic="Второй")
     )
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=3), today)
     page.apply_unfinished_view()
     page.show()
@@ -226,7 +226,7 @@ def test_dirty_note_is_saved_when_switching_rows(
     store.save_one_off(
         _lesson(datetime.combine(today - timedelta(days=1), time(16, 0)), topic="Второй")
     )
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=3), today)
     page.show()
     application.processEvents()
@@ -249,7 +249,7 @@ def test_attendance_filter_has_chip_and_resets_independently(
     application: QApplication,
 ) -> None:
     store = _store(tmp_path, "closeout-filter-chip.sqlite3")
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     page.attendance_filter.setCurrentIndex(
         page.attendance_filter.findData(AttendanceStatus.NO_SHOW.value)
     )
@@ -276,7 +276,7 @@ def test_closeout_keyboard_shortcuts(
     store = _store(tmp_path, "closeout-keyboard.sqlite3")
     today = date.today()
     store.save_one_off(_lesson(datetime.combine(today - timedelta(days=1), time(16, 0))))
-    page = LessonJournalCloseoutPage(store)
+    page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
     page.show()
     application.processEvents()
