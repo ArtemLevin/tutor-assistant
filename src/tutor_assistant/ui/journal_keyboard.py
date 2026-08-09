@@ -4,7 +4,13 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLineEdit,
+    QPlainTextEdit,
+    QTextEdit,
+    QWidget,
+)
 
 
 class JournalKeyboardController(QObject):
@@ -16,7 +22,7 @@ class JournalKeyboardController(QObject):
         self.shortcuts: list[QShortcut] = []
         self._add_shortcut(QKeySequence.StandardKey.Find, page.focus_search)
         self._add_shortcut("Ctrl+Shift+F", page.toggle_advanced_filters)
-        self._add_shortcut(QKeySequence.StandardKey.Undo, page.undo_last_action)
+        self._add_shortcut(QKeySequence.StandardKey.Undo, self.undo)
         self._add_shortcut("Esc", page.handle_escape)
         self._add_shortcut("F6", lambda: self.cycle_focus(1))
         self._add_shortcut("Shift+F6", lambda: self.cycle_focus(-1))
@@ -27,6 +33,13 @@ class JournalKeyboardController(QObject):
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(callback)
         self.shortcuts.append(shortcut)
+
+    def undo(self) -> None:
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QPlainTextEdit, QTextEdit)):
+            focus.undo()
+            return
+        self.page.undo_last_action()
 
     @staticmethod
     def _contains(zone: QWidget, focus: QWidget | None) -> bool:
