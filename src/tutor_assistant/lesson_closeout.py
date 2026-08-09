@@ -60,7 +60,7 @@ class LessonCloseoutService:
                 CREATE TABLE IF NOT EXISTS crm_lesson_closeout (
                     occurrence_id INTEGER PRIMARY KEY,
                     attendance TEXT NOT NULL DEFAULT 'unknown',
-                    teacher_note_secret TEXT,
+                    teacher_note_ciphertext TEXT,
                     closed_at TEXT,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(occurrence_id)
@@ -94,7 +94,7 @@ class LessonCloseoutService:
         return LessonCloseoutMeta(
             occurrence_id=int(row["occurrence_id"]),
             attendance=attendance,
-            teacher_note=self.crm_store.codec.decrypt(row["teacher_note_secret"]) or "",
+            teacher_note=self.crm_store.codec.decrypt(row["teacher_note_ciphertext"]) or "",
             closed_at=self._parse_datetime(row["closed_at"]),
             updated_at=self._parse_datetime(row["updated_at"]),
         )
@@ -109,7 +109,7 @@ class LessonCloseoutService:
         with self.crm_store.connect() as db:
             rows = db.execute(
                 f"""
-                SELECT occurrence_id, attendance, teacher_note_secret, closed_at, updated_at
+                SELECT occurrence_id, attendance, teacher_note_ciphertext, closed_at, updated_at
                 FROM crm_lesson_closeout
                 WHERE occurrence_id IN ({placeholders})
                 """,  # noqa: S608
@@ -225,7 +225,7 @@ class LessonCloseoutService:
                 return None
             row = db.execute(
                 """
-                SELECT occurrence_id, attendance, teacher_note_secret, closed_at, updated_at
+                SELECT occurrence_id, attendance, teacher_note_ciphertext, closed_at, updated_at
                 FROM crm_lesson_closeout
                 WHERE occurrence_id=?
                 """,
@@ -249,7 +249,7 @@ class LessonCloseoutService:
             ).fetchone()
             row = db.execute(
                 """
-                SELECT occurrence_id, attendance, teacher_note_secret, closed_at, updated_at
+                SELECT occurrence_id, attendance, teacher_note_ciphertext, closed_at, updated_at
                 FROM crm_lesson_closeout
                 WHERE occurrence_id=?
                 """,
@@ -288,11 +288,11 @@ class LessonCloseoutService:
         db.execute(
             """
             INSERT INTO crm_lesson_closeout (
-                occurrence_id, attendance, teacher_note_secret, closed_at, updated_at
+                occurrence_id, attendance, teacher_note_ciphertext, closed_at, updated_at
             ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(occurrence_id) DO UPDATE SET
                 attendance=excluded.attendance,
-                teacher_note_secret=excluded.teacher_note_secret,
+                teacher_note_ciphertext=excluded.teacher_note_ciphertext,
                 closed_at=excluded.closed_at,
                 updated_at=excluded.updated_at
             """,
@@ -347,14 +347,14 @@ class LessonCloseoutService:
             occurrence_id = self._ensure_occurrence(db, lesson, now=now)
             row = db.execute(
                 """
-                SELECT teacher_note_secret, closed_at
+                SELECT teacher_note_ciphertext, closed_at
                 FROM crm_lesson_closeout
                 WHERE occurrence_id=?
                 """,
                 (occurrence_id,),
             ).fetchone()
             teacher_note = (
-                self.crm_store.codec.decrypt(row["teacher_note_secret"]) or ""
+                self.crm_store.codec.decrypt(row["teacher_note_ciphertext"]) or ""
                 if row
                 else ""
             )
