@@ -58,7 +58,7 @@ def test_closeout_schema_is_idempotent(tmp_path: Path) -> None:
     assert columns == {
         "occurrence_id",
         "attendance",
-        "teacher_note_secret",
+        "teacher_note_ciphertext",
         "closed_at",
         "updated_at",
     }
@@ -101,14 +101,14 @@ def test_close_lesson_updates_status_and_closeout_atomically(tmp_path: Path) -> 
             (occurrence_id,),
         ).fetchone()
         closeout = db.execute(
-            "SELECT attendance, teacher_note_secret, closed_at FROM crm_lesson_closeout "
+            "SELECT attendance, teacher_note_ciphertext, closed_at FROM crm_lesson_closeout "
             "WHERE occurrence_id=?",
             (occurrence_id,),
         ).fetchone()
 
     assert occurrence["status"] == "completed"
     assert closeout["attendance"] == AttendanceStatus.PRESENT.value
-    assert closeout["teacher_note_secret"] == "Тема усвоена уверенно"
+    assert closeout["teacher_note_ciphertext"] == "Тема усвоена уверенно"
     assert closeout["closed_at"]
 
 
@@ -216,11 +216,11 @@ def test_teacher_note_stays_outside_scheduled_lesson_payload(tmp_path: Path) -> 
     )
 
     with store.connect() as db:
-        secret = db.execute(
-            "SELECT teacher_note_secret FROM crm_lesson_closeout"
-        ).fetchone()["teacher_note_secret"]
+        ciphertext = db.execute(
+            "SELECT teacher_note_ciphertext FROM crm_lesson_closeout"
+        ).fetchone()["teacher_note_ciphertext"]
 
     payload = lesson.model_dump()
-    assert str(secret).startswith(PlainSecretCodec.prefix)
+    assert str(ciphertext).startswith(PlainSecretCodec.prefix)
     assert "teacher_note" not in payload
     assert "attendance" not in payload
