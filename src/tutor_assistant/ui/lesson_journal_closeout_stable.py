@@ -214,7 +214,10 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
             del note_blocker
             self._attendance_baseline = attendance
             self._note_baseline = note
-            self._loaded_closeout_state = row.closeout if isinstance(row, CloseoutJournalRow) else None
+            self._loaded_closeout_state = meta
+            row_index = self.table.currentRow()
+            if 0 <= row_index < len(self._rows) and isinstance(row, CloseoutJournalRow):
+                self._rows[row_index] = replace(row, closeout=meta)
             self._note_dirty = False
         finally:
             self._closeout_loading = False
