@@ -2,10 +2,26 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QSignalBlocker
+from PySide6.QtCore import QEvent, QObject, QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 
 from .lesson_journal_closeout_stable import LessonJournalCloseoutStablePage
+
+
+class LessonJournalCloseGuard(QObject):
+    """Protect an unsaved closeout draft when the application window closes."""
+
+    def __init__(self, window, page: LessonJournalCloseoutStablePage) -> None:
+        super().__init__(window)
+        self.window = window
+        self.page = page
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.window and event.type() == QEvent.Type.Close:
+            if not self.page.confirm_closeout_before_exit():
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
 
 
 def install_lesson_journal(window) -> LessonJournalCloseoutStablePage:
@@ -26,6 +42,9 @@ def install_lesson_journal(window) -> LessonJournalCloseoutStablePage:
         lambda starts_at: _show_in_schedule(window, starts_at)
     )
     window.crm_students_page.changed.connect(page.refresh)
+    close_guard = LessonJournalCloseGuard(window, page)
+    window.installEventFilter(close_guard)
+    window._lesson_journal_close_guard = close_guard
     return page
 
 
