@@ -8,8 +8,8 @@ import pytest
 from tutor_assistant.crm import (
     CrmStore,
     PlainSecretCodec,
-    ScheduleRule,
     ScheduledLesson,
+    ScheduleRule,
     StudentProfile,
 )
 from tutor_assistant.lesson_closeout import AttendanceStatus, LessonCloseoutService
