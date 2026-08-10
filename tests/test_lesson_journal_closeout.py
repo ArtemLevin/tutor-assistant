@@ -137,6 +137,7 @@ def test_closeout_controls_dirty_state_and_accessibility(
     application.processEvents()
     assert page.teacher_note.width() > 100
     assert page.close_lesson_button.width() > 80
+    page._discard_closeout_draft()
     page.close()
 
 

@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from PySide6.QtCore import QEvent, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import (
+    QAccessible,
+    QAccessibleAnnouncementEvent,
+    QColor,
+    QFontMetrics,
+    QPainter,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -23,6 +30,8 @@ STATUS_TEXT_ROLE = int(Qt.ItemDataRole.UserRole) + 40
 STATUS_TONE_ROLE = int(Qt.ItemDataRole.UserRole) + 41
 ATTENTION_TEXT_ROLE = int(Qt.ItemDataRole.UserRole) + 42
 ATTENTION_TONE_ROLE = int(Qt.ItemDataRole.UserRole) + 43
+ATTENDANCE_TEXT_ROLE = int(Qt.ItemDataRole.UserRole) + 44
+ATTENDANCE_TONE_ROLE = int(Qt.ItemDataRole.UserRole) + 45
 
 
 class JournalTone(StrEnum):
@@ -51,8 +60,28 @@ _TONE_COLORS = {
 }
 
 
+def announce_accessible(
+    widget: QWidget,
+    message: str,
+    *,
+    assertive: bool = False,
+) -> None:
+    """Request a screen-reader announcement without moving keyboard focus."""
+    if not message or not QAccessible.isActive():
+        return
+    event = QAccessibleAnnouncementEvent(widget, message)
+    if assertive:
+        event.setPoliteness(QAccessible.AnnouncementPoliteness.Assertive)
+    QAccessible.updateAccessibility(event)
+
+
 class JournalStatusDelegate(QStyledItemDelegate):
-    """Paint compact text chips while preserving native row selection."""
+    """Paint semantic status chips on two lines while preserving native selection."""
+
+    chip_height = 20
+    horizontal_padding = 18
+    chip_gap = 6
+    line_gap = 4
 
     @staticmethod
     def _tone(value: object) -> JournalTone:
@@ -60,6 +89,10 @@ class JournalStatusDelegate(QStyledItemDelegate):
             return JournalTone(str(value))
         except ValueError:
             return JournalTone.NEUTRAL
+
+    @classmethod
+    def _chip_width(cls, metrics: QFontMetrics, text: str) -> int:
+        return metrics.horizontalAdvance(text) + cls.horizontal_padding
 
     def _draw_chip(
         self,
@@ -69,8 +102,8 @@ class JournalStatusDelegate(QStyledItemDelegate):
         tone: JournalTone,
     ) -> int:
         metrics = painter.fontMetrics()
-        width = metrics.horizontalAdvance(text) + 18
-        chip = QRect(rect.x(), rect.y(), width, min(26, rect.height()))
+        width = self._chip_width(metrics, text)
+        chip = QRect(rect.x(), rect.y(), width, self.chip_height)
         background, foreground, border = _TONE_COLORS[tone]
         painter.setBrush(background)
         painter.setPen(QPen(border, 1))
@@ -91,29 +124,74 @@ class JournalStatusDelegate(QStyledItemDelegate):
         if style is not None:
             style.drawControl(QStyle.ControlElement.CE_ItemViewItem, base, painter, base.widget)
 
-        text = str(index.data(STATUS_TEXT_ROLE) or index.data(Qt.ItemDataRole.DisplayRole) or "")
+        status = str(index.data(STATUS_TEXT_ROLE) or index.data(Qt.ItemDataRole.DisplayRole) or "")
         attention = str(index.data(ATTENTION_TEXT_ROLE) or "")
+        attendance = str(index.data(ATTENDANCE_TEXT_ROLE) or "")
+        secondary = [
+            (attention, self._tone(index.data(ATTENTION_TONE_ROLE))),
+            (attendance, self._tone(index.data(ATTENDANCE_TONE_ROLE))),
+        ]
+        secondary = [(text, tone) for text, tone in secondary if text]
+
         painter.save()
-        content = option.rect.adjusted(6, 10, -6, -10)
-        used = self._draw_chip(
+        painter.setClipRect(option.rect)
+        total_height = self.chip_height
+        if secondary:
+            total_height += self.line_gap + self.chip_height
+        top = option.rect.y() + max(2, (option.rect.height() - total_height) // 2)
+        primary_rect = QRect(
+            option.rect.x() + 6,
+            top,
+            max(1, option.rect.width() - 12),
+            self.chip_height,
+        )
+        self._draw_chip(
             painter,
-            content,
-            text,
+            primary_rect,
+            status,
             self._tone(index.data(STATUS_TONE_ROLE)),
         )
-        if attention:
-            content.translate(used + 6, 0)
-            self._draw_chip(
-                painter,
-                content,
-                attention,
-                self._tone(index.data(ATTENTION_TONE_ROLE)),
+        if secondary:
+            secondary_rect = QRect(
+                option.rect.x() + 6,
+                top + self.chip_height + self.line_gap,
+                max(1, option.rect.width() - 12),
+                self.chip_height,
             )
+            used = 0
+            for text, tone in secondary:
+                current = QRect(
+                    secondary_rect.x() + used,
+                    secondary_rect.y(),
+                    max(1, secondary_rect.width() - used),
+                    self.chip_height,
+                )
+                width = self._draw_chip(painter, current, text, tone)
+                used += width + self.chip_gap
         painter.restore()
 
     def sizeHint(self, option, index) -> QSize:
-        size = super().sizeHint(option, index)
-        return QSize(max(size.width(), 150), max(size.height(), 46))
+        base = super().sizeHint(option, index)
+        metrics = QFontMetrics(option.font)
+        status = str(index.data(STATUS_TEXT_ROLE) or index.data(Qt.ItemDataRole.DisplayRole) or "")
+        attention = str(index.data(ATTENTION_TEXT_ROLE) or "")
+        attendance = str(index.data(ATTENDANCE_TEXT_ROLE) or "")
+        primary_width = self._chip_width(metrics, status)
+        secondary_widths = [
+            self._chip_width(metrics, text)
+            for text in (attention, attendance)
+            if text
+        ]
+        secondary_width = (
+            sum(secondary_widths) + self.chip_gap * (len(secondary_widths) - 1)
+            if secondary_widths
+            else 0
+        )
+        width = max(primary_width, secondary_width) + 12
+        height = self.chip_height + 10
+        if secondary_widths:
+            height += self.line_gap + self.chip_height
+        return QSize(max(base.width(), width, 120), max(base.height(), height))
 
 
 class JournalToastBar(QFrame):
@@ -167,6 +245,14 @@ class JournalToastBar(QFrame):
         undo_available: bool,
         timeout_ms: int | None = None,
     ) -> None:
+        replacing_undo = (
+            self.isVisible()
+            and self.undo_button.isVisible()
+            and not undo_available
+        )
+        if replacing_undo:
+            self.dismissed.emit()
+        self._paused = False
         self.message.setText(text)
         self.setAccessibleDescription(text)
         self.undo_button.setVisible(undo_available)
@@ -174,6 +260,7 @@ class JournalToastBar(QFrame):
         self.timer.start(self._remaining_ms)
         self.show()
         self.raise_()
+        announce_accessible(self, text)
 
     def dismiss(self) -> None:
         self.timer.stop()
