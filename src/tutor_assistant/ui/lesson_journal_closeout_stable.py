@@ -63,8 +63,15 @@ class LessonJournalCloseoutStablePage(LessonJournalCloseoutPage):
     ) -> QLayout | None:
         for index in range(layout.count()):
             item = layout.itemAt(index)
-            if item.widget() is target:
+            widget = item.widget()
+            if widget is target:
                 return layout
+            if widget is not None:
+                widget_layout = widget.layout()
+                if widget_layout is not None:
+                    found = cls._layout_containing_widget(widget_layout, target)
+                    if found is not None:
+                        return found
             child = item.layout()
             if child is not None:
                 found = cls._layout_containing_widget(child, target)
