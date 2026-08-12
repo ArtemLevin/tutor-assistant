@@ -5,13 +5,13 @@ from datetime import datetime, timedelta
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 
-from .lesson_journal_closeout_stable import LessonJournalCloseoutStablePage
+from .lesson_journal_responsive import LessonJournalResponsivePage
 
 
 class LessonJournalCloseGuard(QObject):
     """Protect an unsaved closeout draft when the application window closes."""
 
-    def __init__(self, window, page: LessonJournalCloseoutStablePage) -> None:
+    def __init__(self, window, page: LessonJournalResponsivePage) -> None:
         super().__init__(window)
         self.window = window
         self.page = page
@@ -24,8 +24,8 @@ class LessonJournalCloseGuard(QObject):
         return super().eventFilter(watched, event)
 
 
-def install_lesson_journal(window) -> LessonJournalCloseoutStablePage:
-    page = LessonJournalCloseoutStablePage(
+def install_lesson_journal(window) -> LessonJournalResponsivePage:
+    page = LessonJournalResponsivePage(
         window.crm_store,
         lesson_store=window.pipeline.store,
     )
@@ -48,7 +48,7 @@ def install_lesson_journal(window) -> LessonJournalCloseoutStablePage:
     return page
 
 
-def _restore_extended_period(page: LessonJournalCloseoutStablePage) -> None:
+def _restore_extended_period(page: LessonJournalResponsivePage) -> None:
     state = getattr(page, "_pending_ux_state", None)
     if not isinstance(state, dict):
         return
