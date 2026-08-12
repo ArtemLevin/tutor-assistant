@@ -20,6 +20,8 @@ class RecordingConfig(BaseModel):
     subtype: str = "PCM_16"
     output_format: Literal["m4a", "mp3", "wav"] = "m4a"
     mic_device: int | None = None
+    mic_device_name: str | None = None
+    mic_host_api: str | None = None
     loopback_device: int | None = None
     system_device_id: str | None = None
     system_backend: str = "soundcard"

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .config import AppConfig, LaunchProfile
 from .domain import Student
 from .recording import AudioDevice, SystemAudioSource
+from .recording.devices import resolve_input_device
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,12 @@ def evaluate_readiness(
     topic: str,
 ) -> LaunchReadiness:
     student = next((item for item in students if item.id == student_id), None)
-    microphone = next((item for item in devices if item.index == config.recording.mic_device), None)
+    microphone = resolve_input_device(
+        devices,
+        device_index=config.recording.mic_device,
+        device_name=config.recording.mic_device_name,
+        host_api=config.recording.mic_host_api,
+    )
     system = next(
         (
             item
@@ -72,7 +78,11 @@ def evaluate_readiness(
                 "microphone",
                 "Микрофон",
                 microphone is not None,
-                microphone.name if microphone else "Сохранённый микрофон недоступен",
+                (
+                    f"{microphone.name} [{microphone.host_api}]"
+                    if microphone
+                    else "Сохранённый микрофон недоступен"
+                ),
             ),
             ReadinessItem(
                 "system",
