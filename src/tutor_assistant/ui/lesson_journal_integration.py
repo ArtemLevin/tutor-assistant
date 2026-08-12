@@ -6,6 +6,7 @@ from PySide6.QtCore import QEvent, QObject, QSignalBlocker
 from PySide6.QtWidgets import QMessageBox
 
 from .lesson_journal_responsive import LessonJournalResponsivePage
+from .schedule_homework import ScheduleHomeworkReceivedController
 
 
 class LessonJournalCloseGuard(QObject):
@@ -42,6 +43,13 @@ def install_lesson_journal(window) -> LessonJournalResponsivePage:
         lambda starts_at: _show_in_schedule(window, starts_at)
     )
     window.crm_students_page.changed.connect(page.refresh)
+
+    schedule_homework = ScheduleHomeworkReceivedController(
+        window.crm_schedule_page,
+        changed=lambda: page.refresh(preserve_context=True),
+    )
+    window._schedule_homework_received_controller = schedule_homework
+
     close_guard = LessonJournalCloseGuard(window, page)
     window.installEventFilter(close_guard)
     window._lesson_journal_close_guard = close_guard
