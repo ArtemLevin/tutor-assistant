@@ -378,7 +378,7 @@ def test_production_gui_uses_instance_recorder_factory() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'setObjectName("audioOutputFormat")' in source
-    assert 'form.addRow("Итоговый формат аудио"' in source
+    assert 'self._lesson_form().addRow("Итоговый формат аудио"' in source
     assert "_create_configured_recorder" in source
     assert 'kwargs["output_format"] = self.config.recording.output_format' in source
     assert "set_default_output_format" not in source

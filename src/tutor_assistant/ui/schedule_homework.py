@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QTimer
 from PySide6.QtWidgets import QCheckBox, QMessageBox
 
+from ..content.coordination import ContentBusyError
 from ..lesson_journal import HomeworkStatus
 from .journal_interactions import ReversibleLessonJournalService
 
@@ -21,13 +23,23 @@ class ScheduleHomeworkReceivedController(QObject):
         super().__init__(page)
         self.page = page
         self.grid = page.grid
+        self.viewport = self.grid.viewport()
         self.service = ReversibleLessonJournalService(page.store)
         self.changed = changed
         self._controls: dict[tuple[int, int, int], QCheckBox] = {}
         self._sync_pending = False
+        self._active = True
+
+        # Keep the deferred sync owned by this controller. A static
+        # QTimer.singleShot callable can outlive the QTableWidget during Qt child
+        # destruction and invoke Python with an already-deleted C++ object.
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(0)
+        self._sync_timer.timeout.connect(self.sync)
 
         self.page.installEventFilter(self)
-        self.grid.viewport().installEventFilter(self)
+        self.viewport.installEventFilter(self)
         self.grid.verticalScrollBar().valueChanged.connect(self.schedule_sync)
         self.grid.horizontalScrollBar().valueChanged.connect(self.schedule_sync)
         self.grid.horizontalHeader().sectionResized.connect(self.schedule_sync)
@@ -36,21 +48,35 @@ class ScheduleHomeworkReceivedController(QObject):
         model.modelReset.connect(self.schedule_sync)
         model.layoutChanged.connect(self.schedule_sync)
         model.dataChanged.connect(self.schedule_sync)
-        QTimer.singleShot(0, self.sync)
+
+        # Qt may destroy the schedule grid before the page/controller itself.
+        # Destruction callbacks only change Python state and never dereference a
+        # possibly deleted C++ widget.
+        self.page.destroyed.connect(self._deactivate)
+        self.grid.destroyed.connect(self._deactivate)
+        self.viewport.destroyed.connect(self._deactivate)
+        self.schedule_sync()
+
+    def _deactivate(self, *_args) -> None:
+        self._active = False
+        self._sync_pending = False
+        self._controls.clear()
 
     def eventFilter(self, watched, event) -> bool:
-        if watched in {self.page, self.grid.viewport()} and event.type() in {
+        if not self._active:
+            return False
+        if (watched is self.page or watched is self.viewport) and event.type() in {
             QEvent.Type.Show,
             QEvent.Type.Resize,
         }:
             self.schedule_sync()
-        return super().eventFilter(watched, event)
+        return False
 
     def schedule_sync(self, *_args) -> None:
-        if self._sync_pending:
+        if not self._active or self._sync_pending:
             return
         self._sync_pending = True
-        QTimer.singleShot(0, self.sync)
+        self._sync_timer.start()
 
     def _lesson_controls(self) -> dict[tuple[int, int, int], tuple[int, int, object]]:
         desired: dict[tuple[int, int, int], tuple[int, int, object]] = {}
@@ -74,6 +100,8 @@ class ScheduleHomeworkReceivedController(QObject):
 
     def sync(self) -> None:
         self._sync_pending = False
+        if not self._active:
+            return
         desired = self._lesson_controls()
         for key in tuple(self._controls):
             if key in desired:
@@ -91,7 +119,7 @@ class ScheduleHomeworkReceivedController(QObject):
             self._position_control(control, row, column)
 
     def _create_control(self, row: int, column: int, lesson) -> QCheckBox:
-        control = QCheckBox("ДЗ", self.grid.viewport())
+        control = QCheckBox("ДЗ", self.viewport)
         control.setObjectName("scheduleHomeworkReceived")
         control.setAccessibleName(
             f"ДЗ получено: {lesson.student_name}, {lesson.starts_at:%d.%m.%Y %H:%M}"
@@ -114,8 +142,33 @@ class ScheduleHomeworkReceivedController(QObject):
         control.show()
         return control
 
+    @staticmethod
+    def _set_control_unavailable(control: QCheckBox) -> None:
+        control.setEnabled(False)
+        control.setToolTip(
+            "Состояние ДЗ временно недоступно: хранилище занято другой операцией."
+        )
+        control.setAccessibleDescription(
+            "Состояние домашней работы временно недоступно. "
+            "Повторная синхронизация произойдёт автоматически."
+        )
+
     def _sync_control(self, control: QCheckBox, lesson) -> None:
-        snapshot = self.service.snapshot_homework(lesson)
+        try:
+            snapshot = self.service.snapshot_homework(lesson)
+        except ContentBusyError:
+            logging.getLogger(__name__).info(
+                "Schedule homework sync deferred because CRM storage is busy"
+            )
+            self._set_control_unavailable(control)
+            return
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Schedule homework sync failed while reading CRM state"
+            )
+            self._set_control_unavailable(control)
+            return
+
         received = bool(snapshot.received_at is not None)
         blocker = QSignalBlocker(control)
         control.setChecked(received)
@@ -139,14 +192,14 @@ class ScheduleHomeworkReceivedController(QObject):
             self.grid.rowHeight(current)
             for current in range(row, min(self.grid.rowCount(), row + span))
         )
-        viewport = self.grid.viewport().rect()
+        viewport_rect = self.viewport.rect()
         visible = (
             width > 0
             and height > 0
-            and x < viewport.right()
-            and x + width > viewport.left()
-            and y < viewport.bottom()
-            and y + height > viewport.top()
+            and x < viewport_rect.right()
+            and x + width > viewport_rect.left()
+            and y < viewport_rect.bottom()
+            and y + height > viewport_rect.top()
         )
         control.setVisible(visible)
         if not visible:
@@ -166,32 +219,66 @@ class ScheduleHomeworkReceivedController(QObject):
         )
         control.raise_()
 
+    @staticmethod
+    def _restore_toggle(control: QCheckBox, checked: bool) -> None:
+        blocker = QSignalBlocker(control)
+        control.setChecked(checked)
+        del blocker
+
     def _changed(self, lesson, control: QCheckBox, received: bool) -> None:
-        snapshot = self.service.snapshot_homework(lesson)
-        previous = bool(snapshot.received_at is not None)
-        if previous == received:
+        if not self._active:
             return
-        target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
+
+        # If the read fails, restore the state that was visible immediately
+        # before the user's toggle instead of guessing the database value.
+        previous_displayed = not received
         try:
+            snapshot = self.service.snapshot_homework(lesson)
+            previous = bool(snapshot.received_at is not None)
+            if previous == received:
+                self.schedule_sync()
+                return
+            target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
             occurrence_id = self.service.set_homework_status(lesson, target)
+        except ContentBusyError:
+            self._restore_toggle(control, previous_displayed)
+            QMessageBox.warning(
+                self.page,
+                "Домашняя работа",
+                "Хранилище сейчас занято другой операцией. "
+                "Отметка ДЗ не изменена; повторите действие после её завершения.",
+            )
+            self.schedule_sync()
+            return
         except Exception as exc:
-            blocker = QSignalBlocker(control)
-            control.setChecked(previous)
-            del blocker
+            self._restore_toggle(control, previous_displayed)
             QMessageBox.critical(
                 self.page,
                 "Домашняя работа",
                 f"Не удалось сохранить отметку о получении ДЗ: {exc}",
             )
+            self.schedule_sync()
             return
 
         lesson.occurrence_id = occurrence_id
-        self.page.refresh()
+        try:
+            self.page.refresh()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Homework state was saved but schedule refresh failed"
+            )
         if self.changed is not None:
-            self.changed()
+            try:
+                self.changed()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Homework state was saved but dependent journal refresh failed"
+                )
         self.schedule_sync()
 
     def checkbox_for(self, row: int, column: int) -> QCheckBox | None:
+        if not self._active:
+            return None
         for (control_row, control_column, _marker), control in self._controls.items():
             if control_row == row and control_column == column:
                 return control

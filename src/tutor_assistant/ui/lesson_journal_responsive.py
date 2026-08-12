@@ -118,15 +118,21 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
         if not hasattr(self, "detail_homework_received"):
             return
         row = self._selected_row()
-        blocker = QSignalBlocker(self.detail_homework_received)
+        received_blocker = QSignalBlocker(self.detail_homework_received)
+        homework_blocker = QSignalBlocker(self.detail_homework)
         if row is None:
             self.detail_homework_received.setChecked(False)
             self.detail_homework_received.setEnabled(False)
         else:
             received = bool(row.homework and row.homework.received_at is not None)
             self.detail_homework_received.setChecked(received)
-            self.detail_homework_received.setEnabled(row.lesson.status != "cancelled")
-        del blocker
+            enabled = row.lesson.status != "cancelled"
+            self.detail_homework_received.setEnabled(enabled)
+            homework_index = self.detail_homework.findData(row.homework_status.value)
+            if homework_index >= 0:
+                self.detail_homework.setCurrentIndex(homework_index)
+            self.detail_homework.setEnabled(enabled)
+        del homework_blocker, received_blocker
 
     def _detail_homework_received_changed(self, received: bool) -> None:
         if self._loading_detail:
@@ -140,7 +146,16 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
             return
 
         lesson = row.lesson
-        snapshot = self.service.snapshot_homework(lesson)
+        try:
+            snapshot = self.service.snapshot_homework(lesson)
+        except Exception as exc:
+            self._sync_homework_received_control()
+            self.toast.show_message(
+                f"Не удалось прочитать состояние ДЗ: {exc}",
+                undo_available=False,
+            )
+            self._position_toast()
+            return
         target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
         anchor = self._capture_view_anchor()
         self._apply_reversible_mutation(
@@ -167,6 +182,14 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
         self.detail_homework_received.setChecked(False)
         self.detail_homework_received.setEnabled(False)
         del blocker
+
+    def _render(self, result, *, anchor=None) -> None:
+        super()._render(result, anchor=anchor)
+        # A preserve-context refresh can keep the same selected table row and
+        # therefore emit no selectionChanged signal. Synchronize the detail
+        # controls explicitly after every render so checkbox and combo cannot
+        # display contradictory homework states.
+        self._sync_homework_received_control()
 
     def _install_responsive_detail_card(self) -> None:
         details = self.detail_payment.parentWidget()
