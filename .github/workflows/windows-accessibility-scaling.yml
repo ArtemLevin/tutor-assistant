@@ -45,4 +45,5 @@ jobs:
           tests/test_ux4_accessibility_gui.py
           tests/test_ux4_scaling_gui.py
           tests/test_lesson_journal_layout_recursion.py
+          tests/test_schedule_homework_received.py
           tests/test_ux6_teacher_cockpit_gui.py
