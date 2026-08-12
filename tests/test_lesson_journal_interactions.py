@@ -15,6 +15,7 @@ from tutor_assistant.crm import CrmStore, ScheduledLesson, StudentProfile
 from tutor_assistant.lesson_journal import HomeworkStatus
 from tutor_assistant.ui.journal_interactions import ReversibleLessonJournalService
 from tutor_assistant.ui.lesson_journal_interactions import LessonJournalInteractionPage
+from tutor_assistant.ui.lesson_journal_responsive import LessonJournalResponsivePage
 
 
 class TestCodec:
@@ -99,6 +100,39 @@ def test_payment_mutation_has_one_step_undo(
     assert not page._rows[0].lesson.paid
     assert page._pending_undo is None
     assert "отменено" in page.toast.message.text().casefold()
+    page.close()
+
+
+def test_received_homework_checkbox_is_reversible_and_synced(
+    tmp_path: Path,
+    application: QApplication,
+) -> None:
+    store = _store(tmp_path, "interaction-homework-received.sqlite3")
+    today = date.today()
+    starts_at = datetime.combine(today, time(16, 0))
+    store.save_one_off(_lesson(starts_at))
+    page = LessonJournalResponsivePage(store)
+    _show_range(page, today, today)
+    page.show()
+    application.processEvents()
+
+    assert page._rows[0].homework_status == HomeworkStatus.NONE
+    assert not page.detail_homework_received.isChecked()
+
+    page.detail_homework_received.setChecked(True)
+    application.processEvents()
+
+    assert page._rows[0].homework_status == HomeworkStatus.RECEIVED
+    assert page.detail_homework_received.isChecked()
+    assert page.detail_homework.currentData() == HomeworkStatus.RECEIVED.value
+    assert page._pending_undo is not None
+
+    page.undo_last_action()
+    application.processEvents()
+
+    assert page._rows[0].homework_status == HomeworkStatus.NONE
+    assert not page.detail_homework_received.isChecked()
+    assert page.detail_homework.currentData() == HomeworkStatus.NONE.value
     page.close()
 
 
