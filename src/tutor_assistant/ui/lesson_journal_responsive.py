@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QBoxLayout,
+    QCheckBox,
     QFrame,
     QLayout,
     QScrollArea,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..lesson_journal import HomeworkStatus
 from .lesson_journal_closeout_stable import LessonJournalCloseoutStablePage
 
 
@@ -77,7 +79,94 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._install_homework_received_control()
         self._install_responsive_detail_card()
+
+    def _install_homework_received_control(self) -> None:
+        details = self.detail_payment.parentWidget()
+        if details is None:
+            raise RuntimeError("Карточка выбранного занятия недоступна")
+        details_layout = details.layout()
+        if not isinstance(details_layout, QBoxLayout):
+            raise RuntimeError("Layout карточки выбранного занятия не поддерживает вставку")
+
+        self.detail_homework_received = QCheckBox("ДЗ получено", details)
+        self.detail_homework_received.setObjectName("detailHomeworkReceived")
+        self.detail_homework_received.setAccessibleName(
+            "Домашняя работа по выбранному занятию получена"
+        )
+        self.detail_homework_received.setAccessibleDescription(
+            "Отмечает получение домашней работы. Состояние синхронизировано со статусом ДЗ."
+        )
+        self.detail_homework_received.setEnabled(False)
+        self.detail_homework_received.toggled.connect(
+            self._detail_homework_received_changed
+        )
+
+        payment_index = details_layout.indexOf(self.detail_payment)
+        if payment_index < 0:
+            raise RuntimeError("Поле оплаты отсутствует в карточке выбранного занятия")
+        details_layout.insertWidget(payment_index + 1, self.detail_homework_received)
+
+        # The stable closeout layer installs the production tab chain before this
+        # responsive extension is created. Splice the new control into that chain.
+        QWidget.setTabOrder(self.detail_payment, self.detail_homework_received)
+        QWidget.setTabOrder(self.detail_homework_received, self.detail_homework)
+        self._sync_homework_received_control()
+
+    def _sync_homework_received_control(self) -> None:
+        if not hasattr(self, "detail_homework_received"):
+            return
+        row = self._selected_row()
+        blocker = QSignalBlocker(self.detail_homework_received)
+        if row is None:
+            self.detail_homework_received.setChecked(False)
+            self.detail_homework_received.setEnabled(False)
+        else:
+            received = bool(row.homework and row.homework.received_at is not None)
+            self.detail_homework_received.setChecked(received)
+            self.detail_homework_received.setEnabled(row.lesson.status != "cancelled")
+        del blocker
+
+    def _detail_homework_received_changed(self, received: bool) -> None:
+        if self._loading_detail:
+            return
+        row = self._selected_row()
+        if row is None or row.lesson.status == "cancelled":
+            self._sync_homework_received_control()
+            return
+        current_received = bool(row.homework and row.homework.received_at is not None)
+        if current_received == received:
+            return
+
+        lesson = row.lesson
+        snapshot = self.service.snapshot_homework(lesson)
+        target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
+        anchor = self._capture_view_anchor()
+        self._apply_reversible_mutation(
+            message=(
+                "ДЗ отмечено как полученное"
+                if received
+                else "Отметка «ДЗ получено» снята"
+            ),
+            action=lambda: self.service.set_homework_status(lesson, target),
+            undo=lambda: self.service.restore_homework(lesson, snapshot),
+            anchor=anchor,
+            focus_widget=self.detail_homework_received,
+        )
+
+    def _selection_changed(self) -> None:
+        super()._selection_changed()
+        self._sync_homework_received_control()
+
+    def _clear_details(self) -> None:
+        super()._clear_details()
+        if not hasattr(self, "detail_homework_received"):
+            return
+        blocker = QSignalBlocker(self.detail_homework_received)
+        self.detail_homework_received.setChecked(False)
+        self.detail_homework_received.setEnabled(False)
+        del blocker
 
     def _install_responsive_detail_card(self) -> None:
         details = self.detail_payment.parentWidget()
