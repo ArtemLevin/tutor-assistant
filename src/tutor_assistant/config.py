@@ -36,6 +36,9 @@ class RecordingConfig(BaseModel):
 
 
 class WhisperConfig(BaseModel):
+    """Local transcription settings; the class name is kept for config compatibility."""
+
+    provider: Literal["faster_whisper", "gigaam"] = "faster_whisper"
     model: str = "small"
     device: str = "cpu"
     compute_type: str = "int8"
@@ -44,6 +47,9 @@ class WhisperConfig(BaseModel):
     vad_filter: bool = True
     cpu_threads: int = Field(default=2, ge=1, le=32)
     num_workers: int = Field(default=1, ge=1, le=4)
+    gigaam_model: str = "v3_e2e_rnnt"
+    gigaam_device: Literal["auto", "cpu", "cuda"] = "auto"
+    gigaam_chunk_seconds: float = Field(default=20.0, ge=5, le=24)
 
 
 class RepositoryConfig(BaseModel):
