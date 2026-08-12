@@ -35,6 +35,10 @@ _AUDIO_FORMAT_OPTIONS = (
     ("MP3 · 128 кбит/с", "mp3"),
     ("WAV · PCM 16 бит", "wav"),
 )
+_TRANSCRIPTION_PROVIDER_OPTIONS = (
+    ("faster-whisper · текущий локальный движок", "faster_whisper"),
+    ("GigaAM v3 e2e RNNT · локально · русский", "gigaam"),
+)
 _TRANSCRIPTION_ENTRY_STATUSES = {
     JobStatus.DRAFT,
     JobStatus.RECORDED,
@@ -58,6 +62,7 @@ class MainWindow(ConcurrentMainWindow):
         base_app.DualRecorder = self._create_configured_recorder
         install_library_transcription_control(self.student_content_page)
         self._install_audio_format_selector()
+        self._install_transcription_provider_selector()
 
     def _build(self) -> None:
         super()._build()
@@ -188,6 +193,12 @@ class MainWindow(ConcurrentMainWindow):
         kwargs["output_format"] = self.config.recording.output_format
         return DualRecorder(*args, **kwargs)
 
+    def _lesson_form(self) -> QFormLayout:
+        form = self.student.parentWidget().layout()
+        if not isinstance(form, QFormLayout):
+            raise RuntimeError("Форма параметров занятия недоступна")
+        return form
+
     def _install_audio_format_selector(self) -> None:
         self.audio_output_format = QComboBox()
         self.audio_output_format.setObjectName("audioOutputFormat")
@@ -202,12 +213,27 @@ class MainWindow(ConcurrentMainWindow):
         )
         if selected_index >= 0:
             self.audio_output_format.setCurrentIndex(selected_index)
-        form = self.student.parentWidget().layout()
-        if not isinstance(form, QFormLayout):
-            raise RuntimeError("Форма параметров занятия недоступна")
-        form.addRow("Итоговый формат аудио", self.audio_output_format)
+        self._lesson_form().addRow("Итоговый формат аудио", self.audio_output_format)
         self.audio_output_format.currentIndexChanged.connect(
             self._audio_output_format_changed
+        )
+
+    def _install_transcription_provider_selector(self) -> None:
+        self.transcription_provider = QComboBox()
+        self.transcription_provider.setObjectName("transcriptionProvider")
+        self.transcription_provider.setAccessibleName("Транскрибатор")
+        self.transcription_provider.setToolTip(
+            "Выберите локальный движок распознавания речи. "
+            "faster-whisper остаётся вариантом по умолчанию; GigaAM требует отдельной установки."
+        )
+        for label, value in _TRANSCRIPTION_PROVIDER_OPTIONS:
+            self.transcription_provider.addItem(label, value)
+        selected_index = self.transcription_provider.findData(self.config.whisper.provider)
+        if selected_index >= 0:
+            self.transcription_provider.setCurrentIndex(selected_index)
+        self._lesson_form().addRow("Транскрибатор", self.transcription_provider)
+        self.transcription_provider.currentIndexChanged.connect(
+            self._transcription_provider_changed
         )
 
     def _audio_output_format_changed(self, _index: int) -> None:
@@ -215,6 +241,37 @@ class MainWindow(ConcurrentMainWindow):
         self.config.recording.output_format = selected
         self.config.save(self.config_path)
         self._set_status(f"Формат следующих записей: {selected.upper()}")
+
+    def _transcription_provider_changed(self, _index: int) -> None:
+        selected = str(self.transcription_provider.currentData())
+        current = self.config.whisper.provider
+        if selected == current:
+            return
+        if self.transcription_queue.unfinished_count:
+            self.transcription_provider.blockSignals(True)
+            try:
+                restore_index = self.transcription_provider.findData(current)
+                if restore_index >= 0:
+                    self.transcription_provider.setCurrentIndex(restore_index)
+            finally:
+                self.transcription_provider.blockSignals(False)
+            QMessageBox.warning(
+                self,
+                "Транскрибатор",
+                "Дождитесь завершения текущей очереди транскрибации, "
+                "затем смените движок.",
+            )
+            return
+        self.config.whisper.provider = selected
+        self.config.save(self.config_path)
+        if selected == "gigaam":
+            self._set_status(
+                "Транскрибатор: GigaAM v3 e2e RNNT. "
+                "При первом запуске модель будет загружена локально.",
+                "working",
+            )
+        else:
+            self._set_status("Транскрибатор: faster-whisper")
 
     def start_recording(self) -> None:
         self.audio_output_format.setEnabled(False)
