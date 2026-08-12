@@ -8,9 +8,65 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QWidget,
 )
 
 from .lesson_journal_closeout_stable import LessonJournalCloseoutStablePage
+
+
+def _make_detail_card_scrollable(
+    details: QWidget,
+    splitter: QSplitter,
+    index: int,
+    due_layout: QBoxLayout | None,
+    *,
+    min_width: int,
+    max_width: int,
+) -> QScrollArea:
+    """Move a detail card into a vertical scroll area without changing its controls."""
+    details_layout = details.layout()
+    if details_layout is None:
+        raise RuntimeError("Layout карточки выбранного занятия недоступен")
+    details_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+
+    if due_layout is not None:
+        due_layout.setDirection(QBoxLayout.Direction.TopToBottom)
+        due_layout.setSpacing(6)
+
+    scroll = QScrollArea()
+    scroll.setObjectName("lessonJournalDetailsScroll")
+    scroll.setAccessibleName("Карточка выбранного занятия")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    scroll.setMinimumWidth(min_width)
+    scroll.setMaximumWidth(max_width)
+    scroll.setSizePolicy(
+        QSizePolicy.Policy.Preferred,
+        QSizePolicy.Policy.Expanding,
+    )
+
+    # Width constraints belong to the splitter pane, not to the scrollable
+    # content widget. Keeping them on the content prevents QScrollArea from
+    # resizing it correctly at different Windows scale factors.
+    details.setMinimumWidth(0)
+    details.setMaximumWidth(16_777_215)
+    details.setSizePolicy(
+        QSizePolicy.Policy.Expanding,
+        QSizePolicy.Policy.MinimumExpanding,
+    )
+
+    sizes = splitter.sizes()
+    splitter.replaceWidget(index, scroll)
+    if splitter.indexOf(scroll) != index:
+        raise RuntimeError("Не удалось заменить карточку на прокручиваемую область")
+    scroll.setWidget(details)
+    splitter.setStretchFactor(0, 1)
+    splitter.setStretchFactor(index, 0)
+    if len(sizes) == splitter.count():
+        splitter.setSizes(sizes)
+    return scroll
 
 
 class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
@@ -35,55 +91,17 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
             raise RuntimeError("Карточка выбранного занятия отсутствует в splitter")
 
         # The closeout layer adds enough controls that the card can no longer fit
-        # vertically into a compact main window.  Let the layout keep its true
-        # minimum height and move the overflow into a vertical scroll area instead
-        # of compressing child widgets until they visually collide.
-        details_layout = details.layout()
-        if details_layout is None:
-            raise RuntimeError("Layout карточки выбранного занятия недоступен")
-        details_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-
-        # The deadline row is the only dense horizontal field group in the card.
-        # Stack it so Windows font/DPI scaling cannot force the checkbox and date
-        # editor into the same narrow horizontal space.
+        # vertically into a compact main window. Keep the layout's real minimum
+        # height and move overflow into scrolling instead of compressing controls.
         due_layout = self._required_layout_for(self.due_enabled, "срока домашней работы")
-        if isinstance(due_layout, QBoxLayout):
-            due_layout.setDirection(QBoxLayout.Direction.TopToBottom)
-            due_layout.setSpacing(6)
-
-        scroll = QScrollArea()
-        scroll.setObjectName("lessonJournalDetailsScroll")
-        scroll.setAccessibleName("Карточка выбранного занятия")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setMinimumWidth(self.detail_pane_min_width)
-        scroll.setMaximumWidth(self.detail_pane_max_width)
-        scroll.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Expanding,
+        scroll = _make_detail_card_scrollable(
+            details,
+            splitter,
+            index,
+            due_layout if isinstance(due_layout, QBoxLayout) else None,
+            min_width=self.detail_pane_min_width,
+            max_width=self.detail_pane_max_width,
         )
-
-        # Width constraints belong to the splitter pane, not to the scrollable
-        # content widget.  Keeping them on the content prevents QScrollArea from
-        # resizing it correctly at different scale factors.
-        details.setMinimumWidth(0)
-        details.setMaximumWidth(16_777_215)
-        details.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.MinimumExpanding,
-        )
-
-        sizes = splitter.sizes()
-        replaced = splitter.replaceWidget(index, scroll)
-        if replaced is not details:
-            raise RuntimeError("Не удалось заменить карточку на прокручиваемую область")
-        scroll.setWidget(details)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(index, 0)
-        if len(sizes) == splitter.count():
-            splitter.setSizes(sizes)
 
         self.detail_panel = details
         self.detail_scroll_area = scroll
