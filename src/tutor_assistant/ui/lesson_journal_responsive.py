@@ -90,10 +90,17 @@ class LessonJournalResponsivePage(LessonJournalCloseoutStablePage):
         if index < 0:
             raise RuntimeError("Карточка выбранного занятия отсутствует в splitter")
 
+        # QSplitter owns its child panes internally rather than exposing them
+        # through the page layout hierarchy. Search for the deadline row from
+        # the detail card's own layout instead of walking from self.layout().
+        details_layout = details.layout()
+        if details_layout is None:
+            raise RuntimeError("Layout карточки выбранного занятия недоступен")
+        due_layout = self._layout_containing_widget(details_layout, self.due_enabled)
+
         # The closeout layer adds enough controls that the card can no longer fit
         # vertically into a compact main window. Keep the layout's real minimum
         # height and move overflow into scrolling instead of compressing controls.
-        due_layout = self._required_layout_for(self.due_enabled, "срока домашней работы")
         scroll = _make_detail_card_scrollable(
             details,
             splitter,

@@ -46,6 +46,42 @@ def test_layout_search_descends_into_widget_owned_layout(
     application.processEvents()
 
 
+def test_splitter_detail_layout_is_resolved_from_detail_pane(
+    application: QApplication,
+) -> None:
+    root = QWidget()
+    root_layout = QVBoxLayout(root)
+    splitter = QSplitter(Qt.Orientation.Horizontal)
+    root_layout.addWidget(splitter)
+    splitter.addWidget(QWidget())
+
+    details = QFrame()
+    details_layout = QVBoxLayout(details)
+    due_layout = QHBoxLayout()
+    due_enabled = QLabel("Дедлайн")
+    due_at = QLabel("12.08.2026 18:00")
+    due_layout.addWidget(due_enabled)
+    due_layout.addWidget(due_at)
+    details_layout.addLayout(due_layout)
+    splitter.addWidget(details)
+
+    assert (
+        LessonJournalCloseoutStablePage._layout_containing_widget(
+            root_layout,
+            due_enabled,
+        )
+        is None
+    )
+    found = LessonJournalCloseoutStablePage._layout_containing_widget(
+        details_layout,
+        due_enabled,
+    )
+    assert found is due_layout
+
+    root.close()
+    application.processEvents()
+
+
 def test_detail_card_overflow_uses_vertical_scroll_without_field_overlap(
     application: QApplication,
 ) -> None:
