@@ -15,11 +15,8 @@ from typing import Literal, cast
 
 from ..atomic_io import atomic_write_text
 from .devices import SystemAudioSource
-from .recorder import (
-    DualRecorder as WavDualRecorder,
-    RecordingResult,
-    recover_wav_recording,
-)
+from .recorder import RecordingResult, recover_wav_recording
+from .recorder import DualRecorder as WavDualRecorder
 
 AudioOutputFormat = Literal["m4a", "mp3", "wav"]
 
