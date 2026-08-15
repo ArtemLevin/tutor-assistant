@@ -46,11 +46,24 @@ def configure_logging(workspace: Path, verbose: bool = False) -> Path:
     return log_file
 
 
+def _prune_closed_stream_handlers() -> None:
+    """Remove handlers whose stream was already closed by a test/app teardown."""
+    root = logging.getLogger()
+    for handler in tuple(root.handlers):
+        stream = getattr(handler, "stream", None)
+        if stream is not None and bool(getattr(stream, "closed", False)):
+            root.removeHandler(handler)
+
+
 def install_exception_hook() -> None:
     def handle_exception(exc_type, exc_value, traceback) -> None:
         if issubclass(exc_type, KeyboardInterrupt):
             sys.__excepthook__(exc_type, exc_value, traceback)
             return
+        # Pytest capture streams and GUI-owned streams can already be closed when
+        # an exception escapes during teardown. Logging to such a handler emits a
+        # secondary "I/O operation on closed file" error and obscures the real crash.
+        _prune_closed_stream_handlers()
         logging.getLogger("tutor_assistant.crash").critical(
             "Необработанное исключение", exc_info=(exc_type, exc_value, traceback)
         )

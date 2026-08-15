@@ -315,7 +315,19 @@ def test_focus_model_enters_closeout_at_attendance(
     zones = page.keyboard_focus_zones()
     assert zones[-1] is page.detail_attendance
     assert page.detail_payment not in zones
-    assert page.table.nextInFocusChain() is page.detail_attendance
+
+    # QAbstractScrollArea inserts implementation widgets such as its viewport
+    # into Qt's raw focus chain. Verify the user-visible order while allowing
+    # those internal nodes between the table and attendance field.
+    current = page.table
+    intermediate = []
+    for _ in range(8):
+        current = current.nextInFocusChain()
+        if current is page.detail_attendance:
+            break
+        intermediate.append(current)
+    assert current is page.detail_attendance
+    assert page.detail_payment not in intermediate
     page.close()
 
 

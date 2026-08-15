@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QTimer
 from PySide6.QtWidgets import QCheckBox, QMessageBox
 
+from ..content.coordination import ContentBusyError
 from ..lesson_journal import HomeworkStatus
 from .journal_interactions import ReversibleLessonJournalService
 
@@ -140,8 +142,33 @@ class ScheduleHomeworkReceivedController(QObject):
         control.show()
         return control
 
+    @staticmethod
+    def _set_control_unavailable(control: QCheckBox) -> None:
+        control.setEnabled(False)
+        control.setToolTip(
+            "Состояние ДЗ временно недоступно: хранилище занято другой операцией."
+        )
+        control.setAccessibleDescription(
+            "Состояние домашней работы временно недоступно. "
+            "Повторная синхронизация произойдёт автоматически."
+        )
+
     def _sync_control(self, control: QCheckBox, lesson) -> None:
-        snapshot = self.service.snapshot_homework(lesson)
+        try:
+            snapshot = self.service.snapshot_homework(lesson)
+        except ContentBusyError:
+            logging.getLogger(__name__).info(
+                "Schedule homework sync deferred because CRM storage is busy"
+            )
+            self._set_control_unavailable(control)
+            return
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Schedule homework sync failed while reading CRM state"
+            )
+            self._set_control_unavailable(control)
+            return
+
         received = bool(snapshot.received_at is not None)
         blocker = QSignalBlocker(control)
         control.setChecked(received)
@@ -192,6 +219,12 @@ class ScheduleHomeworkReceivedController(QObject):
         )
         control.raise_()
 
+    @staticmethod
+    def _restore_toggle(control: QCheckBox, checked: bool) -> None:
+        blocker = QSignalBlocker(control)
+        control.setChecked(checked)
+        del blocker
+
     def _changed(self, lesson, control: QCheckBox, received: bool) -> None:
         if not self._active:
             return
@@ -199,24 +232,52 @@ class ScheduleHomeworkReceivedController(QObject):
         previous = bool(snapshot.received_at is not None)
         if previous == received:
             return
-        target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
+
+        # If the read fails, restore the state that was visible immediately
+        # before the user's toggle instead of guessing the database value.
+        previous_displayed = not received
         try:
+            snapshot = self.service.snapshot_homework(lesson)
+            previous = bool(snapshot.received_at is not None)
+            if previous == received:
+                self.schedule_sync()
+                return
+            target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
             occurrence_id = self.service.set_homework_status(lesson, target)
+        except ContentBusyError:
+            self._restore_toggle(control, previous_displayed)
+            QMessageBox.warning(
+                self.page,
+                "Домашняя работа",
+                "Хранилище сейчас занято другой операцией. "
+                "Отметка ДЗ не изменена; повторите действие после её завершения.",
+            )
+            self.schedule_sync()
+            return
         except Exception as exc:
-            blocker = QSignalBlocker(control)
-            control.setChecked(previous)
-            del blocker
+            self._restore_toggle(control, previous_displayed)
             QMessageBox.critical(
                 self.page,
                 "Домашняя работа",
                 f"Не удалось сохранить отметку о получении ДЗ: {exc}",
             )
+            self.schedule_sync()
             return
 
         lesson.occurrence_id = occurrence_id
-        self.page.refresh()
+        try:
+            self.page.refresh()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Homework state was saved but schedule refresh failed"
+            )
         if self.changed is not None:
-            self.changed()
+            try:
+                self.changed()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Homework state was saved but dependent journal refresh failed"
+                )
         self.schedule_sync()
 
     def checkbox_for(self, row: int, column: int) -> QCheckBox | None:
