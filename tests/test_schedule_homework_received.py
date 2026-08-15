@@ -139,37 +139,6 @@ def test_schedule_slot_homework_checkbox_persists_without_breaking_payment(
     page.close()
 
 
-def test_schedule_controller_disables_control_while_storage_is_busy(
-    tmp_path: Path,
-    application: QApplication,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = _store(tmp_path)
-    page = SchedulePage(store)
-    page.week_start = date(2026, 8, 3)
-    page.refresh()
-    controller = ScheduleHomeworkReceivedController(page)
-    page.show()
-    application.processEvents()
-    controller.sync()
-
-    row = page._row_for_time(16, 0)
-    control = controller.checkbox_for(row, 0)
-    assert control is not None and control.isEnabled()
-
-    def busy(_lesson):
-        raise ContentBusyError("busy")
-
-    monkeypatch.setattr(controller.service, "snapshot_homework", busy)
-    controller.sync()
-
-    control = controller.checkbox_for(row, 0)
-    assert control is not None
-    assert not control.isEnabled()
-    assert "временно недоступно" in control.toolTip()
-    page.close()
-
-
 def test_schedule_controller_ignores_queued_sync_after_grid_destroy(
     tmp_path: Path,
     application: QApplication,

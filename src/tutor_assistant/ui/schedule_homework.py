@@ -50,8 +50,8 @@ class ScheduleHomeworkReceivedController(QObject):
         model.dataChanged.connect(self.schedule_sync)
 
         # Qt may destroy the schedule grid before the page/controller itself.
-        # Destruction callbacks only change Python state and never dereference a
-        # possibly deleted C++ widget.
+        # Mark the controller inactive from destruction signals without touching
+        # any C++ widget in the teardown callback.
         self.page.destroyed.connect(self._deactivate)
         self.grid.destroyed.connect(self._deactivate)
         self.viewport.destroyed.connect(self._deactivate)
@@ -227,6 +227,10 @@ class ScheduleHomeworkReceivedController(QObject):
 
     def _changed(self, lesson, control: QCheckBox, received: bool) -> None:
         if not self._active:
+            return
+        snapshot = self.service.snapshot_homework(lesson)
+        previous = bool(snapshot.received_at is not None)
+        if previous == received:
             return
 
         # If the read fails, restore the state that was visible immediately
