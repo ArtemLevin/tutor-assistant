@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 import tutor_assistant.recording as recording_package
+import tutor_assistant.recording.recorder as recorder_module
 from tutor_assistant.config import AppConfig, RecordingConfig
 from tutor_assistant.recording import output as output_module
 from tutor_assistant.recording.output import (
@@ -51,22 +52,19 @@ def _probe_payload(
     duration: float = 12.5,
     sample_rate: int = 48_000,
     channels: int = 1,
-    bitrate: int = 96_000,
+    bitrate: int | None = 96_000,
 ) -> str:
-    return json.dumps(
-        {
-            "streams": [
-                {
-                    "codec_name": codec,
-                    "duration": str(duration),
-                    "sample_rate": str(sample_rate),
-                    "channels": channels,
-                    "bit_rate": str(bitrate),
-                }
-            ],
-            "format": {"duration": str(duration), "bit_rate": str(bitrate)},
-        }
-    )
+    stream: dict[str, object] = {
+        "codec_name": codec,
+        "duration": str(duration),
+        "sample_rate": str(sample_rate),
+        "channels": channels,
+    }
+    container: dict[str, object] = {"duration": str(duration)}
+    if bitrate is not None:
+        stream["bit_rate"] = str(bitrate)
+        container["bit_rate"] = str(bitrate)
+    return json.dumps({"streams": [stream], "format": container})
 
 
 def _encoder_output(*encoders: str) -> str:
@@ -135,7 +133,7 @@ def test_capability_probe_requires_selected_encoder(
         ensure_output_format_available("mp3")
 
 
-def test_m4a_encoding_is_verified_and_committed_atomically(
+def test_m4a_low_reported_bitrate_is_verified_and_committed_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -160,7 +158,7 @@ def test_m4a_encoding_is_verified_and_committed_atomically(
             Path(command[-1]).write_bytes(b"encoded-m4a")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         codec = "pcm_s16le" if Path(command[-1]) == result.mixed_file else "aac"
-        bitrate = 768_000 if codec == "pcm_s16le" else 96_000
+        bitrate = 768_000 if codec == "pcm_s16le" else 56_242
         return subprocess.CompletedProcess(
             command,
             0,
@@ -179,13 +177,36 @@ def test_m4a_encoding_is_verified_and_committed_atomically(
     assert any("96k" in command for command in commands)
     assert sum("-show_entries" in command for command in commands) == 2
     session = json.loads(result.session_file.read_text(encoding="utf-8"))
-    assert session["version"] == 5
+    assert session["version"] == 6
     assert session["output_format"] == "m4a"
     assert session["output_codec"] == "aac"
     assert session["output_bitrate_kbps"] == 96
+    assert session["actual_output_bitrate_bps"] == 56_242
+    assert session["output_sample_rate_hz"] == 48_000
+    assert session["output_channels"] == 1
     assert session["master_file"] == "lesson.wav"
     assert session["output_file"] == "lesson.m4a"
     assert session["status"] == "completed"
+
+
+def test_missing_reported_bitrate_is_not_an_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoded = tmp_path / "lesson.m4a"
+    encoded.write_bytes(b"encoded")
+    master_probe = output_module.AudioProbe("pcm_s16le", 12.5, 48_000, 1, 768_000)
+    encoded_probe = output_module.AudioProbe("aac", 12.5, 48_000, 1, None)
+    monkeypatch.setattr(output_module, "_probe_audio", lambda _path, _ffprobe: encoded_probe)
+
+    verified = output_module._verify_encoded_audio(
+        encoded,
+        output_module.output_profile("m4a"),
+        "ffprobe",
+        master_probe,
+    )
+
+    assert verified.bitrate_bps is None
 
 
 def test_mp3_uses_expected_encoder_and_bitrate(
@@ -297,6 +318,23 @@ def test_encoding_failure_preserves_master_and_marks_session(
     assert "encoding_error" in session
 
 
+def test_non_wav_master_is_rejected_before_delivery_reencoding(tmp_path: Path) -> None:
+    result = _recording_result(tmp_path)
+    encoded_master = tmp_path / "lesson.m4a"
+    encoded_master.write_bytes(b"already-encoded")
+    result = RecordingResult(
+        result.microphone_file,
+        result.system_file,
+        encoded_master,
+        result.session_file,
+        result.sync_report,
+        result.quality_report,
+    )
+
+    with pytest.raises(RuntimeError, match="требуется WAV-мастер"):
+        finalize_recording_output(result, "m4a")
+
+
 def test_legacy_recovery_defaults_to_wav(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -311,6 +349,45 @@ def test_legacy_recovery_defaults_to_wav(
     session = json.loads(result.session_file.read_text(encoding="utf-8"))
     assert session["output_format"] == "wav"
     assert session["output_codec"] == "pcm_s16le"
+
+
+def test_encoding_failed_recovery_recreates_selected_delivery_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _recording_result(tmp_path)
+    result.session_file.write_text(
+        json.dumps(
+            {
+                "status": "encoding_failed",
+                "output_format": "m4a",
+                "encoding_error": "old failure",
+            }
+        ),
+        encoding="utf-8",
+    )
+    output_file = tmp_path / "lesson.m4a"
+    probe = output_module.AudioProbe("aac", 12.5, 48_000, 1, 56_242)
+    monkeypatch.setattr(output_module, "recover_wav_recording", lambda _path: result)
+
+    def fake_encode(master: Path, output: Path, profile):
+        assert master == result.mixed_file
+        assert profile.output_format == "m4a"
+        output.write_bytes(b"recovered-m4a")
+        return output, probe
+
+    monkeypatch.setattr(output_module, "_encode_master_audio_with_probe", fake_encode)
+
+    recovered = recover_recording(tmp_path)
+
+    assert recovered.mixed_file == output_file
+    assert output_file.read_bytes() == b"recovered-m4a"
+    session = json.loads(result.session_file.read_text(encoding="utf-8"))
+    assert session["status"] == "completed"
+    assert session["master_file"] == "lesson.wav"
+    assert session["output_file"] == "lesson.m4a"
+    assert session["actual_output_bitrate_bps"] == 56_242
+    assert "encoding_error" not in session
 
 
 def test_package_recovery_uses_session_output_format(
@@ -329,6 +406,37 @@ def test_package_recovery_uses_session_output_format(
 
     assert recording_package.recover_recording(tmp_path) is result
     assert selected == ["mp3"]
+
+
+def test_package_import_keeps_wav_recovery_isolated() -> None:
+    assert recorder_module.recover_recording is recorder_module.recover_wav_recording
+    assert recording_package.recover_wav_recording is recorder_module.recover_wav_recording
+    assert recording_package.recover_recording is output_module.recover_recording
+    assert recorder_module.recover_recording is not output_module.recover_recording
+
+
+def test_output_recorder_stop_finalizes_once_from_wav(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _recording_result(tmp_path)
+    selected: list[tuple[Path, str]] = []
+    recorder = DualRecorder(output_format="m4a")
+    recorder._active = True
+    recorder._output_dir = tmp_path
+    recorder._session_file = result.session_file
+    recorder._session = {}
+    recorder._streams = []
+    recorder._writers = {}
+    monkeypatch.setattr(recorder_module, "recover_wav_recording", lambda _path: result)
+    monkeypatch.setattr(
+        output_module,
+        "finalize_recording_output",
+        lambda value, output_format: selected.append((value.mixed_file, output_format)) or value,
+    )
+
+    assert recorder.stop() is result
+    assert selected == [(tmp_path / "lesson.wav", "m4a")]
 
 
 def test_recorder_formats_are_instance_scoped(

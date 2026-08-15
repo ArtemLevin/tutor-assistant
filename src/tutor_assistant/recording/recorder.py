@@ -546,7 +546,7 @@ class DualRecorder:
         health = self.health
         self._session["health"] = health.__dict__
         self._write_session()
-        result = recover_recording(self._output_dir)
+        result = recover_wav_recording(self._output_dir)
         self._session["status"] = "completed"
         self._write_session()
         return result
@@ -783,7 +783,7 @@ def mix_tracks(
     )
 
 
-def recover_recording(output_dir: Path) -> RecordingResult:
+def recover_wav_recording(output_dir: Path) -> RecordingResult:
     import soundfile as sf
 
     session_file = output_dir / "session.json"
@@ -879,6 +879,11 @@ def recover_recording(output_dir: Path) -> RecordingResult:
     )
 
 
+# Backwards-compatible alias for callers that historically imported the
+# WAV-only recovery function as recorder.recover_recording.
+recover_recording = recover_wav_recording
+
+
 def find_recoverable_recordings(workspace: Path) -> list[Path]:
     sessions: list[Path] = []
     for manifest in workspace.glob("lessons/*/recording/session.json"):
@@ -892,6 +897,7 @@ def find_recoverable_recordings(workspace: Path) -> list[Path]:
             "recorded",
             "failed_to_start",
             "failed_to_stop",
+            "encoding_failed",
         } and any(
             (manifest.parent / "chunks").rglob("*.wav")
         ):

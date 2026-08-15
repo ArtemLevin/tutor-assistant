@@ -16,6 +16,7 @@ import yaml
 
 import tutor_assistant.atomic_io as atomic_io
 import tutor_assistant.publisher as publisher_module
+import tutor_assistant.recording as recording_package
 import tutor_assistant.recording.recorder as recorder_module
 from tutor_assistant.config import LatexConfig, RepositoryConfig, load_students
 from tutor_assistant.content import ContentBusyError, StudentContentService
@@ -540,7 +541,8 @@ def test_gui_recovery_starts_worker_instead_of_running_inline(
 
     assert len(workers) == 1
     assert workers[0].started
-    assert workers[0].callable is recover_recording
+    assert workers[0].callable is recording_package.recover_recording
+    assert workers[0].callable is not recover_recording
 
 
 def test_yaml_sync_is_insert_only_for_editable_crm_name(tmp_path: Path) -> None:

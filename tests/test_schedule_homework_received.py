@@ -12,7 +12,6 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from tutor_assistant.content.coordination import ContentBusyError
 from tutor_assistant.crm import CrmStore, ScheduleRule, StudentProfile
 from tutor_assistant.ui.crm import SchedulePage
 from tutor_assistant.ui.schedule_homework import ScheduleHomeworkReceivedController

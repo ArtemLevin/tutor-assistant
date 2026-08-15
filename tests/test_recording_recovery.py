@@ -3,7 +3,7 @@ import json
 import numpy as np
 import soundfile as sf
 
-from tutor_assistant.recording.recorder import recover_recording
+from tutor_assistant.recording.recorder import find_recoverable_recordings, recover_recording
 
 
 def test_recover_recording_concatenates_chunks(tmp_path) -> None:
@@ -25,3 +25,16 @@ def test_recover_recording_concatenates_chunks(tmp_path) -> None:
     assert info.frames == 1600
     assert result.mixed_file.exists()
     assert result.quality_report.exists()
+
+
+def test_encoding_failed_session_is_discoverable_for_recovery(tmp_path) -> None:
+    recording = tmp_path / "lessons" / "lesson-1" / "recording"
+    chunks = recording / "chunks" / "microphone"
+    chunks.mkdir(parents=True)
+    (chunks / "mic_00000.wav").write_bytes(b"recoverable")
+    (recording / "session.json").write_text(
+        json.dumps({"status": "encoding_failed", "output_format": "m4a"}),
+        encoding="utf-8",
+    )
+
+    assert find_recoverable_recordings(tmp_path) == [recording]
