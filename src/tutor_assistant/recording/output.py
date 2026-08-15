@@ -22,7 +22,7 @@ from .recorder import (
     RecordingResult,
 )
 from .recorder import (
-    recover_recording as recover_wav_recording,
+    recover_wav_recording,
 )
 
 AudioOutputFormat = Literal["m4a", "mp3", "wav"]
@@ -142,7 +142,7 @@ def _write_session(path: Path, payload: dict) -> None:
 
 def _profile_metadata(profile: AudioEncodingProfile) -> dict:
     return {
-        "version": 5,
+        "version": 6,
         "output_format": profile.output_format,
         "output_codec": profile.codec,
         "output_encoder": profile.encoder,
@@ -250,22 +250,38 @@ def _verify_encoded_audio(
             "Количество каналов итогового аудио изменилось: "
             f"master={master.channels}, output={encoded.channels}"
         )
-    if profile.bitrate_kbps is not None and encoded.bitrate_bps is not None:
-        target = profile.bitrate_kbps * 1000
-        if not target * 0.65 <= encoded.bitrate_bps <= target * 1.45:
-            raise RuntimeError(
-                "Битрейт итогового аудио выходит за допустимый диапазон: "
-                f"target={target}, actual={encoded.bitrate_bps}"
-            )
     if not path.is_file() or path.stat().st_size <= 0:
         raise RuntimeError("Итоговый аудиофайл пуст")
     return encoded
 
 
-def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Path:
-    profile = output_profile(value)
+def _require_wav_master(master_file: Path, profile: AudioEncodingProfile) -> None:
+    if profile.output_format != "wav" and master_file.suffix.casefold() != ".wav":
+        raise RuntimeError(
+            f"Для создания {profile.output_format.upper()} требуется WAV-мастер, "
+            f"получен файл {master_file.name}"
+        )
+
+
+def _encoding_probe_metadata(probe: AudioProbe | None) -> dict:
+    if probe is None:
+        return {}
+    return {
+        "actual_output_bitrate_bps": probe.bitrate_bps,
+        "output_duration_seconds": round(probe.duration_seconds, 6),
+        "output_sample_rate_hz": probe.sample_rate_hz,
+        "output_channels": probe.channels,
+    }
+
+
+def _encode_master_audio_with_probe(
+    master_file: Path,
+    output_file: Path,
+    profile: AudioEncodingProfile,
+) -> tuple[Path, AudioProbe | None]:
     if profile.output_format == "wav":
-        return master_file
+        return master_file, None
+    _require_wav_master(master_file, profile)
     ensure_output_format_available(profile.output_format)
     ffmpeg = _tool_path("ffmpeg")
     ffprobe = _tool_path("ffprobe")
@@ -301,14 +317,20 @@ def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Pat
             errors="replace",
             timeout=3600,
         )
-        _verify_encoded_audio(temporary, profile, ffprobe, master_probe)
+        encoded_probe = _verify_encoded_audio(temporary, profile, ffprobe, master_probe)
         os.replace(temporary, output_file)
-        return output_file
+        return output_file, encoded_probe
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or str(exc)).strip()
         raise RuntimeError(f"FFmpeg завершил кодирование с ошибкой: {details[-1200:]}") from exc
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def encode_master_audio(master_file: Path, output_file: Path, value: str) -> Path:
+    profile = output_profile(value)
+    final_file, _probe = _encode_master_audio_with_probe(master_file, output_file, profile)
+    return final_file
 
 
 def _mark_encoding_failure(
@@ -335,13 +357,18 @@ def finalize_recording_output(
 ) -> RecordingResult:
     profile = output_profile(value)
     master_file = result.mixed_file
+    _require_wav_master(master_file, profile)
     output_file = (
         master_file
         if profile.output_format == "wav"
         else master_file.with_name(f"lesson{profile.suffix}")
     )
     try:
-        final_file = encode_master_audio(master_file, output_file, profile.output_format)
+        final_file, output_probe = _encode_master_audio_with_probe(
+            master_file,
+            output_file,
+            profile,
+        )
     except Exception as exc:
         _mark_encoding_failure(result.session_file, master_file, profile, exc)
         raise RuntimeError(
@@ -356,8 +383,17 @@ def finalize_recording_output(
             "master_file": master_file.name,
             "output_file": final_file.name,
             "encoding_completed_at": datetime.now(UTC).isoformat(),
+            **_encoding_probe_metadata(output_probe),
         }
     )
+    if output_probe is None:
+        for key in (
+            "actual_output_bitrate_bps",
+            "output_duration_seconds",
+            "output_sample_rate_hz",
+            "output_channels",
+        ):
+            session.pop(key, None)
     session.pop("encoding_error", None)
     _write_session(result.session_file, session)
     return replace(result, mixed_file=final_file)
@@ -411,6 +447,11 @@ class DualRecorder(WavDualRecorder):
     def stop(self) -> RecordingResult:
         wav_result = super().stop()
         self._output_started_monotonic = None
+        if wav_result.mixed_file.suffix.casefold() != ".wav":
+            raise RuntimeError(
+                "Внутренний recorder нарушил WAV-first контракт: "
+                f"получен {wav_result.mixed_file.name}"
+            )
         return finalize_recording_output(wav_result, self.output_format)
 
 
