@@ -38,9 +38,9 @@ for forbidden in (
     if forbidden in text:
         raise RuntimeError(f"Legacy preflight orchestration still present in app.py: {forbidden}")
 
-if re.search(r"\\bDualRecorder\\b", text):
+if re.search(r"\bDualRecorder\b", text):
     raise RuntimeError("DualRecorder is still referenced by base UI after cleanup")
-if re.search(r"\\bsleep\\(", text):
+if re.search(r"\bsleep\(", text):
     raise RuntimeError("sleep() is still referenced by base UI after cleanup")
 if "def _play_preflight_track(self, source: str) -> None:" not in text:
     raise RuntimeError("Preflight playback presentation hook was removed accidentally")
