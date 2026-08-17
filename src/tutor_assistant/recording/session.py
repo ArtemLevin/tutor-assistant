@@ -27,6 +27,7 @@ ALLOWED_RECORDING_TRANSITIONS: dict[RecordingStatus, frozenset[RecordingStatus]]
             RecordingStatus.RECORDED,
             RecordingStatus.FAILED_TO_START,
             RecordingStatus.FAILED_TO_STOP,
+            RecordingStatus.COMPLETED,
         }
     ),
     RecordingStatus.RECORDED: frozenset(
