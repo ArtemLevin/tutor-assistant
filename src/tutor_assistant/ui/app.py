@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..atomic_io import atomic_write_text
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
