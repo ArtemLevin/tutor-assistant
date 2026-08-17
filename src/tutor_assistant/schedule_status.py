@@ -42,10 +42,19 @@ def set_scheduled_lesson_status(
 
     For a recurring rule this creates/updates only the selected date exception. The
     underlying weekly rule remains active, so cancelling one lesson never silently
-    removes future lessons in the series.
+    removes future lessons in the series. Restoring a cancelled occurrence first
+    verifies that its released slot has not been occupied by another active lesson.
     """
 
     target = ScheduledLessonStatus(status)
+    if (
+        lesson.status == ScheduledLessonStatus.CANCELLED.value
+        and target != ScheduledLessonStatus.CANCELLED
+    ):
+        store._check_occurrence_conflict(
+            lesson,
+            exclude_occurrence_id=lesson.occurrence_id,
+        )
 
     def operation() -> int:
         now = store._now()
