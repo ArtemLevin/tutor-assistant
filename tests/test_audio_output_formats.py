@@ -444,6 +444,7 @@ def test_recorder_formats_are_instance_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = _recording_result(tmp_path)
+    result.session_file.write_text('{"status": "completed"}', encoding="utf-8")
     selected: list[str] = []
     monkeypatch.setattr(output_module.WavDualRecorder, "stop", lambda _self: result)
     monkeypatch.setattr(
