@@ -1,0 +1,49 @@
+name: Wave 2 recovery regression cleanup
+
+on:
+  push:
+    branches:
+      - agent/wave2-remove-legacy-recording
+
+permissions:
+  contents: write
+
+jobs:
+  update-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/wave2-remove-legacy-recording
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Route recovery regression through production owner
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/test_audit_regressions.py')
+          text = path.read_text(encoding='utf-8')
+          start = 'def test_gui_recovery_starts_worker_instead_of_running_inline(\n'
+          end = 'def test_yaml_sync_is_insert_only_for_editable_crm_name(tmp_path: Path) -> None:\n'
+          i = text.index(start)
+          j = text.index(end, i)
+          replacement = '''def test_gui_recovery_starts_worker_instead_of_running_inline(\n    monkeypatch,\n    tmp_path: Path,\n) -> None:\n    pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)\n    from PySide6.QtWidgets import QMessageBox\n\n    from tutor_assistant.ui import app as base_app\n    from tutor_assistant.ui import recording_recovery_app as recovery_app\n\n    class Signal:\n        def connect(self, callback) -> None:\n            self.callback = callback\n\n    class FakeWorker:\n        def __init__(self, callable_, *args) -> None:\n            self.callable = callable_\n            self.args = args\n            self.succeeded = Signal()\n            self.failed = Signal()\n            self.finished = Signal()\n            self.started = False\n\n        def start(self) -> None:\n            self.started = True\n\n    class FakeRecoveryUseCase:\n        def __init__(self, session: Path) -> None:\n            self.session = session\n            self.recover_calls = 0\n\n        def discover(self, workspace: Path) -> tuple[Path, ...]:\n            assert workspace == tmp_path\n            return (self.session,)\n\n        def recover(self, directory: Path) -> object:\n            self.recover_calls += 1\n            raise AssertionError("recovery must run in Worker, not inline")\n\n    session = tmp_path / "lessons" / "lesson" / "recording"\n    use_case = FakeRecoveryUseCase(session)\n    workers: list[FakeWorker] = []\n    window = SimpleNamespace(\n        config=SimpleNamespace(workspace=tmp_path),\n        workers=workers,\n        _recovery_sessions=[],\n        recover_recording_use_case=use_case,\n        _set_status=lambda *_args: None,\n        _recovery_outcome_ready=lambda *_args: None,\n        _recovery_transport_failed=lambda *_args: None,\n        _worker_finished=lambda *_args: None,\n    )\n    window._offer_next_recovery = (\n        lambda: recovery_app.MainWindow._offer_next_recovery(window)\n    )\n    monkeypatch.setattr(base_app, "Worker", FakeWorker)\n    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)\n\n    recovery_app.MainWindow._offer_recovery(window)\n\n    assert len(workers) == 1\n    assert workers[0].started\n    assert workers[0].callable == use_case.recover\n    assert workers[0].args == (session,)\n    assert workers[0].purpose == "recording-recovery"\n    assert use_case.recover_calls == 0\n\n\n'''
+          text = text[:i] + replacement + text[j:]
+          text = text.replace('import tutor_assistant.recording as recording_package\n', '')
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm .github/workflows/_wave2_update_recovery_regression.yml
+      - name: Commit updated regression
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "test(recording): route recovery regression through application owner"
+          git push origin HEAD:agent/wave2-remove-legacy-recording
