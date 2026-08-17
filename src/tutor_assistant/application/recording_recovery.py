@@ -90,8 +90,9 @@ class RecoverRecordingUseCase:
 
     Recovery of the raw audio is useful even when the lesson record is unavailable,
     so missing lesson metadata is a successful ``AUDIO_ONLY`` outcome rather than an
-    error. A failure after durable audio has already been recovered returns that
-    result to the UI and marks an unfinished lesson ``FAILED`` best-effort.
+    error. Metadata lookup happens only after the durable audio recovery: a database
+    failure therefore cannot prevent the WAV chunks from being rescued, while still
+    being reported as ``FAILED`` instead of being confused with a missing lesson.
     """
 
     _RECOVERABLE_LESSON_STATUSES = frozenset(
@@ -128,7 +129,6 @@ class RecoverRecordingUseCase:
 
         recording_dir = recording_dir.resolve()
         lesson_id = recording_dir.parent.name
-        lesson = self._safe_lookup(lesson_id)
         result: RecordingResult | None = None
 
         try:
@@ -144,7 +144,23 @@ class RecoverRecordingUseCase:
             return RecordingRecoveryOutcome.failed(
                 recording_dir,
                 result=None,
-                lesson=lesson,
+                lesson=None,
+                error=details,
+            )
+
+        try:
+            lesson = self._lesson_lookup(lesson_id)
+        except Exception:
+            details = traceback.format_exc()
+            logging.error(
+                "Recovered audio could not load lesson metadata: lesson=%s\n%s",
+                lesson_id,
+                details,
+            )
+            return RecordingRecoveryOutcome.failed(
+                recording_dir,
+                result=result,
+                lesson=None,
                 error=details,
             )
 
@@ -184,16 +200,6 @@ class RecoverRecordingUseCase:
             )
 
         return RecordingRecoveryOutcome.recovered(recording_dir, result, lesson)
-
-    def _safe_lookup(self, lesson_id: str) -> Lesson | None:
-        try:
-            return self._lesson_lookup(lesson_id)
-        except Exception:
-            logging.exception(
-                "Не удалось прочитать metadata занятия для восстановления: lesson=%s",
-                lesson_id,
-            )
-            return None
 
     def _mark_failed_if_unfinished(self, lesson: Lesson, details: str) -> None:
         if lesson.status not in self._RECOVERABLE_LESSON_STATUSES:
