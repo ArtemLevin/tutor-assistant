@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
+from threading import Event
 from typing import Generic, TypeVar
 
 from ..config import LatexConfig, RepositoryConfig
@@ -15,12 +16,35 @@ from ..latex.remote import RemoteCompilationResult, RemoteLatexService
 T = TypeVar("T")
 
 
+class BackgroundTaskCancelled(RuntimeError):
+    """Raised by cooperative background operations after cancellation was requested."""
+
+
+class BackgroundCancellationToken:
+    """Thread-safe cooperative cancellation token shared by coordinator and operation."""
+
+    def __init__(self) -> None:
+        self._event = Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise BackgroundTaskCancelled("Фоновая операция отменена")
+
+
 class BackgroundTaskState(StrEnum):
     COMPLETED = "completed"
     NO_CHANGES = "no_changes"
     SKIPPED_BUSY = "skipped_busy"
     REJECTED = "rejected"
     RETRYABLE_FAILURE = "retryable_failure"
+    CANCELLED = "cancelled"
 
 
 class BackgroundTaskPurpose(StrEnum):
@@ -42,6 +66,8 @@ class BusyPolicy(StrEnum):
 class BackgroundTaskPhase(StrEnum):
     IDLE = "idle"
     RUNNING = "running"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
     DEFERRED = "deferred"
     SKIPPED = "skipped"
     COMPLETED = "completed"
@@ -51,7 +77,7 @@ class BackgroundTaskPhase(StrEnum):
 @dataclass(frozen=True, slots=True)
 class BackgroundTaskSpec(Generic[T]):
     purpose: BackgroundTaskPurpose
-    operation: Callable[[], T]
+    operation: Callable[..., T]
     activity: str | None = None
     lesson_id: str | None = None
     exclusive: bool = False
@@ -65,6 +91,7 @@ class BackgroundTaskSpec(Generic[T]):
     handled_exceptions: tuple[type[Exception], ...] = ()
     handled_exception_retryable: bool = False
     handled_exception_message: Callable[[Exception], str] | None = None
+    accepts_cancellation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +124,18 @@ class BackgroundTaskResult(Generic[T]):
     ) -> BackgroundTaskResult[T]:
         return cls(
             state=BackgroundTaskState.NO_CHANGES,
+            manually_requested=manually_requested,
+        )
+
+    @classmethod
+    def cancelled(
+        cls,
+        *,
+        manually_requested: bool = False,
+    ) -> BackgroundTaskResult[T]:
+        return cls(
+            state=BackgroundTaskState.CANCELLED,
+            reason="Фоновая операция отменена",
             manually_requested=manually_requested,
         )
 

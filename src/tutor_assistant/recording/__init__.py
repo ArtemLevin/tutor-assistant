@@ -26,6 +26,14 @@ from .recorder import (
     find_recoverable_recordings,
     recover_wav_recording,
 )
+from .session import (
+    InvalidRecordingStatus,
+    InvalidRecordingTransition,
+    RecordingStatus,
+    is_recoverable_recording_status,
+    recording_status,
+    transition_recording_status,
+)
 
 __all__ = [
     "AUDIO_ENCODING_PROFILES",
@@ -35,8 +43,11 @@ __all__ = [
     "AudioQualityReport",
     "DeviceTestResult",
     "DualRecorder",
+    "InvalidRecordingStatus",
+    "InvalidRecordingTransition",
     "RecorderHealth",
     "RecordingResult",
+    "RecordingStatus",
     "SystemAudioSource",
     "TrackQuality",
     "analyze_track",
@@ -45,14 +56,17 @@ __all__ = [
     "ensure_output_format_available",
     "finalize_recording_output",
     "find_recoverable_recordings",
+    "is_recoverable_recording_status",
     "list_input_devices",
     "list_loopback_devices",
     "list_system_audio_sources",
     "normalize_output_format",
     "output_profile",
+    "recording_status",
     "recover_recording",
     "recover_recording_output",
     "recover_wav_recording",
     "test_input_device",
     "test_system_audio_source",
+    "transition_recording_status",
 ]
