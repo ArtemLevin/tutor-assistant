@@ -12,6 +12,11 @@ from .recording import (
     StartedRecording,
     StartRecordingUseCase,
 )
+from .recording_recovery import (
+    RecordingRecoveryOutcome,
+    RecordingRecoveryState,
+    RecoverRecordingUseCase,
+)
 from .recording_stop import (
     RecordingStopOutcome,
     RecordingStopSession,
@@ -20,6 +25,8 @@ from .recording_stop import (
 )
 
 __all__ = [
+    "RecordingRecoveryOutcome",
+    "RecordingRecoveryState",
     "RecordingRuntimeState",
     "RecordingStopOutcome",
     "RecordingStopSession",
@@ -27,6 +34,7 @@ __all__ = [
     "RecordingWorkflowController",
     "RecordingWorkflowPhase",
     "RecordingWorkflowRejected",
+    "RecoverRecordingUseCase",
     "StartedRecording",
     "StartRecordingUseCase",
     "StopRecordingUseCase",
