@@ -16,7 +16,6 @@ import yaml
 
 import tutor_assistant.atomic_io as atomic_io
 import tutor_assistant.publisher as publisher_module
-import tutor_assistant.recording as recording_package
 import tutor_assistant.recording.recorder as recorder_module
 from tutor_assistant.config import LatexConfig, RepositoryConfig, load_students
 from tutor_assistant.content import ContentBusyError, StudentContentService
@@ -502,7 +501,8 @@ def test_gui_recovery_starts_worker_instead_of_running_inline(
     pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
     from PySide6.QtWidgets import QMessageBox
 
-    from tutor_assistant.ui import app as app_module
+    from tutor_assistant.ui import app as base_app
+    from tutor_assistant.ui import recording_recovery_app as recovery_app
 
     class Signal:
         def connect(self, callback) -> None:
@@ -520,29 +520,46 @@ def test_gui_recovery_starts_worker_instead_of_running_inline(
         def start(self) -> None:
             self.started = True
 
+    class FakeRecoveryUseCase:
+        def __init__(self, session: Path) -> None:
+            self.session = session
+            self.recover_calls = 0
+
+        def discover(self, workspace: Path) -> tuple[Path, ...]:
+            assert workspace == tmp_path
+            return (self.session,)
+
+        def recover(self, directory: Path) -> object:
+            self.recover_calls += 1
+            raise AssertionError("recovery must run in Worker, not inline")
+
     session = tmp_path / "lessons" / "lesson" / "recording"
+    use_case = FakeRecoveryUseCase(session)
     workers: list[FakeWorker] = []
     window = SimpleNamespace(
         config=SimpleNamespace(workspace=tmp_path),
         workers=workers,
         _recovery_sessions=[],
+        recover_recording_use_case=use_case,
         _set_status=lambda *_args: None,
-        _recovery_ready=lambda *_args: None,
-        _recovery_failed=lambda *_args: None,
-        _operation_failed=lambda *_args: None,
+        _recovery_outcome_ready=lambda *_args: None,
+        _recovery_transport_failed=lambda *_args: None,
         _worker_finished=lambda *_args: None,
     )
-    window._offer_next_recovery = lambda: app_module.MainWindow._offer_next_recovery(window)
-    monkeypatch.setattr(app_module, "find_recoverable_recordings", lambda _path: [session])
-    monkeypatch.setattr(app_module, "Worker", FakeWorker)
+    window._offer_next_recovery = (
+        lambda: recovery_app.MainWindow._offer_next_recovery(window)
+    )
+    monkeypatch.setattr(base_app, "Worker", FakeWorker)
     monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
 
-    app_module.MainWindow._offer_recovery(window)
+    recovery_app.MainWindow._offer_recovery(window)
 
     assert len(workers) == 1
     assert workers[0].started
-    assert workers[0].callable is recording_package.recover_recording
-    assert workers[0].callable is not recover_recording
+    assert workers[0].callable == use_case.recover
+    assert workers[0].args == (session,)
+    assert workers[0].purpose == "recording-recovery"
+    assert use_case.recover_calls == 0
 
 
 def test_yaml_sync_is_insert_only_for_editable_crm_name(tmp_path: Path) -> None:
