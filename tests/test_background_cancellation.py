@@ -35,7 +35,7 @@ def wait_until(application: QApplication, predicate, *, timeout: float = 5.0) ->
     assert predicate()
 
 
-def test_cooperative_cancel_stops_operation_without_failure_callback(
+def test_cooperative_cancel_stops_operation_without_result_or_failure_callback(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -65,12 +65,12 @@ def test_cooperative_cancel_stops_operation_without_failure_callback(
     assert coordinator.cancel(BackgroundTaskPurpose.CONTENT_BROWSER) == 1
     wait_until(application, lambda: coordinator.running_count() == 0)
 
-    assert callbacks == []
+    assert callbacks == ["finished"]
     assert coordinator.phase(BackgroundTaskPurpose.CONTENT_BROWSER) == BackgroundTaskPhase.CANCELLED
     assert service.active_activities() == []
 
 
-def test_shutdown_suppresses_late_non_cooperative_callbacks(
+def test_shutdown_suppresses_late_non_cooperative_result_but_keeps_finalizer(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -103,7 +103,7 @@ def test_shutdown_suppresses_late_non_cooperative_callbacks(
     release.set()
     wait_until(application, lambda: coordinator.running_count() == 0)
 
-    assert callbacks == []
+    assert callbacks == ["finished"]
     assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == BackgroundTaskPhase.CANCELLED
     assert registry == []
     assert service.active_activities() == []
