@@ -53,7 +53,7 @@ class FakePipeline:
         self.events.append("lesson.create")
         if self.fail_create:
             raise RuntimeError("create failed")
-        return self.lesson_dir(lesson)
+        return self.root / lesson.lesson_id
 
     def lesson_dir(self, lesson: Lesson) -> Path:
         self.events.append("lesson.dir")
@@ -231,3 +231,12 @@ def test_abort_compensates_successful_start_when_presentation_setup_fails(tmp_pa
     assert lesson.status == JobStatus.FAILED
     assert lesson.error == "presentation boom"
     assert events[-3:] == ["recorder.stop", "lease.release", "lesson.save:failed"]
+
+
+def test_production_entrypoint_uses_start_recording_application_use_case() -> None:
+    source = Path("src/tutor_assistant/ui/audio_resilient_app.py").read_text(encoding="utf-8")
+
+    assert "StartRecordingUseCase" in source
+    assert "self.start_recording_use_case.start(" in source
+    assert "self.start_recording_use_case.abort(" in source
+    assert "super().start_recording()" not in source
