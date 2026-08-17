@@ -72,3 +72,16 @@ def test_base_tick_depends_on_runtime_snapshots_not_concrete_recorder() -> None:
     assert "self.recorder.levels" in method
     assert "self.recorder.health" in method
     assert "DualRecorder" not in method
+
+
+def test_output_format_contract_tracks_audio_composition_boundary() -> None:
+    source = Path("tests/test_audio_output_formats.py").read_text(encoding="utf-8")
+
+    assert (
+        "test_production_gui_keeps_output_format_policy_at_audio_composition_boundary"
+        in source
+    )
+    assert '"src/tutor_assistant/ui/audio_resilient_app.py"' in source
+    assert 'assert "_create_configured_recorder" not in publication_source' in source
+    assert 'assert "base_app.DualRecorder" not in publication_source' in source
+    assert 'assert "output_format=self.config.recording.output_format" in audio_source' in source
