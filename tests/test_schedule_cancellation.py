@@ -4,7 +4,9 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
-from tutor_assistant.crm import CrmStore, ScheduleRule
+import pytest
+
+from tutor_assistant.crm import CrmStore, ScheduleConflict, ScheduledLesson, ScheduleRule
 from tutor_assistant.domain import Student
 from tutor_assistant.schedule_status import (
     ScheduledLessonStatus,
@@ -75,6 +77,30 @@ def test_cancelled_lesson_can_be_restored_on_same_occurrence(tmp_path) -> None:
     assert restored.occurrence_id == occurrence_id
     assert restored.status == ScheduledLessonStatus.PLANNED.value
     assert summarize_schedule([restored]).planned_revenue_cents == 300_000
+
+
+def test_cancelled_lesson_cannot_be_restored_after_slot_was_reused(tmp_path) -> None:
+    store = CrmStore(tmp_path / "assistant.sqlite3")
+    week = date(2026, 8, 3)
+    lesson = _recurring_lesson(store, week)
+    set_scheduled_lesson_status(store, lesson, ScheduledLessonStatus.CANCELLED)
+    cancelled = store.lessons_for_week(week)[0]
+    store.sync_students([Student(id="replacement", full_name="Замена")])
+    store.save_one_off(
+        ScheduledLesson(
+            student_id="replacement",
+            student_name="Замена",
+            starts_at=cancelled.starts_at,
+            duration_minutes=cancelled.duration_minutes,
+            subject="mathematics",
+            topic="Другое занятие",
+        )
+    )
+
+    with pytest.raises(ScheduleConflict):
+        set_scheduled_lesson_status(store, cancelled, ScheduledLessonStatus.PLANNED)
+
+    assert store.lessons_for_week(week)[0].status == ScheduledLessonStatus.CANCELLED.value
 
 
 def test_concurrent_cancellation_materializes_only_one_rule_exception(tmp_path) -> None:
