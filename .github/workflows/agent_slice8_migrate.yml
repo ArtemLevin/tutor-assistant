@@ -1,0 +1,36 @@
+name: Agent Slice 8 Migration
+
+on:
+  push:
+    branches:
+      - agent/wave2-recording-runtime-port
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply runtime recorder refactor
+        run: python .github/scripts/agent_slice8_migrate.py
+      - name: Commit refactor and remove temporary automation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/agent_slice8_migrate.yml .github/scripts/agent_slice8_migrate.py
+          git add src/tutor_assistant/application/recording.py
+          git add src/tutor_assistant/application/__init__.py
+          git add src/tutor_assistant/ui/app.py
+          git add src/tutor_assistant/ui/transcript_publication_app.py
+          git add src/tutor_assistant/ui/audio_resilient_app.py
+          git add tests/test_recording_runtime_port_architecture.py
+          git diff --cached --check
+          git commit -m "refactor(recording): move runtime recorder ownership to audio adapter"
+          git push origin HEAD:agent/wave2-recording-runtime-port
