@@ -17,6 +17,12 @@ from ..atomic_io import atomic_write_text
 from . import recorder
 from .devices import SystemAudioSource
 from .recorder import RecordingResult, recover_wav_recording
+from .session import (
+    RecordingStatus,
+    is_recoverable_recording_status,
+    recording_status,
+    transition_recording_status,
+)
 
 AudioOutputFormat = Literal["m4a", "mp3", "wav"]
 WavDualRecorder = recorder.DualRecorder
@@ -335,9 +341,13 @@ def _mark_encoding_failure(
 ) -> None:
     session = _read_session(session_file)
     session.update(_profile_metadata(profile))
+    transition_recording_status(
+        session,
+        RecordingStatus.ENCODING_FAILED,
+        allow_legacy_source=True,
+    )
     session.update(
         {
-            "status": "encoding_failed",
             "master_file": master_file.name,
             "encoding_error": str(error),
         }
@@ -371,9 +381,13 @@ def finalize_recording_output(
         ) from exc
     session = _read_session(result.session_file)
     session.update(_profile_metadata(profile))
+    transition_recording_status(
+        session,
+        RecordingStatus.COMPLETED,
+        allow_legacy_source=True,
+    )
     session.update(
         {
-            "status": "completed",
             "master_file": master_file.name,
             "output_file": final_file.name,
             "encoding_completed_at": datetime.now(UTC).isoformat(),
@@ -434,6 +448,12 @@ class DualRecorder(WavDualRecorder):
         except Exception:
             self._output_started_monotonic = None
             raise
+        status = recording_status(self._session.get("status"))
+        if status != RecordingStatus.RECORDING:
+            raise RuntimeError(
+                "Внутренний recorder нарушил контракт состояния: "
+                f"после start получен {status or 'missing'}"
+            )
         profile = output_profile(self.output_format)
         self._session.update(_profile_metadata(profile))
         self._write_session()
@@ -446,6 +466,12 @@ class DualRecorder(WavDualRecorder):
                 "Внутренний recorder нарушил WAV-first контракт: "
                 f"получен {wav_result.mixed_file.name}"
             )
+        status = recording_status(_read_session(wav_result.session_file).get("status"))
+        if status != RecordingStatus.COMPLETED:
+            raise RuntimeError(
+                "Внутренний recorder нарушил контракт состояния: "
+                f"после WAV-финализации получен {status or 'missing'}"
+            )
         return finalize_recording_output(wav_result, self.output_format)
 
 
@@ -455,6 +481,17 @@ def recover_recording(
 ) -> RecordingResult:
     session_file = output_dir / "session.json"
     session = _read_session(session_file)
+    if not is_recoverable_recording_status(session.get("status")):
+        raise RuntimeError(
+            f"Сессия со статусом {session.get('status')!r} не допускает восстановление"
+        )
     selected = output_format or str(session.get("output_format") or "wav")
     wav_result = recover_wav_recording(output_dir)
+    recovered_session = _read_session(session_file)
+    transition_recording_status(
+        recovered_session,
+        RecordingStatus.COMPLETED,
+        allow_legacy_source=True,
+    )
+    _write_session(session_file, recovered_session)
     return finalize_recording_output(wav_result, selected)
