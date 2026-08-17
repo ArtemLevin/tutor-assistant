@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..audio_files import finalize_readable_audio
 from ..domain import JobStatus, Lesson
 from ..publisher import publication_payload_files
 from ..recording import DualRecorder
@@ -272,50 +271,6 @@ class MainWindow(ConcurrentMainWindow):
             )
         else:
             self._set_status("Транскрибатор: faster-whisper")
-
-    def start_recording(self) -> None:
-        self.audio_output_format.setEnabled(False)
-        try:
-            super().start_recording()
-        finally:
-            if not (self.recorder and self.recorder.active):
-                self.audio_output_format.setEnabled(True)
-            self._refresh_teacher_cockpit()
-
-    def _recording_ready_impl(self, result, recorded_lesson, source_recorder, reason=None) -> None:
-        readable = finalize_readable_audio(
-            result,
-            recorded_lesson.student.full_name,
-            recorded_lesson.lesson_date,
-        )
-        super()._recording_ready_impl(readable, recorded_lesson, source_recorder, reason)
-        self._refresh_teacher_cockpit()
-
-    def _recording_ready(self, *args, **kwargs) -> None:
-        try:
-            super()._recording_ready(*args, **kwargs)
-        finally:
-            self.audio_output_format.setEnabled(True)
-            self._refresh_teacher_cockpit()
-
-    def _recording_stop_failed(self, *args, **kwargs) -> None:
-        try:
-            super()._recording_stop_failed(*args, **kwargs)
-        finally:
-            self.audio_output_format.setEnabled(True)
-            self._refresh_teacher_cockpit()
-
-    def _recovery_ready(self, result) -> None:
-        lesson_id = result.session_file.parent.parent.name
-        lesson = self.pipeline.store.get(lesson_id)
-        if lesson is not None:
-            result = finalize_readable_audio(
-                result,
-                lesson.student.full_name,
-                lesson.lesson_date,
-            )
-        super()._recovery_ready(result)
-        self._refresh_teacher_cockpit()
 
     def _queue_imported_audio(self, lesson: Lesson, audio: Path) -> None:
         if lesson.status in _TRANSCRIPTION_BLOCKED_STATUSES:

@@ -83,11 +83,23 @@ def test_recording_application_layer_remains_qt_free() -> None:
     assert "QMessageBox" not in source
 
 
-def test_production_entrypoint_routes_recording_commands_through_application_controller() -> None:
-    source = Path("src/tutor_assistant/ui/audio_resilient_app.py").read_text(encoding="utf-8")
+def test_production_recording_adapters_route_lifecycle_through_controller() -> None:
+    start_source = Path("src/tutor_assistant/ui/audio_resilient_app.py").read_text(
+        encoding="utf-8"
+    )
+    stop_source = Path("src/tutor_assistant/ui/recording_finalize_app.py").read_text(
+        encoding="utf-8"
+    )
+    recovery_source = Path("src/tutor_assistant/ui/recording_recovery_app.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert "RecordingWorkflowController" in source
-    assert "recording_workflow.begin_start" in source
-    assert "recording_workflow.begin_stop" in source
-    assert "recording_workflow.mark_recovery_required" in source
-    assert "recording_workflow.mark_completed" in source
+    assert "RecordingWorkflowController" in start_source
+    assert "recording_workflow.begin_start" in start_source
+
+    assert "recording_workflow.begin_stop" in stop_source
+    assert "recording_workflow.mark_recovery_required" in stop_source
+    assert "recording_workflow.mark_completed" in stop_source
+
+    assert "recording_workflow.reset()" in recovery_source
+    assert "recording_workflow.mark_recovery_required()" in recovery_source
