@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from time import sleep
 from typing import Protocol
@@ -44,13 +45,15 @@ class AudioPreflightUseCase:
         recorder_factory: Callable[[int], AudioPreflightRecorder],
         *,
         sleeper: Callable[[float], None] = sleep,
+        clock: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._recorder_factory = recorder_factory
         self._sleeper = sleeper
+        self._clock = clock
 
     def run(
         self,
-        directory: Path,
+        workspace: Path,
         mic_device: int,
         system_source: object,
         seconds: float,
@@ -59,6 +62,7 @@ class AudioPreflightUseCase:
         if seconds <= 0:
             raise ValueError("Длительность аудиодиагностики должна быть положительной")
 
+        directory = workspace / "diagnostics" / self._clock().strftime("%Y%m%d-%H%M%S")
         effective_chunk_seconds = max(chunk_seconds, int(seconds) + 1)
         recorder = self._recorder_factory(effective_chunk_seconds)
         stop_attempted = False
