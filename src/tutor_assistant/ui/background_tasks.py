@@ -379,10 +379,9 @@ class BackgroundTaskCoordinator(QObject):
             return
         if self.worker_registry is not None and task.worker in self.worker_registry:
             self.worker_registry.remove(task.worker)
-        stale = self._is_stale(task)
-        if stale:
+        if self._is_stale(task):
             self._set_phase(task.spec.purpose, BackgroundTaskPhase.CANCELLED)
-        elif task.callbacks.on_finished:
+        if task.callbacks.on_finished:
             try:
                 task.callbacks.on_finished()
             except Exception:
