@@ -44,7 +44,7 @@ class RecordingStopSession:
 
     lesson: Lesson
     recorder: RecordingFinalizingRecorder
-    lease: RecordingLease
+    lease: RecordingLease | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +111,9 @@ class StopRecordingUseCase:
     did not complete successfully.
 
     The recording activity lease is owned by this use case for the stop boundary
-    and is released exactly once on every operational outcome.
+    and is released exactly once on every operational outcome. A missing lease is
+    tolerated so capture can still be stopped safely if presentation state was
+    partially lost.
     """
 
     def __init__(
@@ -175,7 +177,9 @@ class StopRecordingUseCase:
             )
 
     @staticmethod
-    def _release_lease(lease: RecordingLease, lesson_id: str) -> None:
+    def _release_lease(lease: RecordingLease | None, lesson_id: str) -> None:
+        if lease is None:
+            return
         try:
             lease.release()
         except Exception:
