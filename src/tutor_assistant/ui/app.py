@@ -5,7 +5,7 @@ import logging
 import queue
 import sys
 import traceback
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
