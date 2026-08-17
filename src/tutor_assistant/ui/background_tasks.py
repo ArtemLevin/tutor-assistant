@@ -11,6 +11,8 @@ from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from ..content import ActivityLease, ContentBusyError, StudentContentService
 from .background import (
+    BackgroundCancellationToken,
+    BackgroundTaskCancelled,
     BackgroundTaskPhase,
     BackgroundTaskPurpose,
     BackgroundTaskResult,
@@ -54,13 +56,15 @@ class _DeferredTask:
 @dataclass(slots=True)
 class _RunningTask:
     key: str
+    generation: int
     spec: BackgroundTaskSpec[Any]
     callbacks: _TaskCallbacks
     worker: _TaskWorker
+    cancellation: BackgroundCancellationToken
 
 
 class BackgroundTaskCoordinator(QObject):
-    """Coordinate short-lived GUI workers, workspace leases and deferred retries."""
+    """Coordinate GUI workers, leases, cancellation and stale-result suppression."""
 
     state_changed = Signal(str, str)
 
@@ -77,6 +81,7 @@ class BackgroundTaskCoordinator(QObject):
         self._deferred: dict[BackgroundTaskPurpose, _DeferredTask] = {}
         self._phases: dict[BackgroundTaskPurpose, BackgroundTaskPhase] = {}
         self._scheduled_retries: set[BackgroundTaskPurpose] = set()
+        self._purpose_generation: dict[BackgroundTaskPurpose, int] = {}
         self._sequence = count(1)
         self._shutdown = False
 
@@ -160,11 +165,24 @@ class BackgroundTaskCoordinator(QObject):
             lease = acquisition.lease
 
         key = f"{spec.purpose.value}:{next(self._sequence)}" if spec.allow_parallel else spec.purpose.value
+        generation = self._purpose_generation.get(spec.purpose, 0) + 1
+        self._purpose_generation[spec.purpose] = generation
+        cancellation = BackgroundCancellationToken()
 
         def execute() -> BackgroundTaskResult[Any]:
             try:
+                cancellation.raise_if_cancelled()
                 try:
-                    payload = spec.operation()
+                    payload = (
+                        spec.operation(cancellation)
+                        if spec.accepts_cancellation
+                        else spec.operation()
+                    )
+                    cancellation.raise_if_cancelled()
+                except BackgroundTaskCancelled:
+                    return BackgroundTaskResult[Any].cancelled(
+                        manually_requested=spec.manually_requested,
+                    )
                 except ContentBusyError as exc:
                     blockers = exc.blockers or tuple(self.content_service.active_activities())
                     return BackgroundTaskResult[Any].skipped_busy(
@@ -201,7 +219,7 @@ class BackgroundTaskCoordinator(QObject):
                     lease.release()
 
         worker = _TaskWorker(execute)
-        task = _RunningTask(key, spec, callbacks, worker)
+        task = _RunningTask(key, generation, spec, callbacks, worker, cancellation)
         worker.succeeded.connect(lambda result, task_key=key: self._task_succeeded(task_key, result))
         worker.failed.connect(lambda details, task_key=key: self._task_failed(task_key, details))
         worker.finished.connect(lambda task_key=key: self._task_finished(task_key))
@@ -210,8 +228,9 @@ class BackgroundTaskCoordinator(QObject):
             self.worker_registry.append(worker)
         self._set_phase(spec.purpose, BackgroundTaskPhase.RUNNING)
         logging.info(
-            "event=background_task_started purpose=%s activity=%s manual=%s policy=%s",
+            "event=background_task_started purpose=%s generation=%s activity=%s manual=%s policy=%s",
             spec.purpose.value,
+            generation,
             spec.activity or "none",
             spec.manually_requested,
             spec.busy_policy.value,
@@ -229,6 +248,27 @@ class BackgroundTaskCoordinator(QObject):
             self._safe_failure(callbacks.on_failure, details)
             return False
         return True
+
+    def cancel(self, purpose: BackgroundTaskPurpose) -> int:
+        """Request cancellation and invalidate any late result for a purpose."""
+
+        self._deferred.pop(purpose, None)
+        self._scheduled_retries.discard(purpose)
+        tasks = [item for item in self._running.values() if item.spec.purpose == purpose]
+        if not tasks:
+            self._set_phase(purpose, BackgroundTaskPhase.IDLE)
+            return 0
+        self._purpose_generation[purpose] = self._purpose_generation.get(purpose, 0) + 1
+        for task in tasks:
+            task.cancellation.cancel()
+            task.worker.requestInterruption()
+        self._set_phase(purpose, BackgroundTaskPhase.CANCELLING)
+        logging.info(
+            "event=background_task_cancel_requested purpose=%s count=%s",
+            purpose.value,
+            len(tasks),
+        )
+        return len(tasks)
 
     def cancel_deferred(self, purpose: BackgroundTaskPurpose) -> None:
         self._deferred.pop(purpose, None)
@@ -256,19 +296,45 @@ class BackgroundTaskCoordinator(QObject):
             self._schedule_retry(purpose, item)
 
     def begin_shutdown(self) -> None:
+        if self._shutdown:
+            return
         self._shutdown = True
         for purpose in tuple(self._deferred):
             self._set_phase(purpose, BackgroundTaskPhase.IDLE)
         self._deferred.clear()
         self._scheduled_retries.clear()
-        logging.info("event=background_task_coordinator_shutdown")
+        running_purposes = {item.spec.purpose for item in self._running.values()}
+        for purpose in running_purposes:
+            self.cancel(purpose)
+        logging.info(
+            "event=background_task_coordinator_shutdown running=%s",
+            len(self._running),
+        )
+
+    def _is_stale(self, task: _RunningTask) -> bool:
+        if self._shutdown or task.cancellation.cancelled:
+            return True
+        if task.spec.allow_parallel:
+            return False
+        return task.generation != self._purpose_generation.get(task.spec.purpose, task.generation)
 
     def _task_succeeded(self, key: str, result: object) -> None:
         task = self._running.get(key)
         if task is None:
             return
+        if self._is_stale(task):
+            self._set_phase(task.spec.purpose, BackgroundTaskPhase.CANCELLED)
+            logging.info(
+                "event=background_task_stale_result_suppressed purpose=%s generation=%s",
+                task.spec.purpose.value,
+                task.generation,
+            )
+            return
         if not isinstance(result, BackgroundTaskResult):
             self._task_failed(key, "Некорректный результат фоновой операции")
+            return
+        if result.state == BackgroundTaskState.CANCELLED:
+            self._set_phase(task.spec.purpose, BackgroundTaskPhase.CANCELLED)
             return
         if result.state == BackgroundTaskState.SKIPPED_BUSY:
             self._apply_busy(task.spec, task.callbacks, result)
@@ -291,6 +357,14 @@ class BackgroundTaskCoordinator(QObject):
         task = self._running.get(key)
         if task is None:
             return
+        if self._is_stale(task):
+            self._set_phase(task.spec.purpose, BackgroundTaskPhase.CANCELLED)
+            logging.info(
+                "event=background_task_stale_failure_suppressed purpose=%s generation=%s",
+                task.spec.purpose.value,
+                task.generation,
+            )
+            return
         self._set_phase(task.spec.purpose, BackgroundTaskPhase.FAILED)
         logging.error(
             "event=background_task_failed purpose=%s details=%s",
@@ -305,7 +379,10 @@ class BackgroundTaskCoordinator(QObject):
             return
         if self.worker_registry is not None and task.worker in self.worker_registry:
             self.worker_registry.remove(task.worker)
-        if task.callbacks.on_finished:
+        stale = self._is_stale(task)
+        if stale:
+            self._set_phase(task.spec.purpose, BackgroundTaskPhase.CANCELLED)
+        elif task.callbacks.on_finished:
             try:
                 task.callbacks.on_finished()
             except Exception:
@@ -313,7 +390,7 @@ class BackgroundTaskCoordinator(QObject):
                     "Background task finished callback failed: %s",
                     task.spec.purpose.value,
                 )
-        if task.spec.activity:
+        if task.spec.activity and not self._shutdown:
             self.resume_deferred(released_activity=task.spec.activity)
 
     def _apply_handled(
