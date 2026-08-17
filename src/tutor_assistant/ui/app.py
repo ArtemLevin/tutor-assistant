@@ -7,7 +7,6 @@ import sys
 import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from time import sleep
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QKeySequence
@@ -1513,76 +1512,10 @@ class MainWindow(QMainWindow):
         self._begin_preflight(show_intro=True)
 
     def _begin_preflight(self, show_intro: bool) -> None:
-        mic_device = int(self.mic.currentData())
-        system_source = self.loopback.currentData()
-        if not isinstance(system_source, SystemAudioSource):
-            self.test_devices_button.setEnabled(True)
-            self._quick_start_pending = False
-            self._refresh_quick_readiness()
-            QMessageBox.warning(self, "Системный звук", "WASAPI Loopback-устройство не выбрано")
-            return
-        if show_intro:
-            QMessageBox.information(
-                self,
-                "Тестовая запись",
-                "После закрытия окна говорите в микрофон и одновременно воспроизводите звук через G733. "
-                f"Запись продлится {self.config.recording.diagnostics_seconds} секунд.",
-            )
-        self.test_devices_button.setEnabled(False)
-        self._set_status("Записываю тест микрофона и системного звука…", "working")
-        logging.info("Тестовая запись начата: mic=%s system=%s", self.mic.currentText(), system_source.name)
-        seconds = self.config.recording.diagnostics_seconds
-
-        def run_tests():
-            directory = self.config.workspace / "diagnostics" / datetime.now().strftime("%Y%m%d-%H%M%S")
-            recorder = DualRecorder(
-                self.config.recording.sample_rate,
-                self.config.recording.channels,
-                max(self.config.recording.chunk_seconds, seconds + 1),
-                self.config.recording.queue_blocks,
-                self.config.recording.target_sample_rate,
-            )
-            recorder.start(directory, mic_device, system_source)
-            sleep(seconds)
-            return recorder.stop()
-
-        worker = Worker(run_tests)
-        worker.succeeded.connect(self._device_test_ready)
-        worker.failed.connect(lambda details: self._operation_failed("device-test", details))
-        worker.finished.connect(lambda: self._worker_finished(worker))
-        self.workers.append(worker)
-        worker.start()
-
-    def _device_test_ready(self, results) -> None:
-        quality = json.loads(results.quality_report.read_text(encoding="utf-8"))
-        mic = quality["microphone"]
-        system = quality["system"]
-        self.mic_level.setValue(round(min(1.0, float(mic["rms"]) * 5) * 100))
-        self.system_level.setValue(round(min(1.0, float(system["rms"]) * 5) * 100))
-        warnings = list(quality.get("warnings", []))
-        self.preflight_passed = bool(quality.get("ready"))
-        self.preflight_result = results
-        self.play_mic_test_button.setEnabled(True)
-        self.play_system_test_button.setEnabled(True)
-        message = (
-            "Тестовая запись прошла проверку. Прослушайте обе дорожки."
-            if self.preflight_passed
-            else "Проверка выявила проблемы: " + "; ".join(warnings)
+        del show_intro
+        raise NotImplementedError(
+            "Audio preflight is owned by the production audio application adapter"
         )
-        if not self._quick_start_pending or not self.preflight_passed:
-            QMessageBox.information(self, "Диагностика аудио", message)
-        self.test_devices_button.setEnabled(True)
-        self._set_status(message, "warning" if warnings else "success")
-        logging.info(
-            "Тестовая запись завершена: ready=%s report=%s", self.preflight_passed, results.quality_report
-        )
-        if self._quick_start_pending and self.preflight_passed:
-            profile = selected_profile(self.config, self.quick_profile.currentData())
-            self._start_quick_countdown(profile.countdown_seconds)
-        elif self._quick_start_pending:
-            self._quick_start_pending = False
-            self._quick_auto_transcribe_active = False
-            self._refresh_quick_readiness()
 
     def _play_preflight_track(self, source: str) -> None:
         if not self.preflight_result:
