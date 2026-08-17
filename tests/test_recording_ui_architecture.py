@@ -1,3 +1,5 @@
+"""Regression gates for application-owned recording UI orchestration."""
+
 from __future__ import annotations
 
 import inspect
