@@ -100,7 +100,11 @@ def test_cancelled_lesson_cannot_be_restored_after_slot_was_reused(tmp_path) -> 
     with pytest.raises(ScheduleConflict):
         set_scheduled_lesson_status(store, cancelled, ScheduledLessonStatus.PLANNED)
 
-    assert store.lessons_for_week(week)[0].status == ScheduledLessonStatus.CANCELLED.value
+    lessons = store.lessons_for_week(week)
+    original = next(item for item in lessons if item.student_id == "cancel-test")
+    replacement = next(item for item in lessons if item.student_id == "replacement")
+    assert original.status == ScheduledLessonStatus.CANCELLED.value
+    assert replacement.status == ScheduledLessonStatus.PLANNED.value
 
 
 def test_concurrent_cancellation_materializes_only_one_rule_exception(tmp_path) -> None:
