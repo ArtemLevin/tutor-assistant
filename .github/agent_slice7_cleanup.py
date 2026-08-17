@@ -26,20 +26,20 @@ for token in required_legacy_tokens:
 command_port = '''    def _begin_preflight(self, show_intro: bool) -> None:\n        del show_intro\n        raise NotImplementedError(\n            "Audio preflight is owned by the production audio application adapter"\n        )\n\n'''
 text = text[:start] + command_port + text[end:]
 
-# The removed legacy block was the only base-UI owner of these infrastructure dependencies.
+# sleep() was specific to the deleted base-UI diagnostic transaction.
+# DualRecorder remains imported because base UI still exposes the shared recorder factory
+# used by the production recording-start adapter; extracting that factory is a later seam.
 text = text.replace("from time import sleep\n", "")
-text = text.replace("    DualRecorder,\n", "")
 
 for forbidden in (
-    "recorder = DualRecorder(",
+    "recorder = DualRecorder(\n                self.config.recording.sample_rate,",
     "def _device_test_ready(self, results) -> None:",
     "sleep(seconds)",
+    "quality_report.read_text(encoding=\"utf-8\")",
 ):
     if forbidden in text:
         raise RuntimeError(f"Legacy preflight orchestration still present in app.py: {forbidden}")
 
-if re.search(r"\bDualRecorder\b", text):
-    raise RuntimeError("DualRecorder is still referenced by base UI after cleanup")
 if re.search(r"\bsleep\(", text):
     raise RuntimeError("sleep() is still referenced by base UI after cleanup")
 if "def _play_preflight_track(self, source: str) -> None:" not in text:
