@@ -394,33 +394,6 @@ class MainWindow(base_app.MainWindow):
             return
         super()._play_preflight_track(source)
 
-    def start_recording(self) -> None:
-        # The base window stops application-owned media before opening loopback capture.
-        super().start_recording()
-        self._sync_parallel_review_ui()
-
-    def _stop_recording_async(self, reason: str | None = None) -> None:
-        super()._stop_recording_async(reason)
-        self._sync_parallel_review_ui()
-
-    def _recording_ready_impl(
-        self,
-        result,
-        recorded_lesson: Lesson,
-        source_recorder,
-        reason: str | None = None,
-    ) -> None:
-        review_before = self.review_lesson
-        super()._recording_ready_impl(result, recorded_lesson, source_recorder, reason)
-        # Finalizing lesson B must not replace or clear lesson A opened for review.
-        if review_before is not None:
-            self.review_lesson = review_before
-        self._sync_parallel_review_ui()
-
-    def _recording_stop_failed(self, details: str) -> None:
-        super()._recording_stop_failed(details)
-        self._sync_parallel_review_ui()
-
     def _tick(self) -> None:
         super()._tick()
         self._sync_parallel_review_ui()

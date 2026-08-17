@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 from PySide6.QtWidgets import QMessageBox
 
@@ -11,11 +10,10 @@ from ..application.recording import (
     RecordingWorkflowRejected,
     StartRecordingUseCase,
 )
-from ..domain import JobStatus, Lesson
+from ..domain import Lesson
 from ..recording import SystemAudioSource, list_input_devices, list_system_audio_sources
 from ..recording.devices import probe_input_device, resolve_input_device
 from . import app as base_app
-from .localization import subject_value
 from .theme import refresh_style
 from .transcript_publication_app import MainWindow as ProductionMainWindow
 
@@ -51,18 +49,6 @@ class MainWindow(ProductionMainWindow):
             self.config.recording.chunk_seconds,
             self.config.recording.queue_blocks,
             self.config.recording.target_sample_rate,
-        )
-
-    def _build_recording_lesson(self) -> Lesson:
-        if not self.topic.text().strip():
-            raise ValueError("Укажите тему занятия")
-        selected = next(item for item in self.students if item.id == self.student.currentData())
-        value = self.lesson_date.date()
-        return Lesson(
-            student=selected,
-            subject=subject_value(self.subject.currentData() or self.subject.currentText()),
-            topic=self.topic.text().strip(),
-            lesson_date=date(value.year(), value.month(), value.day()),
         )
 
     def _present_recording_started(
@@ -315,7 +301,7 @@ class MainWindow(ProductionMainWindow):
             system_source = self.loopback.currentData()
             if not isinstance(system_source, SystemAudioSource):
                 raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
-            recording_lesson = self._build_recording_lesson()
+            recording_lesson = self._build_lesson_from_form()
             started = self.start_recording_use_case.start(
                 recording_lesson,
                 mic_device=int(self.mic.currentData()),
@@ -339,41 +325,7 @@ class MainWindow(ProductionMainWindow):
             self._refresh_teacher_cockpit()
             self._sync_parallel_review_ui()
 
-    def _stop_recording_async(self, reason: str | None = None) -> None:
-        if not self.recording_workflow.begin_stop(self._recording_runtime_state()):
-            return
-        try:
-            super()._stop_recording_async(reason)
-        finally:
-            self.recording_workflow.observe_runtime(self._recording_runtime_state())
 
-    def _recording_ready(
-        self,
-        result,
-        recorded_lesson,
-        source_recorder,
-        reason: str | None = None,
-    ) -> None:
-        try:
-            super()._recording_ready(result, recorded_lesson, source_recorder, reason)
-        finally:
-            if recorded_lesson.status == JobStatus.RECORDED:
-                self.recording_workflow.mark_completed()
-            elif recorded_lesson.status == JobStatus.FAILED:
-                self.recording_workflow.mark_failed()
-            else:
-                self.recording_workflow.observe_runtime(self._recording_runtime_state())
-
-    def _recording_stop_failed(self, details: str) -> None:
-        try:
-            super()._recording_stop_failed(details)
-        finally:
-            self.recording_workflow.mark_recovery_required()
-
-    def _recovery_ready(self, result) -> None:
-        super()._recovery_ready(result)
-        if not (self.recorder and self.recorder.active):
-            self.recording_workflow.reset()
 
 
 def main() -> None:
