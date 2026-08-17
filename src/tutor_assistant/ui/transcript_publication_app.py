@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 
 from ..domain import JobStatus, Lesson
 from ..publisher import publication_payload_files
-from ..recording import DualRecorder
 from . import app as base_app
 from .accessibility import install_accessibility
 from .concurrent_app import MainWindow as ConcurrentMainWindow
@@ -58,7 +57,6 @@ class MainWindow(ConcurrentMainWindow):
 
     def __init__(self, config_path):
         super().__init__(config_path)
-        base_app.DualRecorder = self._create_configured_recorder
         install_library_transcription_control(self.student_content_page)
         self._install_audio_format_selector()
         self._install_transcription_provider_selector()
@@ -187,10 +185,6 @@ class MainWindow(ConcurrentMainWindow):
         layout.addLayout(card_row)
         layout.addStretch(2)
         return page
-
-    def _create_configured_recorder(self, *args, **kwargs) -> DualRecorder:
-        kwargs["output_format"] = self.config.recording.output_format
-        return DualRecorder(*args, **kwargs)
 
     def _lesson_form(self) -> QFormLayout:
         form = self.student.parentWidget().layout()
@@ -361,8 +355,6 @@ class MainWindow(ConcurrentMainWindow):
         if cockpit is not None and cockpit.session is not None:
             cockpit.session.save_all()
         super().closeEvent(event)
-        if event.isAccepted():
-            base_app.DualRecorder = DualRecorder
 
 
 def main() -> None:

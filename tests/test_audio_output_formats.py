@@ -481,13 +481,20 @@ def test_health_counts_time_before_first_callback() -> None:
     assert health.system_callback_age_seconds >= 5.5
 
 
-def test_production_gui_uses_instance_recorder_factory() -> None:
-    source = Path(
+def test_production_gui_keeps_output_format_policy_at_audio_composition_boundary() -> None:
+    publication_source = Path(
         "src/tutor_assistant/ui/transcript_publication_app.py"
     ).read_text(encoding="utf-8")
+    audio_source = Path(
+        "src/tutor_assistant/ui/audio_resilient_app.py"
+    ).read_text(encoding="utf-8")
 
-    assert 'setObjectName("audioOutputFormat")' in source
-    assert 'self._lesson_form().addRow("Итоговый формат аудио"' in source
-    assert "_create_configured_recorder" in source
-    assert 'kwargs["output_format"] = self.config.recording.output_format' in source
-    assert "set_default_output_format" not in source
+    assert 'setObjectName("audioOutputFormat")' in publication_source
+    assert 'self._lesson_form().addRow("Итоговый формат аудио"' in publication_source
+    assert "_create_configured_recorder" not in publication_source
+    assert "base_app.DualRecorder" not in publication_source
+    assert "def _create_live_recorder" in audio_source
+    assert "DualRecorder(" in audio_source
+    assert "output_format=self.config.recording.output_format" in audio_source
+    assert "set_default_output_format" not in publication_source
+    assert "set_default_output_format" not in audio_source

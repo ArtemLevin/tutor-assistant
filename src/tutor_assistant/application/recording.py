@@ -132,6 +132,63 @@ class RecordingRecorder(Protocol):
     def stop(self) -> object: ...
 
 
+class RecordingLevelsSnapshot(Protocol):
+    """Read-only audio levels exposed to presentation monitoring."""
+
+    @property
+    def microphone(self) -> float: ...
+
+    @property
+    def system(self) -> float: ...
+
+
+class RecordingHealthSnapshot(Protocol):
+    """Read-only recorder health exposed without infrastructure coupling."""
+
+    @property
+    def microphone_queue_percent(self) -> int: ...
+
+    @property
+    def system_queue_percent(self) -> int: ...
+
+    @property
+    def microphone_dropped_blocks(self) -> int: ...
+
+    @property
+    def system_dropped_blocks(self) -> int: ...
+
+    @property
+    def max_writer_latency_ms(self) -> float: ...
+
+    @property
+    def microphone_silence_seconds(self) -> float: ...
+
+    @property
+    def system_silence_seconds(self) -> float: ...
+
+    @property
+    def microphone_callback_age_seconds(self) -> float: ...
+
+    @property
+    def system_callback_age_seconds(self) -> float: ...
+
+    @property
+    def stream_errors(self) -> tuple[str, ...]: ...
+
+    @property
+    def reconnect_attempts(self) -> int: ...
+
+
+class RecordingRuntimeRecorder(RecordingRecorder, Protocol):
+    """Recorder view required by the production UI while capture is active."""
+
+    @property
+    def levels(self) -> RecordingLevelsSnapshot: ...
+
+    @property
+    def health(self) -> RecordingHealthSnapshot: ...
+
+
 class RecordingPipeline(Protocol):
     """Persistence port used while establishing a recording session."""
 

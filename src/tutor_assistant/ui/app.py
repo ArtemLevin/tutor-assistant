@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..application import RecordingRuntimeRecorder
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
@@ -58,7 +59,6 @@ from ..playback import PlaybackController, PlaybackSegment
 from ..publisher import publication_payload_files
 from ..quick_start import evaluate_readiness, selected_profile
 from ..recording import (
-    DualRecorder,
     SystemAudioSource,
     list_input_devices,
     list_system_audio_sources,
@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         )
         self.lesson: Lesson | None = None
         self.recording_lesson: Lesson | None = None
-        self.recorder: DualRecorder | None = None
+        self.recorder: RecordingRuntimeRecorder | None = None
         self._recording_lease = None
         self.preflight_passed = False
         self.preflight_result = None
