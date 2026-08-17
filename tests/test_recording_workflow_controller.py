@@ -75,6 +75,14 @@ def test_failed_finalization_is_visible_but_does_not_block_future_start() -> Non
     assert controller.phase == RecordingWorkflowPhase.PREPARING
 
 
+def test_recording_application_layer_remains_qt_free() -> None:
+    source = Path("src/tutor_assistant/application/recording.py").read_text(encoding="utf-8")
+
+    assert "PySide" not in source
+    assert "QThread" not in source
+    assert "QMessageBox" not in source
+
+
 def test_production_entrypoint_routes_recording_commands_through_application_controller() -> None:
     source = Path("src/tutor_assistant/ui/audio_resilient_app.py").read_text(encoding="utf-8")
 
