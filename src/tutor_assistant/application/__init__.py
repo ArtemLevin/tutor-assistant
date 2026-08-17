@@ -9,6 +9,8 @@ from .recording import (
     RecordingWorkflowController,
     RecordingWorkflowPhase,
     RecordingWorkflowRejected,
+    StartedRecording,
+    StartRecordingUseCase,
 )
 
 __all__ = [
@@ -16,4 +18,6 @@ __all__ = [
     "RecordingWorkflowController",
     "RecordingWorkflowPhase",
     "RecordingWorkflowRejected",
+    "StartedRecording",
+    "StartRecordingUseCase",
 ]

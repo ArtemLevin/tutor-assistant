@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from PySide6.QtWidgets import QMessageBox
 
@@ -8,11 +9,14 @@ from ..application.recording import (
     RecordingRuntimeState,
     RecordingWorkflowController,
     RecordingWorkflowRejected,
+    StartRecordingUseCase,
 )
-from ..domain import JobStatus
+from ..domain import JobStatus, Lesson
 from ..recording import SystemAudioSource, list_input_devices, list_system_audio_sources
 from ..recording.devices import probe_input_device, resolve_input_device
 from . import app as base_app
+from .localization import subject_value
+from .theme import refresh_style
 from .transcript_publication_app import MainWindow as ProductionMainWindow
 
 
@@ -22,6 +26,11 @@ class MainWindow(ProductionMainWindow):
     def __init__(self, config_path):
         self.recording_workflow = RecordingWorkflowController()
         super().__init__(config_path)
+        self.start_recording_use_case = StartRecordingUseCase(
+            self.pipeline,
+            self.content_service,
+            self._create_live_recorder,
+        )
         self.recording_workflow.observe_runtime(self._recording_runtime_state())
         try:
             self._refresh_live_audio_devices(require_ready=False)
@@ -34,6 +43,68 @@ class MainWindow(ProductionMainWindow):
             stopping=bool(self._recording_stop_started),
             shutdown_requested=bool(self._shutdown_requested),
         )
+
+    def _create_live_recorder(self):
+        return self._create_configured_recorder(
+            self.config.recording.sample_rate,
+            self.config.recording.channels,
+            self.config.recording.chunk_seconds,
+            self.config.recording.queue_blocks,
+            self.config.recording.target_sample_rate,
+        )
+
+    def _build_recording_lesson(self) -> Lesson:
+        if not self.topic.text().strip():
+            raise ValueError("Укажите тему занятия")
+        selected = next(item for item in self.students if item.id == self.student.currentData())
+        value = self.lesson_date.date()
+        return Lesson(
+            student=selected,
+            subject=subject_value(self.subject.currentData() or self.subject.currentText()),
+            topic=self.topic.text().strip(),
+            lesson_date=date(value.year(), value.month(), value.day()),
+        )
+
+    def _present_recording_started(
+        self,
+        recording_lesson: Lesson,
+        system_source: SystemAudioSource,
+    ) -> None:
+        self._update_scheduled_occurrence(
+            "in_progress",
+            lesson_id=recording_lesson.lesson_id,
+        )
+        self.recording_seconds = 0
+        self._recording_stop_started = False
+        self._active_audio_warning = ""
+        self.timer.start(1000)
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.test_devices_button.setEnabled(False)
+        if self._quick_auto_transcribe_active:
+            self.quick_start_button.setText("Завершить занятие")
+            self.quick_start_button.setEnabled(True)
+        self.recording_state_label.setText("●  ИДЁТ ЗАПИСЬ")
+        self.recording_state_label.setProperty("active", True)
+        refresh_style(self.recording_state_label)
+        self._set_status("Идёт запись", "working")
+        logging.info(
+            "Запись начата через application use case: lesson=%s mic=%s system=%s",
+            recording_lesson.lesson_id,
+            self.mic.currentText(),
+            system_source.display_name,
+        )
+
+    def _reset_failed_start_presentation(self) -> None:
+        self.recorder = None
+        self.recording_lesson = None
+        self._recording_lease = None
+        self._update_scheduled_occurrence("planned", clear=True)
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.test_devices_button.setEnabled(True)
+        self._quick_auto_transcribe_active = False
+        self._refresh_quick_readiness()
 
     def _persist_audio_selection(self) -> None:
         selected_index = self.mic.currentData()
@@ -225,10 +296,48 @@ class MainWindow(ProductionMainWindow):
             self._update_scheduled_occurrence("planned", clear=True)
             return
 
+        self.audio_output_format.setEnabled(False)
+        started = None
         try:
-            super().start_recording()
+            self.playback_controller.prepare_recording()
+            if self.config.recording.require_preflight and not self.preflight_passed:
+                answer = QMessageBox.question(
+                    self,
+                    "Проверка аудио",
+                    "Тестовая запись ещё не прошла проверку. Продолжить занятие без неё?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Cancel,
+                )
+                if answer != QMessageBox.Yes:
+                    self.recording_workflow.abort_start()
+                    return
+
+            system_source = self.loopback.currentData()
+            if not isinstance(system_source, SystemAudioSource):
+                raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
+            recording_lesson = self._build_recording_lesson()
+            started = self.start_recording_use_case.start(
+                recording_lesson,
+                mic_device=int(self.mic.currentData()),
+                system_source=system_source,
+            )
+            self.recording_lesson = started.lesson
+            self.recorder = started.recorder
+            self._recording_lease = started.lease
+            self._present_recording_started(recording_lesson, system_source)
+        except Exception as exc:
+            logging.exception("Не удалось начать запись через application use case")
+            if started is not None:
+                self.start_recording_use_case.abort(started, exc)
+            self._reset_failed_start_presentation()
+            self.recording_workflow.mark_failed()
+            QMessageBox.critical(self, "Ошибка записи", str(exc))
         finally:
             self.recording_workflow.observe_runtime(self._recording_runtime_state())
+            if not (self.recorder and self.recorder.active):
+                self.audio_output_format.setEnabled(True)
+            self._refresh_teacher_cockpit()
+            self._sync_parallel_review_ui()
 
     def _stop_recording_async(self, reason: str | None = None) -> None:
         if not self.recording_workflow.begin_stop(self._recording_runtime_state()):

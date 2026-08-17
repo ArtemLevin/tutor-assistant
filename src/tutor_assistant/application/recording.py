@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from enum import StrEnum
+from pathlib import Path
+from typing import Protocol
+
+from ..domain import JobStatus, Lesson
 
 
 class RecordingWorkflowPhase(StrEnum):
@@ -106,3 +113,155 @@ class RecordingWorkflowController:
 
     def reset(self) -> None:
         self._phase = RecordingWorkflowPhase.IDLE
+
+
+class RecordingLease(Protocol):
+    """Minimal application contract for an acquired content activity lease."""
+
+    def release(self) -> None: ...
+
+
+class RecordingRecorder(Protocol):
+    """Capture port required by the start-recording use case."""
+
+    @property
+    def active(self) -> bool: ...
+
+    def start(self, output_dir: Path, mic_device: int, system_source: object) -> None: ...
+
+    def stop(self) -> object: ...
+
+
+class RecordingPipeline(Protocol):
+    """Persistence port used while establishing a recording session."""
+
+    def create(self, lesson: Lesson) -> Path: ...
+
+    def lesson_dir(self, lesson: Lesson) -> Path: ...
+
+    def save_state(self, lesson: Lesson, *fields: str, **kwargs: object) -> Lesson: ...
+
+
+class RecordingActivityService(Protocol):
+    """Activity-coordination port used to protect a live recording."""
+
+    def acquire_activity(
+        self,
+        activity: str,
+        *,
+        lesson_id: str | None = None,
+        exclusive: bool = False,
+        ttl: timedelta = timedelta(minutes=2),
+    ) -> RecordingLease: ...
+
+
+@dataclass(frozen=True, slots=True)
+class StartedRecording:
+    """Application context handed back to the presentation/runtime adapter."""
+
+    lesson: Lesson
+    recorder: RecordingRecorder
+    lease: RecordingLease
+    directory: Path
+
+
+class StartRecordingUseCase:
+    """Establish a durable live-recording session as one application transaction.
+
+    The use case preserves the historical ordering of side effects while moving
+    their ownership out of the GUI: persist the lesson, acquire a recording lease,
+    create a recorder, persist ``RECORDING``, then start capture. Any failure after
+    lesson creation is compensated best-effort by stopping a partially active
+    recorder, releasing the lease and persisting ``FAILED``.
+    """
+
+    def __init__(
+        self,
+        pipeline: RecordingPipeline,
+        activities: RecordingActivityService,
+        recorder_factory: Callable[[], RecordingRecorder],
+        *,
+        lease_ttl: timedelta = timedelta(minutes=5),
+    ) -> None:
+        self._pipeline = pipeline
+        self._activities = activities
+        self._recorder_factory = recorder_factory
+        self._lease_ttl = lease_ttl
+
+    def start(
+        self,
+        lesson: Lesson,
+        *,
+        mic_device: int,
+        system_source: object,
+    ) -> StartedRecording:
+        created = False
+        lease: RecordingLease | None = None
+        recorder: RecordingRecorder | None = None
+        try:
+            self._pipeline.create(lesson)
+            created = True
+            lease = self._activities.acquire_activity(
+                "recording",
+                lesson_id=lesson.lesson_id,
+                ttl=self._lease_ttl,
+            )
+            directory = self._pipeline.lesson_dir(lesson) / "recording"
+            recorder = self._recorder_factory()
+            lesson.transition(JobStatus.RECORDING)
+            self._pipeline.save_state(lesson, "status", "error")
+            recorder.start(directory, mic_device, system_source)
+            return StartedRecording(
+                lesson=lesson,
+                recorder=recorder,
+                lease=lease,
+                directory=directory,
+            )
+        except Exception as exc:
+            self._rollback(
+                lesson,
+                error=exc,
+                created=created,
+                lease=lease,
+                recorder=recorder,
+            )
+            raise
+
+    def abort(self, started: StartedRecording, error: BaseException) -> None:
+        """Compensate a session when presentation setup fails after capture began."""
+
+        self._rollback(
+            started.lesson,
+            error=error,
+            created=True,
+            lease=started.lease,
+            recorder=started.recorder,
+        )
+
+    def _rollback(
+        self,
+        lesson: Lesson,
+        *,
+        error: BaseException,
+        created: bool,
+        lease: RecordingLease | None,
+        recorder: RecordingRecorder | None,
+    ) -> None:
+        if recorder is not None:
+            try:
+                if recorder.active:
+                    recorder.stop()
+            except Exception:
+                logging.exception("Не удалось остановить recorder после ошибки запуска")
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                logging.exception("Не удалось освободить recording lease после ошибки запуска")
+        if not created:
+            return
+        try:
+            lesson.transition(JobStatus.FAILED, str(error))
+            self._pipeline.save_state(lesson, "status", "error")
+        except Exception:
+            logging.exception("Не удалось сохранить ошибку запуска записи")
