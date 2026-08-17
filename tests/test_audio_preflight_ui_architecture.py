@@ -22,6 +22,7 @@ def test_base_ui_exposes_preflight_command_port_without_capture_orchestration() 
 
     assert "def _device_test_ready(self, results)" not in source
     assert "from time import sleep" not in source
+    assert "datetime.now" not in source
 
 
 def test_device_test_action_still_routes_through_preflight_command_port() -> None:
