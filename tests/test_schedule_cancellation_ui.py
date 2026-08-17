@@ -43,7 +43,7 @@ def _button(dialog: ScheduleDialogStable, text: str) -> QPushButton:
     return next(button for button in dialog.findChildren(QPushButton) if button.text() == text)
 
 
-def test_planned_lesson_exposes_cancel_instead_of_delete(
+def test_planned_recurring_lesson_separates_occurrence_cancel_from_series_delete(
     tmp_path,
     application: QApplication,
 ) -> None:
@@ -52,6 +52,7 @@ def test_planned_lesson_exposes_cancel_instead_of_delete(
     dialog = ScheduleDialogStable(store, lesson.starts_at.date(), lesson=lesson)
 
     assert _button(dialog, "Отменить занятие").isEnabled()
+    assert _button(dialog, "Удалить серию").isEnabled()
     assert all(button.text() != "Удалить" for button in dialog.findChildren(QPushButton))
     dialog.close()
 
@@ -67,6 +68,7 @@ def test_cancelled_lesson_exposes_restore_and_disables_start(
     dialog = ScheduleDialogStable(store, cancelled.starts_at.date(), lesson=cancelled)
 
     assert _button(dialog, "Вернуть занятие").isEnabled()
+    assert _button(dialog, "Удалить серию").isEnabled()
     assert not _button(dialog, "Начать запись").isEnabled()
     dialog.close()
 
