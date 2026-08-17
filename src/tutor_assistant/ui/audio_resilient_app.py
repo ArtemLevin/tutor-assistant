@@ -4,6 +4,12 @@ import logging
 
 from PySide6.QtWidgets import QMessageBox
 
+from ..application.recording import (
+    RecordingRuntimeState,
+    RecordingWorkflowController,
+    RecordingWorkflowRejected,
+)
+from ..domain import JobStatus
 from ..recording import SystemAudioSource, list_input_devices, list_system_audio_sources
 from ..recording.devices import probe_input_device, resolve_input_device
 from . import app as base_app
@@ -11,14 +17,23 @@ from .transcript_publication_app import MainWindow as ProductionMainWindow
 
 
 class MainWindow(ProductionMainWindow):
-    """Production window with hot-plug-safe microphone identity resolution."""
+    """Production window with hot-plug-safe audio and application recording lifecycle."""
 
     def __init__(self, config_path):
+        self.recording_workflow = RecordingWorkflowController()
         super().__init__(config_path)
+        self.recording_workflow.observe_runtime(self._recording_runtime_state())
         try:
             self._refresh_live_audio_devices(require_ready=False)
         except Exception:
             logging.exception("Не удалось обновить аудиоустройства после запуска")
+
+    def _recording_runtime_state(self) -> RecordingRuntimeState:
+        return RecordingRuntimeState(
+            active=bool(self.recorder and self.recorder.active),
+            stopping=bool(self._recording_stop_started),
+            shutdown_requested=bool(self._shutdown_requested),
+        )
 
     def _persist_audio_selection(self) -> None:
         selected_index = self.mic.currentData()
@@ -197,11 +212,59 @@ class MainWindow(ProductionMainWindow):
         super()._begin_preflight(show_intro)
 
     def start_recording(self) -> None:
+        try:
+            self.recording_workflow.begin_start(self._recording_runtime_state())
+        except RecordingWorkflowRejected as exc:
+            logging.warning("Команда начала записи отклонена: %s", exc)
+            QMessageBox.critical(self, "Ошибка записи", str(exc))
+            return
+
         if not self._prepare_audio_or_warn(probe=True):
+            self.recording_workflow.abort_start()
             self._quick_auto_transcribe_active = False
             self._update_scheduled_occurrence("planned", clear=True)
             return
-        super().start_recording()
+
+        try:
+            super().start_recording()
+        finally:
+            self.recording_workflow.observe_runtime(self._recording_runtime_state())
+
+    def _stop_recording_async(self, reason: str | None = None) -> None:
+        if not self.recording_workflow.begin_stop(self._recording_runtime_state()):
+            return
+        try:
+            super()._stop_recording_async(reason)
+        finally:
+            self.recording_workflow.observe_runtime(self._recording_runtime_state())
+
+    def _recording_ready(
+        self,
+        result,
+        recorded_lesson,
+        source_recorder,
+        reason: str | None = None,
+    ) -> None:
+        try:
+            super()._recording_ready(result, recorded_lesson, source_recorder, reason)
+        finally:
+            if recorded_lesson.status == JobStatus.RECORDED:
+                self.recording_workflow.mark_completed()
+            elif recorded_lesson.status == JobStatus.FAILED:
+                self.recording_workflow.mark_failed()
+            else:
+                self.recording_workflow.observe_runtime(self._recording_runtime_state())
+
+    def _recording_stop_failed(self, details: str) -> None:
+        try:
+            super()._recording_stop_failed(details)
+        finally:
+            self.recording_workflow.mark_recovery_required()
+
+    def _recovery_ready(self, result) -> None:
+        super()._recovery_ready(result)
+        if not (self.recorder and self.recorder.active):
+            self.recording_workflow.reset()
 
 
 def main() -> None:
