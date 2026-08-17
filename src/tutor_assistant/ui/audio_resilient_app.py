@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 from PySide6.QtWidgets import QMessageBox
 
 from ..application import AudioPreflightResult, AudioPreflightUseCase
 from ..application.recording import (
+    RecordingRuntimeRecorder,
     RecordingRuntimeState,
     RecordingWorkflowController,
     RecordingWorkflowRejected,
@@ -52,13 +54,14 @@ class MainWindow(ProductionMainWindow):
             shutdown_requested=bool(self._shutdown_requested),
         )
 
-    def _create_live_recorder(self):
-        return self._create_configured_recorder(
+    def _create_live_recorder(self) -> RecordingRuntimeRecorder:
+        return DualRecorder(
             self.config.recording.sample_rate,
             self.config.recording.channels,
             self.config.recording.chunk_seconds,
             self.config.recording.queue_blocks,
             self.config.recording.target_sample_rate,
+            output_format=self.config.recording.output_format,
         )
 
     def _create_preflight_recorder(self, chunk_seconds: int):
@@ -399,7 +402,7 @@ class MainWindow(ProductionMainWindow):
                 system_source=system_source,
             )
             self.recording_lesson = started.lesson
-            self.recorder = started.recorder
+            self.recorder = cast(RecordingRuntimeRecorder, started.recorder)
             self._recording_lease = started.lease
             self._present_recording_started(recording_lesson, system_source)
         except Exception as exc:

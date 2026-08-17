@@ -6,6 +6,9 @@ remain independent from PySide so workflows can be tested without a GUI runtime.
 
 from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
 from .recording import (
+    RecordingHealthSnapshot,
+    RecordingLevelsSnapshot,
+    RecordingRuntimeRecorder,
     RecordingRuntimeState,
     RecordingWorkflowController,
     RecordingWorkflowPhase,
@@ -29,7 +32,10 @@ __all__ = [
     "AudioPreflightResult",
     "AudioPreflightUseCase",
     "RecordingRecoveryOutcome",
+    "RecordingHealthSnapshot",
+    "RecordingLevelsSnapshot",
     "RecordingRecoveryState",
+    "RecordingRuntimeRecorder",
     "RecordingRuntimeState",
     "RecordingStopOutcome",
     "RecordingStopSession",
