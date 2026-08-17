@@ -14,6 +14,7 @@ from tutor_assistant.schedule_status import (  # noqa: E402
     ScheduledLessonStatus,
     set_scheduled_lesson_status,
 )
+from tutor_assistant.ui import crm as production_crm_ui  # noqa: E402
 from tutor_assistant.ui.schedule_ux_stable import (  # noqa: E402
     ScheduleDialogStable,
     SchedulePageStable,
@@ -41,6 +42,11 @@ def _lesson(store: CrmStore):
 
 def _button(dialog: ScheduleDialogStable, text: str) -> QPushButton:
     return next(button for button in dialog.findChildren(QPushButton) if button.text() == text)
+
+
+def test_production_schedule_route_uses_stable_cancellation_ui() -> None:
+    assert production_crm_ui.ScheduleDialog is ScheduleDialogStable
+    assert production_crm_ui.SchedulePage is SchedulePageStable
 
 
 def test_planned_recurring_lesson_separates_occurrence_cancel_from_series_delete(
