@@ -12,7 +12,7 @@ from tutor_assistant.application.recording_stop import (
 )
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.recording import RecordingResult
-from tutor_assistant.ui.recording_finalize_app import MainWindow as ProductionMainWindow
+from tutor_assistant.ui.recording_finalize_app import MainWindow as StopFinalizeMainWindow
 
 
 class FakeLease:
@@ -250,7 +250,7 @@ def test_lease_release_failure_does_not_change_recorded_outcome(tmp_path: Path) 
 
 
 def test_production_stop_does_not_delegate_back_to_legacy_super() -> None:
-    source = inspect.getsource(ProductionMainWindow._stop_recording_async)
+    source = inspect.getsource(StopFinalizeMainWindow._stop_recording_async)
 
     assert "stop_recording_use_case.stop" in source
     assert "super()._stop_recording_async" not in source
@@ -263,6 +263,7 @@ def test_stop_use_case_module_is_qt_independent() -> None:
     assert "PySide" not in source
 
 
-def test_gui_entrypoint_uses_stop_finalize_adapter() -> None:
-    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
-    assert 'tutor-assistant-gui = "tutor_assistant.ui.recording_finalize_app:main"' in pyproject
+def test_stop_finalize_adapter_remains_in_production_mro() -> None:
+    from tutor_assistant.ui.recording_recovery_app import MainWindow as ProductionMainWindow
+
+    assert issubclass(ProductionMainWindow, StopFinalizeMainWindow)
