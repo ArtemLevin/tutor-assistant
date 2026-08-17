@@ -51,7 +51,6 @@ class AudioPreflightUseCase:
     def run(
         self,
         directory: Path,
-        *,
         mic_device: int,
         system_source: object,
         seconds: float,
@@ -68,7 +67,7 @@ class AudioPreflightUseCase:
             self._sleeper(seconds)
             stop_attempted = True
             recording = recorder.stop()
-        except BaseException:
+        except Exception:
             if not stop_attempted and recorder.active:
                 try:
                     recorder.stop()
@@ -84,7 +83,7 @@ class AudioPreflightUseCase:
             system_rms = float(system["rms"])
             warnings = tuple(str(item) for item in quality.get("warnings", ()))
             ready = bool(quality.get("ready"))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, KeyError) as exc:
             raise RuntimeError(
                 f"Не удалось прочитать отчёт аудиодиагностики: {recording.quality_report}"
             ) from exc
