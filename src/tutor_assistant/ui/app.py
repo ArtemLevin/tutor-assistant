@@ -62,10 +62,8 @@ from ..quick_start import evaluate_readiness, selected_profile
 from ..recording import (
     DualRecorder,
     SystemAudioSource,
-    find_recoverable_recordings,
     list_input_devices,
     list_system_audio_sources,
-    recover_recording,
 )
 from ..security.cloud_consent import (
     CloudConsentReceipt,
@@ -202,7 +200,6 @@ class MainWindow(QMainWindow):
         self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
         self.workers: list[Worker] = []
-        self._recovery_sessions: list[Path] = []
         self.transcription_queue = TranscriptionQueue(self.pipeline.store)
         self._loading_segments = False
         self._summary_dirty = False
@@ -605,47 +602,9 @@ class MainWindow(QMainWindow):
         self._maybe_finish_shutdown()
 
     def _offer_recovery(self) -> None:
-        self._recovery_sessions = list(reversed(find_recoverable_recordings(self.config.workspace)))
-        self._offer_next_recovery()
+        """Startup hook overridden by the production recording-recovery adapter."""
 
-    def _offer_next_recovery(self) -> None:
-        if not self._recovery_sessions:
-            return
-        directory = self._recovery_sessions.pop(0)
-        answer = QMessageBox.question(
-            self,
-            "Незавершённая запись",
-            f"Найдены сохранённые чанки:\n{directory}\n\nВосстановить аудиозапись?",
-        )
-        if answer != QMessageBox.Yes:
-            self._offer_next_recovery()
-            return
-        self._set_status("Восстанавливаю аудиозапись…", "working")
-        worker = Worker(recover_recording, directory)
-        worker.succeeded.connect(self._recovery_ready)
-        worker.failed.connect(self._recovery_failed)
-        worker.finished.connect(lambda: self._worker_finished(worker))
-        self.workers.append(worker)
-        worker.start()
-
-    def _recovery_ready(self, result) -> None:
-        self.audio_path.setText(str(result.mixed_file))
-        try:
-            session = json.loads(result.session_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            session = {}
-        session["status"] = "recovered"
-        atomic_write_text(
-            result.session_file,
-            json.dumps(session, ensure_ascii=False, indent=2),
-        )
-        self._set_status("Аудиозапись восстановлена")
-        QMessageBox.information(self, "Восстановление", f"Запись восстановлена:\n{result.mixed_file}")
-        self._offer_next_recovery()
-
-    def _recovery_failed(self, details: str) -> None:
-        self._operation_failed("recovery", details)
-        self._offer_next_recovery()
+        return
 
     def _offer_unfinished_job(self) -> None:
         active = [
@@ -1506,270 +1465,44 @@ class MainWindow(QMainWindow):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.data(256))))
 
-    def _make_lesson(self) -> Lesson:
+    def _build_lesson_from_form(self) -> Lesson:
+        """Build a Lesson draft from the shared form without persisting it."""
+
         if not self.topic.text().strip():
             raise ValueError("Укажите тему занятия")
         selected = next(item for item in self.students if item.id == self.student.currentData())
         value = self.lesson_date.date()
-        lesson = Lesson(
+        return Lesson(
             student=selected,
             subject=subject_value(self.subject.currentData() or self.subject.currentText()),
             topic=self.topic.text().strip(),
             lesson_date=date(value.year(), value.month(), value.day()),
         )
+
+    def _create_lesson_from_form(self) -> Lesson:
+        """Persist a form-backed Lesson for non-recording workflows such as import."""
+
+        lesson = self._build_lesson_from_form()
         self.pipeline.create(lesson)
         return lesson
 
     def start_recording(self) -> None:
-        try:
-            if self._shutdown_requested:
-                raise RuntimeError("Приложение завершает фоновые операции")
-            if self._recording_stop_started or (self.recorder and self.recorder.active):
-                raise RuntimeError("Запись уже запущена или сохраняется")
-            self.playback_controller.prepare_recording()
-            if self.config.recording.require_preflight and not self.preflight_passed:
-                answer = QMessageBox.question(
-                    self,
-                    "Проверка аудио",
-                    "Тестовая запись ещё не прошла проверку. Продолжить занятие без неё?",
-                    QMessageBox.Yes | QMessageBox.Cancel,
-                    QMessageBox.Cancel,
-                )
-                if answer != QMessageBox.Yes:
-                    return
-            recording_lesson = self._make_lesson()
-            self.recording_lesson = recording_lesson
-            self._recording_lease = self.content_service.acquire_activity(
-                "recording",
-                lesson_id=recording_lesson.lesson_id,
-                ttl=timedelta(minutes=5),
-            )
-            directory = self.pipeline.lesson_dir(recording_lesson) / "recording"
-            self.recorder = DualRecorder(
-                self.config.recording.sample_rate,
-                self.config.recording.channels,
-                self.config.recording.chunk_seconds,
-                self.config.recording.queue_blocks,
-                self.config.recording.target_sample_rate,
-            )
-            system_source = self.loopback.currentData()
-            if not isinstance(system_source, SystemAudioSource):
-                raise ValueError("Выберите устройство WASAPI Loopback для системного звука")
-            recording_lesson.transition(JobStatus.RECORDING)
-            self.pipeline.save_state(recording_lesson, "status", "error")
-            self.recorder.start(directory, int(self.mic.currentData()), system_source)
-            self._update_scheduled_occurrence("in_progress", lesson_id=recording_lesson.lesson_id)
-            self.recording_seconds = 0
-            self._recording_stop_started = False
-            self._active_audio_warning = ""
-            self.timer.start(1000)
-            self.start_button.setEnabled(False)
-            self.stop_button.setEnabled(True)
-            self.test_devices_button.setEnabled(False)
-            if self._quick_auto_transcribe_active:
-                self.quick_start_button.setText("Завершить занятие")
-                self.quick_start_button.setEnabled(True)
-            self.recording_state_label.setText("●  ИДЁТ ЗАПИСЬ")
-            self.recording_state_label.setProperty("active", True)
-            refresh_style(self.recording_state_label)
-            self._set_status("Идёт запись", "working")
-            logging.info(
-                "Запись начата: lesson=%s mic=%s system=%s",
-                recording_lesson.lesson_id,
-                self.mic.currentText(),
-                system_source.display_name,
-            )
-        except Exception as exc:
-            logging.exception("Не удалось начать запись")
-            failed_lesson = self.recording_lesson
-            if self.recorder and self.recorder.active:
-                try:
-                    self.recorder.stop()
-                except Exception:
-                    logging.exception("Не удалось остановить recorder после ошибки запуска")
-            self.recorder = None
-            self.recording_lesson = None
-            self._release_recording_lease()
-            self._update_scheduled_occurrence("planned", clear=True)
-            if failed_lesson:
-                try:
-                    failed_lesson.transition(JobStatus.FAILED, str(exc))
-                    self.pipeline.save_state(failed_lesson, "status", "error")
-                except Exception:
-                    logging.exception("Не удалось сохранить ошибку запуска записи")
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
-            self.test_devices_button.setEnabled(True)
-            self._quick_auto_transcribe_active = False
-            self._refresh_quick_readiness()
-            QMessageBox.critical(self, "Ошибка записи", str(exc))
+        """Command port implemented by the production recording-start adapter."""
+
+        raise NotImplementedError(
+            "Recording start is owned by the production application adapter"
+        )
 
     def stop_recording(self) -> None:
         self._stop_recording_async()
 
     def _stop_recording_async(self, reason: str | None = None) -> None:
-        if self._recording_stop_started or not self.recorder or not self.recording_lesson:
-            return
-        recorder = self.recorder
-        recording_lesson = self.recording_lesson
-        self._recording_stop_started = True
-        self.timer.stop()
-        self.stop_button.setEnabled(False)
-        self.recording_state_label.setText("СОХРАНЯЮ ЗАПИСЬ…")
-        self._set_status("Сохраняю и проверяю аудиодорожки…", "working")
-        if reason:
-            logging.warning("Аварийное завершение записи: %s", reason)
-        else:
-            logging.info("Завершение записи запрошено")
-        worker = Worker(recorder.stop)
-        worker.purpose = "recording-stop"
-        worker.succeeded.connect(
-            lambda result, lesson=recording_lesson, source=recorder: self._recording_ready(
-                result, lesson, source, reason
-            )
+        """Command port implemented by the production stop/finalize adapter."""
+
+        del reason
+        raise NotImplementedError(
+            "Recording stop/finalization is owned by the production application adapter"
         )
-        worker.failed.connect(self._recording_stop_failed)
-        worker.finished.connect(lambda: self._worker_finished(worker))
-        self.workers.append(worker)
-        worker.start()
-
-    def _recording_ready(
-        self,
-        result,
-        recorded_lesson: Lesson,
-        source_recorder: DualRecorder,
-        reason: str | None = None,
-    ) -> None:
-        try:
-            self._recording_ready_impl(result, recorded_lesson, source_recorder, reason)
-        except Exception:
-            details = traceback.format_exc()
-            logging.error("Ошибка финализации записанного занятия\n%s", details)
-            try:
-                recorded_lesson.transition(JobStatus.FAILED, details[-2000:])
-                self.pipeline.save_state(recorded_lesson, "status", "error")
-            except Exception:
-                logging.exception("Не удалось сохранить состояние ошибки записи")
-            self._recording_stop_started = False
-            self.recorder = None
-            self.recording_lesson = None
-            self._update_scheduled_occurrence("recording_failed", clear=True)
-            self.start_button.setEnabled(True)
-            self.quick_start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
-            self.test_devices_button.setEnabled(True)
-            self._quick_auto_transcribe_active = False
-            self._set_status("Аудио сохранено, оформление занятия завершилось с ошибкой", "error")
-            QMessageBox.critical(
-                self,
-                "Ошибка оформления записи",
-                f"Аудиофайл сохранён: {result.mixed_file}\n\n{details[-2000:]}",
-            )
-            self._maybe_finish_shutdown()
-        finally:
-            self._release_recording_lease()
-
-    def _release_recording_lease(self) -> None:
-        if self._recording_lease is not None:
-            self._recording_lease.release()
-            self._recording_lease = None
-
-    def _recording_ready_impl(
-        self,
-        result,
-        recorded_lesson: Lesson,
-        source_recorder: DualRecorder,
-        reason: str | None = None,
-    ) -> None:
-        if self.recording_lesson is not recorded_lesson or self.recorder is not source_recorder:
-            logging.error("Игнорируется результат записи с устаревшим контекстом")
-            return
-        recorded_lesson.source_audio_local = str(result.mixed_file.resolve())
-        recorded_lesson.transition(JobStatus.RECORDED)
-        self.pipeline.save_state(
-            recorded_lesson,
-            "source_audio_local",
-            "status",
-            "error",
-        )
-        self._update_scheduled_occurrence(
-            "completed",
-            lesson_id=recorded_lesson.lesson_id,
-            clear=True,
-        )
-        self.start_button.setEnabled(True)
-        self.quick_start_button.setEnabled(True)
-        self.test_devices_button.setEnabled(True)
-        self.quick_start_button.setText("Начать занятие")
-        self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
-        self.recording_state_label.setProperty("active", False)
-        refresh_style(self.recording_state_label)
-        quality = json.loads(result.quality_report.read_text(encoding="utf-8"))
-        warnings = list(quality.get("warnings", []))
-        if reason:
-            warnings.insert(0, reason)
-        if warnings:
-            self._set_status("Запись сохранена с предупреждениями", "warning")
-            QMessageBox.warning(self, "Проверка записи", "\n".join(warnings))
-        else:
-            self._set_status("Запись сохранена и проверена")
-        logging.info("Запись сохранена: %s; quality_ready=%s", result.mixed_file, quality.get("ready"))
-        self._recording_stop_started = False
-        self.recorder = None
-        self.recording_lesson = None
-        if self._quick_auto_transcribe_active:
-            self._quick_auto_transcribe_active = False
-            self._enqueue_transcription(recorded_lesson, result.mixed_file)
-            self._prepare_next_lesson()
-            self._set_status(
-                f"{recorded_lesson.student.full_name}: транскрибация в фоне · можно начинать следующий урок",
-                "working",
-            )
-        else:
-            self.lesson = recorded_lesson
-            self.audio_path.setText(str(result.mixed_file))
-            self._refresh_quick_readiness()
-        self._maybe_finish_shutdown()
-
-    def _prepare_next_lesson(self) -> None:
-        self.recording_lesson = None
-        if self.lesson is None:
-            self.audio_path.clear()
-        self.topic.clear()
-        self.quick_topic.clear()
-        self.config.quick_start.last_topic = ""
-        self.config.save(self.config_path)
-        self.duration.setText("00:00:00")
-        self.recording_state_label.setText("ГОТОВО К ЗАПИСИ")
-        self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        self.transcribe_button.setEnabled(True)
-        self.quick_start_button.setText("Начать занятие")
-        self._refresh_quick_readiness()
-
-    def _recording_stop_failed(self, details: str) -> None:
-        logging.error(details)
-        self._recording_stop_started = False
-        self.recorder = None
-        self.recording_lesson = None
-        self._release_recording_lease()
-        self._update_scheduled_occurrence("recording_failed", clear=True)
-        self.start_button.setEnabled(True)
-        self.test_devices_button.setEnabled(True)
-        self._quick_auto_transcribe_active = False
-        self._refresh_quick_readiness()
-        self.stop_button.setEnabled(False)
-        self.recording_state_label.setText("ЗАПИСЬ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ")
-        self.recording_state_label.setProperty("active", False)
-        refresh_style(self.recording_state_label)
-        self._set_status("Запись сохранена частично; доступно восстановление", "error")
-        QMessageBox.critical(
-            self,
-            "Ошибка завершения записи",
-            "Доступные аудиочанки сохранены. После перезапуска приложение предложит восстановление.\n\n"
-            + details[-2000:],
-        )
-        self._maybe_finish_shutdown()
 
     def choose_audio(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Аудиозапись", "", "Audio (*.wav *.mp3 *.m4a *.flac)")
@@ -1870,7 +1603,7 @@ class MainWindow(QMainWindow):
                 JobStatus.RECORDED,
                 JobStatus.FAILED,
             }:
-                self.lesson = self._make_lesson()
+                self.lesson = self._create_lesson_from_form()
             audio = Path(self.audio_path.text())
             if not audio.is_file():
                 raise ValueError("Выберите существующий аудиофайл")
