@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+from tutor_assistant import application
 from tutor_assistant.application.recording import (
     RecordingHealthSnapshot,
     RecordingLevelsSnapshot,
@@ -31,6 +32,12 @@ def test_application_runtime_recorder_port_is_qt_and_infrastructure_independent(
     assert "RecordingRecorder" in runtime
     assert "def levels(self) -> RecordingLevelsSnapshot" in runtime
     assert "def health(self) -> RecordingHealthSnapshot" in runtime
+
+
+def test_runtime_recorder_contract_is_exported_by_application_package() -> None:
+    assert application.RecordingLevelsSnapshot is RecordingLevelsSnapshot
+    assert application.RecordingHealthSnapshot is RecordingHealthSnapshot
+    assert application.RecordingRuntimeRecorder is RecordingRuntimeRecorder
 
 
 def test_base_ui_has_no_concrete_dual_recorder_dependency() -> None:
