@@ -15,7 +15,7 @@ from .theme import set_button_kind
 
 
 class ScheduleDialogStable(base_crm.ScheduleDialog):
-    """Make cancellation an explicit occurrence action instead of a disguised delete."""
+    """Make occurrence cancellation explicit while preserving series management."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -31,7 +31,7 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
             return
         try:
             destructive.clicked.disconnect()
-        except RuntimeError:
+        except (RuntimeError, TypeError):
             pass
         if self.lesson.status == ScheduledLessonStatus.CANCELLED.value:
             destructive.setText("Вернуть занятие")
@@ -43,6 +43,16 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
             destructive.setToolTip("Отменить только выбранную дату; будущие занятия серии сохранятся")
             set_button_kind(destructive, "danger")
             destructive.clicked.connect(lambda: self._finish("cancel_lesson"))
+
+        if self.lesson.rule_id is not None:
+            series_button = set_button_kind(QPushButton("Удалить серию"), "ghost")
+            series_button.setToolTip("Остановить всю повторяющуюся серию, включая будущие занятия")
+            series_button.clicked.connect(lambda: self._finish("delete_series"))
+            root_layout = self.layout()
+            actions = root_layout.itemAt(root_layout.count() - 1).layout() if root_layout else None
+            if actions is not None:
+                index = actions.indexOf(destructive)
+                actions.insertWidget(index + 1 if index >= 0 else 0, series_button)
 
 
 class SchedulePageStable(base_crm.SchedulePage):
@@ -106,6 +116,20 @@ class SchedulePageStable(base_crm.SchedulePage):
                     value,
                     ScheduledLessonStatus.PLANNED,
                 )
+            elif dialog.action == "delete_series":
+                if value.rule_id is None:
+                    return
+                answer = QMessageBox.question(
+                    self,
+                    "Удалить серию",
+                    "Остановить всю повторяющуюся серию? Будущие занятия этой серии исчезнут "
+                    "из расписания. Уже материализованные занятия и история сохранятся.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    return
+                self.store.delete_schedule_rule(value.rule_id)
             elif dialog.recurring.isChecked():
                 existing_rule = next(
                     (item for item in self.store.list_schedule_rules() if item.id == value.rule_id),
