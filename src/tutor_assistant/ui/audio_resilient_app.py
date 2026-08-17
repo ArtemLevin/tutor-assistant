@@ -4,6 +4,7 @@ import logging
 
 from PySide6.QtWidgets import QMessageBox
 
+from ..application import AudioPreflightResult, AudioPreflightUseCase
 from ..application.recording import (
     RecordingRuntimeState,
     RecordingWorkflowController,
@@ -11,7 +12,13 @@ from ..application.recording import (
     StartRecordingUseCase,
 )
 from ..domain import Lesson
-from ..recording import SystemAudioSource, list_input_devices, list_system_audio_sources
+from ..quick_start import selected_profile
+from ..recording import (
+    DualRecorder,
+    SystemAudioSource,
+    list_input_devices,
+    list_system_audio_sources,
+)
 from ..recording.devices import probe_input_device, resolve_input_device
 from . import app as base_app
 from .theme import refresh_style
@@ -28,6 +35,9 @@ class MainWindow(ProductionMainWindow):
             self.pipeline,
             self.content_service,
             self._create_live_recorder,
+        )
+        self.audio_preflight_use_case = AudioPreflightUseCase(
+            self._create_preflight_recorder,
         )
         self.recording_workflow.observe_runtime(self._recording_runtime_state())
         try:
@@ -47,6 +57,15 @@ class MainWindow(ProductionMainWindow):
             self.config.recording.sample_rate,
             self.config.recording.channels,
             self.config.recording.chunk_seconds,
+            self.config.recording.queue_blocks,
+            self.config.recording.target_sample_rate,
+        )
+
+    def _create_preflight_recorder(self, chunk_seconds: int):
+        return DualRecorder(
+            self.config.recording.sample_rate,
+            self.config.recording.channels,
+            chunk_seconds,
             self.config.recording.queue_blocks,
             self.config.recording.target_sample_rate,
         )
@@ -266,7 +285,79 @@ class MainWindow(ProductionMainWindow):
             self._quick_auto_transcribe_active = False
             self._refresh_quick_readiness()
             return
-        super()._begin_preflight(show_intro)
+
+        mic_device = self.mic.currentData()
+        system_source = self.loopback.currentData()
+        if mic_device is None or not isinstance(system_source, SystemAudioSource):
+            self.test_devices_button.setEnabled(True)
+            self._quick_start_pending = False
+            self._quick_auto_transcribe_active = False
+            self._refresh_quick_readiness()
+            QMessageBox.warning(
+                self,
+                "Проверка аудио",
+                "Выберите микрофон и источник WASAPI Loopback для системного звука.",
+            )
+            return
+
+        if show_intro:
+            QMessageBox.information(
+                self,
+                "Тестовая запись",
+                "После закрытия окна говорите в микрофон и одновременно воспроизводите звук. "
+                f"Запись продлится {self.config.recording.diagnostics_seconds} секунд.",
+            )
+
+        self.test_devices_button.setEnabled(False)
+        self._set_status("Записываю тест микрофона и системного звука…", "working")
+        logging.info(
+            "Тестовая запись запущена через application use case: mic=%s system=%s",
+            self.mic.currentText(),
+            system_source.display_name,
+        )
+        worker = base_app.Worker(
+            self.audio_preflight_use_case.run,
+            self.config.workspace,
+            int(mic_device),
+            system_source,
+            self.config.recording.diagnostics_seconds,
+            self.config.recording.chunk_seconds,
+        )
+        worker.succeeded.connect(self._device_test_ready)
+        worker.failed.connect(lambda details: self._operation_failed("device-test", details))
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _device_test_ready(self, result: AudioPreflightResult) -> None:
+        self.mic_level.setValue(round(min(1.0, result.microphone_rms * 5) * 100))
+        self.system_level.setValue(round(min(1.0, result.system_rms * 5) * 100))
+        warnings = list(result.warnings)
+        self.preflight_passed = result.ready
+        self.preflight_result = result
+        self.play_mic_test_button.setEnabled(True)
+        self.play_system_test_button.setEnabled(True)
+        message = (
+            "Тестовая запись прошла проверку. Прослушайте обе дорожки."
+            if self.preflight_passed
+            else "Проверка выявила проблемы: " + "; ".join(warnings)
+        )
+        if not self._quick_start_pending or not self.preflight_passed:
+            QMessageBox.information(self, "Диагностика аудио", message)
+        self.test_devices_button.setEnabled(True)
+        self._set_status(message, "warning" if warnings else "success")
+        logging.info(
+            "Тестовая запись завершена через application use case: ready=%s report=%s",
+            self.preflight_passed,
+            result.quality_report,
+        )
+        if self._quick_start_pending and self.preflight_passed:
+            profile = selected_profile(self.config, self.quick_profile.currentData())
+            self._start_quick_countdown(profile.countdown_seconds)
+        elif self._quick_start_pending:
+            self._quick_start_pending = False
+            self._quick_auto_transcribe_active = False
+            self._refresh_quick_readiness()
 
     def start_recording(self) -> None:
         try:
@@ -324,8 +415,6 @@ class MainWindow(ProductionMainWindow):
                 self.audio_output_format.setEnabled(True)
             self._refresh_teacher_cockpit()
             self._sync_parallel_review_ui()
-
-
 
 
 def main() -> None:

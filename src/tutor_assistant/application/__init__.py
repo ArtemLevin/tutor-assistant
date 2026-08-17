@@ -4,6 +4,7 @@ This package sits between UI adapters and domain/infrastructure services. It mus
 remain independent from PySide so workflows can be tested without a GUI runtime.
 """
 
+from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
 from .recording import (
     RecordingRuntimeState,
     RecordingWorkflowController,
@@ -25,6 +26,8 @@ from .recording_stop import (
 )
 
 __all__ = [
+    "AudioPreflightResult",
+    "AudioPreflightUseCase",
     "RecordingRecoveryOutcome",
     "RecordingRecoveryState",
     "RecordingRuntimeState",
