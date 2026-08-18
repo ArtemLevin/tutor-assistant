@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
 
 from ..application import (
     AudioInputDeviceSnapshot,
+    LatexMonitorCoordinator,
+    LatexMonitorScanTrigger,
     NormalizationAfterWorkerAction,
     NormalizationAutoAction,
     NormalizationAutoContext,
@@ -87,6 +89,14 @@ from ..transcript_editing import select_verified_text
 from .accessibility import sync_text_status
 from .crm import SchedulePage, StudentsPage
 from .localization import select_subject, set_subject_combo, subject_value
+from .latex_monitor_presentation import (
+    LatexMonitorPresentation,
+    build_latex_monitor_failure_presentation,
+    build_latex_monitor_no_update_presentation,
+    build_latex_monitor_result_presentation,
+    build_latex_monitor_scanning_presentation,
+    build_latex_monitor_toggle_presentation,
+)
 from .normalization import NormalizationReviewDialog
 from .normalization_presentation import (
     NormalizationControlContext,
@@ -159,6 +169,7 @@ class MainWindow(QMainWindow):
                 recovered_normalizations,
             )
         self.normalization_coordinator = NormalizationCoordinator()
+        self.latex_monitor_coordinator = LatexMonitorCoordinator()
         self._normalization_cancellation: CancellationToken | None = None
         self._normalization_execution: NormalizationExecution | None = None
         self._normalization_lesson_id: str | None = None
@@ -212,7 +223,9 @@ class MainWindow(QMainWindow):
         self.quick_countdown_timer.timeout.connect(self._quick_countdown_tick)
         self.latex_poll_timer = QTimer(self)
         self.latex_poll_timer.setInterval(self.config.latex.poll_seconds * 1000)
-        self.latex_poll_timer.timeout.connect(self.scan_remote_latex)
+        self.latex_poll_timer.timeout.connect(
+            lambda: self.scan_remote_latex(periodic=True)
+        )
         self.setWindowTitle("Tutor Assistant — рабочее пространство преподавателя")
         self.setMinimumSize(1040, 720)
         self.resize(1180, 820)
@@ -2702,24 +2715,72 @@ class MainWindow(QMainWindow):
         self._set_status(title, "success" if result.success else "error")
         QMessageBox.information(self, "Компиляция", title)
 
+    def _apply_latex_monitor_presentation(
+        self,
+        presentation: LatexMonitorPresentation,
+    ) -> None:
+        self.latex_monitor_status.setText(presentation.monitor_status)
+        if presentation.log_text is not None:
+            self.compilation_log.setPlainText(presentation.log_text)
+        if presentation.replace_previews:
+            self.pdf_previews.clear()
+            for path in presentation.preview_paths:
+                item = QListWidgetItem(path.name)
+                item.setData(256, str(path.resolve()))
+                self.pdf_previews.addItem(item)
+        self._set_status(presentation.app_status, presentation.tone)
+        if presentation.dialog_message is None:
+            return
+        if presentation.dialog_kind == "critical":
+            QMessageBox.critical(
+                self,
+                presentation.dialog_title or "Ошибка",
+                presentation.dialog_message,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                presentation.dialog_title or "Готово",
+                presentation.dialog_message,
+            )
+
     def toggle_latex_monitor(self, enabled: bool) -> None:
+        self.latex_monitor_coordinator.set_enabled(enabled)
         if enabled:
             self.latex_poll_timer.start()
-            self.latex_monitor_status.setText(f"Проверка каждые {self.config.latex.poll_seconds} секунд")
-            self._set_status("Автомониторинг LaTeX включён", "working")
-            self.scan_remote_latex()
         else:
             self.latex_poll_timer.stop()
-            self.latex_monitor_status.setText("Мониторинг выключен")
-            self._set_status("Автомониторинг LaTeX выключен")
+        self._apply_latex_monitor_presentation(
+            build_latex_monitor_toggle_presentation(
+                enabled=enabled,
+                poll_seconds=self.config.latex.poll_seconds,
+            )
+        )
+        if enabled:
+            self.scan_remote_latex(trigger=LatexMonitorScanTrigger.ENABLE)
 
-    def scan_remote_latex(self) -> None:
+    def scan_remote_latex(
+        self,
+        _checked: bool = False,
+        *,
+        periodic: bool = False,
+        trigger: LatexMonitorScanTrigger | None = None,
+    ) -> None:
+        del _checked
+        selected_trigger = trigger or (
+            LatexMonitorScanTrigger.PERIODIC
+            if periodic
+            else LatexMonitorScanTrigger.MANUAL
+        )
+        decision = self.latex_monitor_coordinator.request_scan(selected_trigger)
+        if not decision.should_start:
+            return
+
         from ..latex import RemoteLatexService
 
-        if any(getattr(worker, "purpose", "") == "latex-monitor" for worker in self.workers):
-            return
-        self.latex_monitor_status.setText("Проверяю удалённые ветки…")
-        self._set_status("Проверяю ветки занятий…", "working")
+        self._apply_latex_monitor_presentation(
+            build_latex_monitor_scanning_presentation()
+        )
 
         def scan():
             with self.content_service.activity("latex-monitor"):
@@ -2727,22 +2788,23 @@ class MainWindow(QMainWindow):
                 for lesson in self.pipeline.store.list():
                     if service.is_ready(lesson):
                         return service.compile_lesson(
-                            lesson, cache_dir=self.pipeline.lesson_dir(lesson) / "latex-cache"
+                            lesson,
+                            cache_dir=self.pipeline.lesson_dir(lesson) / "latex-cache",
                         )
             return None
 
         worker = Worker(scan)
-        worker.purpose = "latex-monitor"
         worker.succeeded.connect(self._remote_compilation_ready)
-        worker.failed.connect(lambda details: self._operation_failed("latex-monitor", details))
-        worker.finished.connect(lambda: self._worker_finished(worker))
+        worker.failed.connect(self._latex_monitor_failed)
+        worker.finished.connect(lambda: self._latex_monitor_worker_finished(worker))
         self.workers.append(worker)
         worker.start()
 
     def _remote_compilation_ready(self, remote_result) -> None:
         if remote_result is None:
-            self.latex_monitor_status.setText("Новых TEX-файлов нет")
-            self._set_status("Новых TEX-файлов нет")
+            self._apply_latex_monitor_presentation(
+                build_latex_monitor_no_update_presentation()
+            )
             return
         lesson = remote_result.lesson
         self.pipeline.save_state(
@@ -2753,22 +2815,27 @@ class MainWindow(QMainWindow):
             force_status=True,
         )
         result = remote_result.compilation
-        if result.success:
-            message = f"PDF создан и отправлен в {remote_result.branch}"
-        else:
-            message = (
-                f"Компиляция не удалась, попытка {lesson.latex.attempt}/{self.config.latex.max_attempts}. "
-                "В ветку добавлен reports/latex/latex_fix_request.md"
+        self._apply_latex_monitor_presentation(
+            build_latex_monitor_result_presentation(
+                branch=remote_result.branch,
+                success=result.success,
+                attempt=lesson.latex.attempt,
+                max_attempts=self.config.latex.max_attempts,
+                errors=result.errors,
+                warnings=result.warnings,
+                preview_paths=result.preview_files,
             )
-        self.latex_monitor_status.setText(message)
-        self.compilation_log.setPlainText("\n".join(result.errors + result.warnings) or message)
-        self.pdf_previews.clear()
-        for path in result.preview_files:
-            item = QListWidgetItem(path.name)
-            item.setData(256, str(path.resolve()))
-            self.pdf_previews.addItem(item)
-        self._set_status(message, "success" if result.success else "warning")
-        QMessageBox.information(self, "Автоматическая компиляция", message)
+        )
+
+    def _latex_monitor_failed(self, details: str) -> None:
+        logging.error(details)
+        self._apply_latex_monitor_presentation(
+            build_latex_monitor_failure_presentation(details)
+        )
+
+    def _latex_monitor_worker_finished(self, worker: Worker) -> None:
+        self.latex_monitor_coordinator.finish_scan()
+        self._worker_finished(worker)
 
     def _operation_failed(self, purpose: str, details: str) -> None:
         if purpose == "support":
@@ -2783,8 +2850,6 @@ class MainWindow(QMainWindow):
             self.publish_button.setEnabled(bool(self.lesson and self.lesson.status == JobStatus.READY))
         elif purpose == "compile":
             self.compile_tex_button.setEnabled(True)
-        elif purpose == "latex-monitor":
-            self.latex_monitor_status.setText("Ошибка проверки удалённых TEX-файлов")
         logging.error(details)
         self._set_status(f"Ошибка фоновой операции · {purpose}", "error")
         QMessageBox.critical(self, "Ошибка фоновой операции", details[-3000:])
