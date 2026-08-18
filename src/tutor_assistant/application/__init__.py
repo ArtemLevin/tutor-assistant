@@ -4,6 +4,13 @@ This package sits between UI adapters and domain/infrastructure services. It mus
 remain independent from PySide so workflows can be tested without a GUI runtime.
 """
 
+from .audio_devices import (
+    AudioDeviceInventory,
+    AudioDeviceSelection,
+    AudioInputDeviceSnapshot,
+    RefreshAudioDevicesUseCase,
+    SystemAudioSourceSnapshot,
+)
 from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
 from .recording import (
     RecordingHealthSnapshot,
@@ -29,7 +36,12 @@ from .recording_stop import (
 )
 
 __all__ = [
+    "AudioDeviceInventory",
+    "AudioDeviceSelection",
+    "AudioInputDeviceSnapshot",
     "AudioPreflightResult",
+    "RefreshAudioDevicesUseCase",
+    "SystemAudioSourceSnapshot",
     "AudioPreflightUseCase",
     "RecordingRecoveryOutcome",
     "RecordingHealthSnapshot",

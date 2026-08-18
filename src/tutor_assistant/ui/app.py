@@ -40,7 +40,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..application import RecordingRuntimeRecorder
+from ..application import (
+    AudioInputDeviceSnapshot,
+    RecordingRuntimeRecorder,
+    SystemAudioSourceSnapshot,
+)
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
@@ -58,11 +62,6 @@ from ..pipeline import LessonPipeline
 from ..playback import PlaybackController, PlaybackSegment
 from ..publisher import publication_payload_files
 from ..quick_start import evaluate_readiness, selected_profile
-from ..recording import (
-    SystemAudioSource,
-    list_input_devices,
-    list_system_audio_sources,
-)
 from ..security.cloud_consent import (
     CloudConsentReceipt,
     CloudConsentScope,
@@ -180,10 +179,8 @@ class MainWindow(QMainWindow):
         self._retry_indeterminate_after_worker = False
         self._cloud_consent_session = CloudConsentSession()
         self._pending_auto_normalizations: list[str] = []
-        self.devices = list_input_devices()
-        self.system_sources = list_system_audio_sources(
-            self.devices, self.config.recording.target_sample_rate
-        )
+        self.devices: list[AudioInputDeviceSnapshot] = []
+        self.system_sources: list[SystemAudioSourceSnapshot] = []
         self.lesson: Lesson | None = None
         self.recording_lesson: Lesson | None = None
         self.recorder: RecordingRuntimeRecorder | None = None
@@ -1171,7 +1168,7 @@ class MainWindow(QMainWindow):
         configured_backend = self.config.recording.system_backend
         for index in range(self.loopback.count()):
             source = self.loopback.itemData(index)
-            if not isinstance(source, SystemAudioSource):
+            if source is None:
                 continue
             matches_current = source.device_id == configured_id and source.backend == configured_backend
             matches_legacy = (
@@ -1187,7 +1184,7 @@ class MainWindow(QMainWindow):
         if self.mic.currentData() is not None:
             self.config.recording.mic_device = int(self.mic.currentData())
         source = self.loopback.currentData()
-        if isinstance(source, SystemAudioSource):
+        if source is not None:
             self.config.recording.system_device_id = source.device_id
             self.config.recording.system_backend = source.backend
             self.config.recording.loopback_device = source.legacy_index
