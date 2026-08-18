@@ -3084,7 +3084,7 @@ class MainWindow(QMainWindow):
 
 
 
-def main() -> None:
+def main(window_type: type[MainWindow] = MainWindow) -> None:
     force_setup = "--setup" in sys.argv
     if force_setup:
         sys.argv.remove("--setup")
@@ -3104,7 +3104,7 @@ def main() -> None:
             raise SystemExit(0)
         config = AppConfig.load(config_path)
         configure_logging(config.workspace)
-    window = MainWindow(config_path)
+    window = window_type(config_path)
     window.show()
     raise SystemExit(app.exec())
 

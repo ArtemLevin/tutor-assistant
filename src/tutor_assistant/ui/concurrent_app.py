@@ -400,9 +400,7 @@ class MainWindow(base_app.MainWindow):
 
 
 def main() -> None:
-    # Reuse the established startup/setup workflow while injecting the safe window implementation.
-    base_app.MainWindow = MainWindow
-    base_app.main()
+    base_app.main(MainWindow)
 
 
 if __name__ == "__main__":
