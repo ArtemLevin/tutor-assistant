@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ..application.recording_health import RecordingHealthAssessment
+from ..application.recording_health import (
+    RecordingHealthAction,
+    RecordingHealthAssessment,
+)
 
 
 class RecordingPanelPhase(StrEnum):
@@ -89,13 +92,14 @@ def build_recording_tick_presentation(
     status_message: str | None = None
     status_tone: str | None = None
     warning_log: str | None = None
-    if assessment.warning_changed and assessment.warnings:
-        status_message = "Проверьте аудио · " + warning_text
-        status_tone = "warning"
-        warning_log = warning_text
-    elif assessment.recovered_from_warning:
-        status_message = "Идёт запись"
-        status_tone = "working"
+    if assessment.action != RecordingHealthAction.STOP:
+        if assessment.warning_changed and assessment.warnings:
+            status_message = "Проверьте аудио · " + warning_text
+            status_tone = "warning"
+            warning_log = warning_text
+        elif assessment.recovered_from_warning:
+            status_message = "Идёт запись"
+            status_tone = "working"
 
     return RecordingTickPresentation(
         duration_text=duration_text,
