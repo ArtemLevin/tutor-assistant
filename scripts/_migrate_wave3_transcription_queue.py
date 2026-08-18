@@ -116,3 +116,5 @@ concurrent = replace_between(
 if "self.transcription_queue." in concurrent:
     raise RuntimeError("raw transcription_queue mutation remains in concurrent_app.py")
 CONCURRENT.write_text(concurrent, encoding="utf-8")
+
+# Separate trigger commit: the workflow is already present on the branch.
