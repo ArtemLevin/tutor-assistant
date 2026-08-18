@@ -93,18 +93,6 @@ class RecordingHealthAssessment:
     stop_reason: str | None
     dropped_blocks: int
 
-    @property
-    def microphone_level_percent(self) -> int:
-        return round(self.sample.microphone_level * 100)
-
-    @property
-    def system_level_percent(self) -> int:
-        return round(self.sample.system_level * 100)
-
-    @property
-    def warning_text(self) -> str:
-        return "; ".join(self.warnings)
-
 
 class RecordingHealthMonitor:
     """Stateful, Qt-free policy engine for live recorder telemetry.
