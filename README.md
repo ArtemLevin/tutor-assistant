@@ -43,7 +43,7 @@ domain / pipeline services
 recording, persistence and external infrastructure
 ```
 
-К текущему состоянию завершены P0-стабилизация и **Wave 2 / Slices 1–11**:
+К текущему состоянию завершены P0-стабилизация и **Wave 2 / Slices 1–12**:
 
 - Qt-free `RecordingWorkflowController`;
 - `StartRecordingUseCase` для start transaction и rollback;
@@ -57,8 +57,9 @@ recording, persistence and external infrastructure
 - отсутствие direct `sounddevice` / `soundcard` discovery в base `ui/app.py`;
 - Qt-free `RecordingHealthMonitor` и typed health assessment для stream errors, callback timeout, silence и dropped-block policy.
 - Qt-free `recording_presentation` model для duration, level normalization, health summary, warning/recovery cues и canonical recording-panel phases.
+- explicit production composition: общий bootstrap получает `window_type`, а production adapters больше не меняют `base_app.MainWindow` через module-global rebinding; responsibility-bearing MRO закреплён architecture tests.
 
-Следующий архитектурный шаг — **Wave 2 / Slice 12: Production composition cleanup**. Recording policy и presentation state уже отделены от base UI; следующий slice упрощает production MRO/composition root и удаляет ставшие ненужными compatibility bridges. Детали и критерии готовности описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён.** Следующий архитектурный шаг — **Wave 3 / Slice 13: Transcription queue presentation/orchestration extraction**. Цель — вынести из `ui/app.py` координацию очереди транскрибации и её presentation state за Qt-free boundary, не затрагивая recording safety path. Детали и критерии готовности описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -473,4 +474,4 @@ CI включает Windows matrix для Python 3.11–3.14, privacy history ga
 
 **[`PLAN.md`](PLAN.md)**
 
-На текущем этапе приоритет — завершить Wave 2 через production composition cleanup, затем перейти к декомпозиции transcription, normalization, LaTeX и shutdown orchestration.
+На текущем этапе Wave 2 завершён. Приоритет Wave 3 — последовательно декомпозировать transcription queue, normalization, LaTeX и shutdown orchestration, начиная с очереди транскрибации.
