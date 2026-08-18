@@ -1,0 +1,33 @@
+name: agent docs slice10 advancement
+
+on:
+  push:
+    branches:
+      - docs/advance-wave2-slice11
+    paths:
+      - .github/agent_docs_slice10.py
+      - .github/workflows/agent_docs_slice10.yml
+
+permissions:
+  contents: write
+
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/advance-wave2-slice11
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Advance README and PLAN
+        run: python .github/agent_docs_slice10.py
+      - name: Commit docs
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'docs: mark wave2 slice10 complete'
+          git push
