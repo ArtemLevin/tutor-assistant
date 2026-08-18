@@ -6,7 +6,7 @@
 
 ## 1. Текущее состояние
 
-Проект находится в фазе архитектурной стабилизации production-контура записи. Критический путь записи уже вынесен из legacy orchestration базового Qt-окна в application layer и production adapters.
+Wave 2 архитектурной стабилизации production-контура записи завершён. Критический recording path отделён от legacy orchestration базового Qt-окна, production composition сделана явной; проект переходит к Wave 3 — декомпозиции остальных зон `ui/app.py`.
 
 Production GUI запускается через:
 
@@ -57,104 +57,115 @@ recording, persistence and external infrastructure
 9. **Audio device discovery boundary** — hardware discovery/resolution/probe вынесены за base UI; production adapter использует `RefreshAudioDevicesUseCase`, а stable microphone identity централизована в нейтральном resolver.
 10. **Recording runtime health policy** — интерпретация stream errors, callback timeout, silence и dropped blocks вынесена из `_tick()` в Qt-free `RecordingHealthMonitor`; UI получает typed assessment и только отображает состояние/исполняет terminal stop action.
 11. **Recording presentation extraction** — timer formatting, level normalization, health summary, warning/recovery presentation cues и канонические visual phases recording panel вынесены в Qt-free `ui/recording_presentation.py`; start/finalize adapters больше не форматируют recording-state label вручную.
+12. **Production composition cleanup** — общий GUI bootstrap принимает explicit `window_type`; устранены module-global `base_app.MainWindow = MainWindow` rebinding во всех production adapters, при этом responsibility-bearing MRO и стабильный console entrypoint сохранены и закреплены architecture tests.
 
-На момент завершения Slice 11 production path прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs на Python 3.12, 3.13 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
+На момент завершения Slice 12 exact feature head прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs минимум на Python 3.12 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
 
-## 3. Завершённый шаг — Wave 2 / Slice 11
+## 3. Завершённый шаг — Wave 2 / Slice 12
 
-### Recording presentation extraction
+### Production composition cleanup
 
-**Цель:** отделить presentation formatting recording panel от policy и orchestration, сохранив base Qt window тонким renderer-ом уже вычисленного view-state.
+**Цель:** завершить recording-focused Wave 2 явным composition root без module-global подмены класса окна и без искусственного схлопывания слоёв, которые всё ещё несут самостоятельную ответственность.
 
-Реализован новый Qt-free модуль:
+Инвентаризация production MRO подтвердила, что все слои остаются содержательными:
 
 ```text
-src/tutor_assistant/ui/recording_presentation.py
+recording_recovery_app.MainWindow
+→ recording_finalize_app.MainWindow
+→ audio_resilient_app.MainWindow
+→ transcript_publication_app.MainWindow
+→ concurrent_app.MainWindow
+→ ui.app.MainWindow
 ```
 
-Он централизует:
+Ответственности остаются разделены:
 
-- форматирование duration в `HH:MM:SS`;
-- нормализацию live audio levels в диапазон progress bar `0..100`;
-- формат health summary для queue pressure, dropped blocks, writer latency, silence и reconnect count;
-- presentation mapping нового warning и перехода обратно в healthy state;
-- канонические visual phases `READY`, `RECORDING`, `SAVING`, `SAVED`, `RECOVERY_REQUIRED`, `FAILED`.
+- `concurrent_app` — background tasks и parallel-review coordination;
+- `transcript_publication_app` — publication/cockpit presentation;
+- `audio_resilient_app` — audio-device refresh, preflight и start recording;
+- `recording_finalize_app` — stop/finalize и recovery-required outcome presentation;
+- `recording_recovery_app` — discovery и восстановление незавершённых recording sessions.
 
-`RecordingHealthAssessment` снова presentation-neutral: из application model удалены `microphone_level_percent`, `system_level_percent` и `warning_text`.
+Поэтому Slice 12 не удаляет эти классы. Вместо старого механизма:
 
-Base `_tick()` теперь выполняет только:
+```python
+base_app.MainWindow = MainWindow
+base_app.main()
+```
 
-1. инкремент elapsed seconds;
-2. получение runtime health assessment при активном recorder;
-3. построение `RecordingTickPresentation`;
-4. применение готового view-state к Qt widgets;
-5. safety-critical `_stop_recording_async(...)` при terminal action.
+общий bootstrap теперь принимает явный тип окна:
 
-Terminal stop имеет приоритет над warning presentation: если terminal assessment одновременно содержит warning-факты, промежуточный warning-status/log event не показывается перед safe stop.
+```python
+def main(window_type: type[MainWindow] = MainWindow) -> None:
+    ...
+    window = window_type(config_path)
+```
 
-Production start/finalize adapters используют единый `_set_recording_panel_phase(...)` вместо ручных `setText`, `setProperty("active", ...)` и `refresh_style`.
+а каждый production adapter запускается через:
 
-### Тестовый контур Slice 11
+```python
+base_app.main(MainWindow)
+```
 
-Добавлены unit tests без Qt для:
+Console entrypoint остаётся прежним:
 
-- duration formatting;
-- level clamping/normalization;
-- live health summary;
-- inactive tick;
-- warning event;
-- warning de-duplication;
-- warning recovery;
-- terminal-stop precedence;
-- всех canonical recording panel phases.
+```text
+tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
+```
 
-Architecture gates фиксируют:
+### Architecture gates Slice 12
 
-- `recording_presentation.py` не зависит от PySide6, concrete recorder infrastructure или `AppConfig`;
-- application health assessment не содержит view-formatting helpers;
-- base `_tick()` не форматирует widgets/text самостоятельно;
-- start/finalize adapters не стилизуют recording-state label напрямую;
-- base phase renderer является единственной точкой применения text/active/style к recording-state label.
+`tests/test_production_composition.py` закрепляет:
 
-Во время первого CI Ruff обнаружил один неиспользуемый import в новом architecture test (`F401`); import удалён, после чего свежий exact head прошёл требуемые gates и был squash-merged.
+- explicit `window_type` injection в общем bootstrap;
+- отсутствие `base_app.MainWindow = MainWindow` во всех production composition modules;
+- точный responsibility-bearing MRO;
+- наличие собственной ответственности у каждого слоя;
+- неизменность production console entrypoint;
+- отсутствие временных migration files.
 
-## 4. Следующий шаг и последующие slices
+Первые CI-запуски выявили только `Ruff I001` в новом architecture test. Runtime diff не менялся; import formatting теста приведён к проектному стандарту, после чего свежий exact head прошёл ранние gates и требуемые full-suite проверки.
 
-### Следующий шаг — Wave 2 / Slice 12 — Production composition cleanup
+**Итог Wave 2:** recording lifecycle, start/stop/recovery, preflight, device discovery, runtime recorder contract, health policy, presentation mapping и production composition имеют явные границы и regression/architecture coverage. Дальнейшая декомпозиция должна идти уже по другим функциональным зонам `ui/app.py`.
 
-После завершения recording policy/presentation extraction необходимо упростить production composition и MRO.
+## 4. Следующий шаг — Wave 3 / Slice 13
 
-План Slice 12:
+### Transcription queue presentation/orchestration extraction
 
-1. проинвентаризировать цепочку `recording_recovery_app → recording_finalize_app → audio_resilient_app → transcript_publication_app → concurrent_app → ui.app`;
-2. выявить пустые или compatibility-only overrides и классы, которые больше не несут самостоятельной ответственности;
-3. удалить ставшие мёртвыми module-level monkeypatch/composition tricks;
-4. определить явный production composition root без циклического присваивания `base_app.MainWindow = MainWindow`, если это возможно без изменения entrypoint semantics;
-5. сохранить отдельное владение Start / Stop-Finalize / Recovery там, где оно по-прежнему обеспечивает понятную границу;
-6. закрепить финальную MRO/composition boundary architecture tests;
-7. не смешивать этот cleanup с Wave 3 transcription/normalization refactors.
+**Цель:** отделить управление локальной очередью транскрибации и её presentation state от базового Qt god-object, не меняя storage semantics и не затрагивая завершённый recording path.
 
-### Definition of Done Slice 12
+План Slice 13:
 
-- production entrypoint остаётся стабильным;
-- MRO содержит только слои с реальной ответственностью;
-- нет ставших ненужными compatibility bridges/monkeypatches;
-- composition root документирован и проверяется тестами;
-- start/stop/recovery safety semantics не меняются;
+1. проинвентаризировать методы `ui/app.py` и `concurrent_app.py`, которые читают/изменяют `TranscriptionQueue`, запускают `TranscriptionWorker`, восстанавливают pending jobs и обновляют processing UI;
+2. разделить domain/application orchestration и Qt rendering: queue transitions, retry/restore/pump decisions должны стать тестируемыми без widgets;
+3. ввести компактные typed snapshots/actions для queue state вместо чтения Qt widgets как источника истины;
+4. сохранить последовательную обработку, persisted pending jobs, retry semantics, cancellation/shutdown safety и current lesson status transitions;
+5. не переносить Whisper transport/model implementation в UI-layer abstraction — concrete transcriber остаётся infrastructure/pipeline concern;
+6. сократить base `ui/app.py` до command/rendering adapter для transcription queue;
+7. добавить unit tests для pump/restore/retry/idle/busy/error paths и architecture gates против возврата orchestration в base UI;
+8. не смешивать Slice 13 с LLM normalization или LaTeX monitor refactor.
+
+### Definition of Done Slice 13
+
+- queue orchestration тестируется без PySide6;
+- Qt widgets не являются источником истины для queue state;
+- persisted pending/retry semantics не изменены;
+- startup restore и shutdown не теряют транскрипционные jobs;
+- recording composition и safety contracts остаются неизменными;
 - Windows CI, privacy gate и scaling matrix зелёные;
+- существенный orchestration refactor получает минимум два независимых full-suite success;
 - PR squash-merged в `main`.
 
-### Wave 3 — декомпозиция общего `ui/app.py`
+### Последующие Wave 3 slices
 
-После завершения recording-wave перейти к следующим крупным зонам god-object:
+После Slice 13:
 
-1. transcription queue presentation/orchestration;
-2. LLM normalization presentation orchestration;
-3. LaTeX monitor UI orchestration;
-4. application shutdown coordinator;
-5. teacher cockpit / parallel review synchronization.
+1. LLM normalization presentation orchestration;
+2. LaTeX monitor UI orchestration;
+3. application shutdown coordinator;
+4. teacher cockpit / parallel review synchronization.
 
-Каждый этап должен следовать тому же правилу: сначала extraction реальной policy/orchestration в Qt-free layer, затем физическое удаление dead legacy-кода.
+Каждый этап следует тому же правилу: сначала выделяется реальная policy/orchestration в Qt-free boundary, затем production path переключается на неё, после чего dead legacy-код физически удаляется.
 
 ## 5. Инварианты разработки
 
