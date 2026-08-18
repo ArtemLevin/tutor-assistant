@@ -168,8 +168,6 @@ class MainWindow(ProductionMainWindow):
         inventory = self.audio_devices_use_case.refresh(
             selection,
             target_sample_rate=self.config.recording.target_sample_rate,
-            channels=self.config.recording.channels,
-            probe=probe,
         )
         devices = list(inventory.input_devices)
         sources = list(inventory.system_sources)
@@ -219,6 +217,11 @@ class MainWindow(ProductionMainWindow):
             raise RuntimeError(
                 "Сохранённый источник системного звука больше не найден. "
                 "Выберите WASAPI Loopback-устройство заново и повторите проверку аудио."
+            )
+        if probe and microphone is not None:
+            self.audio_devices_use_case.probe_microphone(
+                microphone,
+                channels=self.config.recording.channels,
             )
 
     def _rebuild_microphone_combo(self, selected) -> None:
