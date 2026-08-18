@@ -9,7 +9,6 @@ from tutor_assistant.application import recording_health
 from tutor_assistant.ui import app as base_app
 from tutor_assistant.ui import recording_presentation
 from tutor_assistant.ui.audio_resilient_app import MainWindow as StartRecordingMainWindow
-from tutor_assistant.ui.recording_finalize_app import MainWindow as StopRecordingMainWindow
 
 UI_ROOT = Path("src/tutor_assistant/ui")
 
