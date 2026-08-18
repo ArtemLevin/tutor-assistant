@@ -27,7 +27,7 @@ domain / pipeline services
 recording, persistence and external infrastructure
 ```
 
-Базовый `ui/app.py` остаётся общим presentation shell и набором command ports. Он больше не должен владеть транзакциями старта/остановки/восстановления записи, preflight capture, concrete recorder construction или hardware discovery.
+Базовый `ui/app.py` остаётся общим presentation shell и набором command ports. Он больше не должен владеть транзакциями старта/остановки/восстановления записи, preflight capture, concrete recorder construction, hardware discovery, health-policy interpretation или форматированием состояния recording panel.
 
 ## 2. Завершённая стабилизация
 
@@ -56,140 +56,93 @@ recording, persistence and external infrastructure
 8. **Recording runtime port** — concrete `DualRecorder` исключён из base UI; monitoring работает через `RecordingRuntimeRecorder`, `RecordingLevelsSnapshot` и `RecordingHealthSnapshot`.
 9. **Audio device discovery boundary** — hardware discovery/resolution/probe вынесены за base UI; production adapter использует `RefreshAudioDevicesUseCase`, а stable microphone identity централизована в нейтральном resolver.
 10. **Recording runtime health policy** — интерпретация stream errors, callback timeout, silence и dropped blocks вынесена из `_tick()` в Qt-free `RecordingHealthMonitor`; UI получает typed assessment и только отображает состояние/исполняет terminal stop action.
+11. **Recording presentation extraction** — timer formatting, level normalization, health summary, warning/recovery presentation cues и канонические visual phases recording panel вынесены в Qt-free `ui/recording_presentation.py`; start/finalize adapters больше не форматируют recording-state label вручную.
 
-На момент завершения Slice 10 production path прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs на Python 3.12 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
+На момент завершения Slice 11 production path прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs на Python 3.12, 3.13 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
 
-## 3. Завершённый шаг — Wave 2 / Slice 10
+## 3. Завершённый шаг — Wave 2 / Slice 11
 
-### Recording Runtime Health / Warning Policy extraction
+### Recording presentation extraction
 
-**Цель:** убрать из `ui/app.py` политику интерпретации runtime health recorder-а. Qt должен только отображать уже вычисленное состояние и инициировать stop-команду при terminal assessment.
+**Цель:** отделить presentation formatting recording panel от policy и orchestration, сохранив base Qt window тонким renderer-ом уже вычисленного view-state.
 
-До Slice 10 `_tick()` одновременно:
-
-- обновляет duration;
-- читает `recorder.levels` и `recorder.health`;
-- вычисляет total dropped blocks;
-- форматирует health label;
-- интерпретирует `stream_errors`;
-- определяет потерю callback по `device_timeout_seconds`;
-- применяет `silence_warning_seconds`;
-- собирает и дедуплицирует warning text;
-- решает, когда требуется аварийно завершить запись.
-
-Эта policy теперь Qt-free и детерминированно тестируется отдельно от GUI через `RecordingHealthMonitor`, `RecordingHealthPolicy`, `RecordingHealthSample` и `RecordingHealthAssessment`.
-
-### Реализованная архитектура
-
-Новый модуль:
+Реализован новый Qt-free модуль:
 
 ```text
-src/tutor_assistant/application/recording_health.py
+src/tutor_assistant/ui/recording_presentation.py
 ```
 
-Реализованные типы:
+Он централизует:
 
-```text
-RecordingHealthPolicy
-RecordingHealthSample
-RecordingHealthAssessment
-RecordingHealthSeverity
-RecordingHealthAction
-```
+- форматирование duration в `HH:MM:SS`;
+- нормализацию live audio levels в диапазон progress bar `0..100`;
+- формат health summary для queue pressure, dropped blocks, writer latency, silence и reconnect count;
+- presentation mapping нового warning и перехода обратно в healthy state;
+- канонические visual phases `READY`, `RECORDING`, `SAVING`, `SAVED`, `RECOVERY_REQUIRED`, `FAILED`.
 
-`RecordingHealthPolicy` содержит пороги, приходящие из конфигурации, а не читает `AppConfig` напрямую:
+`RecordingHealthAssessment` снова presentation-neutral: из application model удалены `microphone_level_percent`, `system_level_percent` и `warning_text`.
 
-- `device_timeout_seconds`;
-- `silence_warning_seconds`.
+Base `_tick()` теперь выполняет только:
 
-`RecordingHealthSample` получает только immutable runtime values:
+1. инкремент elapsed seconds;
+2. получение runtime health assessment при активном recorder;
+3. построение `RecordingTickPresentation`;
+4. применение готового view-state к Qt widgets;
+5. safety-critical `_stop_recording_async(...)` при terminal action.
 
-- microphone/system levels;
-- queue percentages;
-- dropped blocks;
-- writer latency;
-- silence durations;
-- callback ages;
-- stream errors;
-- reconnect attempts;
-- elapsed recording seconds.
+Terminal stop имеет приоритет над warning presentation: если terminal assessment одновременно содержит warning-факты, промежуточный warning-status/log event не показывается перед safe stop.
 
-`RecordingHealthAssessment` должен возвращать presentation-neutral результат:
+Production start/finalize adapters используют единый `_set_recording_panel_phase(...)` вместо ручных `setText`, `setProperty("active", ...)` и `refresh_style`.
 
-- normalized levels;
-- concise health summary data;
-- warning messages;
-- severity;
-- optional terminal stop reason;
-- признак восстановления normal state после предупреждения.
+### Тестовый контур Slice 11
 
-### Правила, которые необходимо сохранить без изменения поведения
+Добавлены unit tests без Qt для:
 
-1. Любой `stream_errors` → terminal stop с причиной ошибки аудиоустройства.
-2. Callback age выше `device_timeout_seconds` после стартового grace period → terminal stop с сохранением доступных чанков.
-3. Тишина микрофона или system audio дольше `silence_warning_seconds` → warning, но не stop.
-4. Любые dropped blocks → warning.
-5. Повторяющийся одинаковый warning не должен генерировать повторный UI/log event каждую секунду.
-6. После нормализации параметров warning state сбрасывается и UI возвращается к состоянию «Идёт запись».
-7. UI остаётся владельцем только visual rendering, logging presentation event и вызова `_stop_recording_async(reason)`.
+- duration formatting;
+- level clamping/normalization;
+- live health summary;
+- inactive tick;
+- warning event;
+- warning de-duplication;
+- warning recovery;
+- terminal-stop precedence;
+- всех canonical recording panel phases.
 
-### Тесты Slice 10
+Architecture gates фиксируют:
 
-Обязательны unit tests без Qt:
+- `recording_presentation.py` не зависит от PySide6, concrete recorder infrastructure или `AppConfig`;
+- application health assessment не содержит view-formatting helpers;
+- base `_tick()` не форматирует widgets/text самостоятельно;
+- start/finalize adapters не стилизуют recording-state label напрямую;
+- base phase renderer является единственной точкой применения text/active/style к recording-state label.
 
-- healthy sample;
-- microphone silence;
-- system silence;
-- simultaneous silence;
-- dropped blocks;
-- stream error;
-- microphone callback timeout;
-- system callback timeout;
-- timeout не срабатывает до grace period;
-- reconnect count остаётся informational metric;
-- формат assessment не зависит от PySide/recorder implementation.
-
-Architecture gates:
-
-- `application/recording_health.py` не импортирует PySide6;
-- не импортирует `DualRecorder`;
-- не читает `AppConfig`;
-- base `_tick()` не содержит policy comparisons с `stream_errors`, callback ages, silence limits и dropped-block rules;
-- production behaviour по stop/warning сохраняется regression tests.
-
-### Definition of Done
-
-Slice 10 считается завершённым, когда:
-
-- runtime health policy полностью тестируется без Qt;
-- `ui/app.py::_tick()` становится presentation adapter вместо policy engine;
-- recording stop semantics не изменены;
-- Windows CI проходит lint/compile/import/contracts/full suite;
-- privacy history gate и accessibility scaling остаются зелёными;
-- PR squash-merged в `main`.
+Во время первого CI Ruff обнаружил один неиспользуемый import в новом architecture test (`F401`); import удалён, после чего свежий exact head прошёл требуемые gates и был squash-merged.
 
 ## 4. Следующий шаг и последующие slices
 
-### Следующий шаг — Wave 2 / Slice 11 — Recording presentation extraction
+### Следующий шаг — Wave 2 / Slice 12 — Production composition cleanup
 
-После health policy можно вынести из base UI оставшееся состояние presentation recording panel:
+После завершения recording policy/presentation extraction необходимо упростить production composition и MRO.
 
-- duration formatting;
-- health label rendering;
-- level-bar normalization;
-- warning tone transitions;
-- active/inactive visual state.
+План Slice 12:
 
-Цель — уменьшить `ui/app.py` без переноса business policy в другой Qt-класс.
+1. проинвентаризировать цепочку `recording_recovery_app → recording_finalize_app → audio_resilient_app → transcript_publication_app → concurrent_app → ui.app`;
+2. выявить пустые или compatibility-only overrides и классы, которые больше не несут самостоятельной ответственности;
+3. удалить ставшие мёртвыми module-level monkeypatch/composition tricks;
+4. определить явный production composition root без циклического присваивания `base_app.MainWindow = MainWindow`, если это возможно без изменения entrypoint semantics;
+5. сохранить отдельное владение Start / Stop-Finalize / Recovery там, где оно по-прежнему обеспечивает понятную границу;
+6. закрепить финальную MRO/composition boundary architecture tests;
+7. не смешивать этот cleanup с Wave 3 transcription/normalization refactors.
 
-### Wave 2 / Slice 12 — Production composition cleanup
+### Definition of Done Slice 12
 
-Проверить MRO и промежуточные adapters после завершения recording decomposition:
-
-- удалить ставшие пустыми compatibility overrides;
-- сократить module-level monkeypatch/composition tricks;
-- явно документировать production composition root;
-- закрепить его architecture tests.
+- production entrypoint остаётся стабильным;
+- MRO содержит только слои с реальной ответственностью;
+- нет ставших ненужными compatibility bridges/monkeypatches;
+- composition root документирован и проверяется тестами;
+- start/stop/recovery safety semantics не меняются;
+- Windows CI, privacy gate и scaling matrix зелёные;
+- PR squash-merged в `main`.
 
 ### Wave 3 — декомпозиция общего `ui/app.py`
 
@@ -216,6 +169,7 @@ Slice 10 считается завершённым, когда:
 - **no concrete audio infrastructure in base UI**;
 - **no Qt in application use cases**;
 - **stable device identity** не должна зависеть только от transient PortAudio index;
+- **presentation mapping не возвращается в application health policy**;
 - любое изменение recording lifecycle сопровождается regression/architecture tests.
 
 ## 6. Рабочий порядок для следующих slices
