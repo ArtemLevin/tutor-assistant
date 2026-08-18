@@ -10,10 +10,12 @@ import tutor_assistant.ui.audio_resilient_app as audio_resilient_app
 import tutor_assistant.ui.concurrent_app as concurrent_app
 import tutor_assistant.ui.recording_finalize_app as recording_finalize_app
 import tutor_assistant.ui.recording_recovery_app as recording_recovery_app
+import tutor_assistant.ui.shutdown_app as shutdown_app
 import tutor_assistant.ui.transcript_publication_app as transcript_publication_app
 
 COMPOSITION_MODULES = (
     concurrent_app,
+    shutdown_app,
     transcript_publication_app,
     audio_resilient_app,
     recording_finalize_app,
@@ -47,6 +49,7 @@ def test_production_mro_contains_only_responsibility_bearing_layers() -> None:
         recording_finalize_app.MainWindow,
         audio_resilient_app.MainWindow,
         transcript_publication_app.MainWindow,
+        shutdown_app.MainWindow,
         concurrent_app.MainWindow,
         base_app.MainWindow,
     )
@@ -55,6 +58,7 @@ def test_production_mro_contains_only_responsibility_bearing_layers() -> None:
 
     responsibilities = (
         (concurrent_app.MainWindow, "_sync_parallel_review_ui"),
+        (shutdown_app.MainWindow, "closeEvent"),
         (transcript_publication_app.MainWindow, "publish"),
         (audio_resilient_app.MainWindow, "start_recording"),
         (recording_finalize_app.MainWindow, "_stop_recording_async"),
@@ -76,3 +80,5 @@ def test_console_entrypoint_remains_stable_at_complete_composition_root() -> Non
 def test_no_temporary_composition_migration_files_remain() -> None:
     assert not Path("scripts/_migrate_wave2_composition.py").exists()
     assert not Path(".github/workflows/_wave2_composition_migration.yml").exists()
+    assert not Path("scripts/_migrate_shutdown_coordinator.py").exists()
+    assert not Path(".github/workflows/_shutdown_coordinator_migration.yml").exists()
