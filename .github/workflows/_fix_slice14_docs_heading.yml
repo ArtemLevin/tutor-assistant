@@ -1,0 +1,37 @@
+name: Fix Slice 14 docs heading
+
+on:
+  push:
+    branches:
+      - docs/complete-wave3-slice14
+    paths:
+      - scripts/_trigger_fix_slice14_docs_heading.txt
+
+permissions:
+  contents: write
+
+jobs:
+  fix-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/complete-wave3-slice14
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Fix heading
+        run: python scripts/_fix_slice14_docs_heading.py
+      - name: Remove helpers
+        run: |
+          rm scripts/_fix_slice14_docs_heading.py
+          rm scripts/_trigger_fix_slice14_docs_heading.txt
+          rm .github/workflows/_fix_slice14_docs_heading.yml
+      - name: Commit docs fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PLAN.md scripts/_fix_slice14_docs_heading.py scripts/_trigger_fix_slice14_docs_heading.txt .github/workflows/_fix_slice14_docs_heading.yml
+          git commit -m "fix docs roadmap numbering"
+          git push origin HEAD:docs/complete-wave3-slice14
