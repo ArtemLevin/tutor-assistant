@@ -59,8 +59,9 @@ recording, persistence and external infrastructure
 - Qt-free `recording_presentation` model для duration, level normalization, health summary, warning/recovery cues и canonical recording-panel phases.
 - explicit production composition: общий bootstrap получает `window_type`, а production adapters больше не меняют `base_app.MainWindow` через module-global rebinding; responsibility-bearing MRO закреплён architecture tests.
 - Qt-free `TranscriptionQueueCoordinator` для restore/pump/retry/complete/fail decisions; queue UI получает typed snapshot, а `TranscriptionWorker` вынесен из `ui/app.py` в отдельный Qt transport adapter.
+- Qt-free `NormalizationCoordinator` для manual/auto scheduling, lifecycle, cancellation/progress и resume decisions; `normalization_presentation` централизует actions/process/result state, а explicit Yandex consent остаётся в UI adapter.
 
-**Wave 2 завершён, Wave 3 / Slice 13 также завершён.** Следующий архитектурный шаг — **Wave 3 / Slice 14: LLM normalization presentation/orchestration extraction**. Цель — отделить normalization scheduling, execution state и result transitions от base Qt window, сохранив explicit cloud consent, cancellation/resume и mutual exclusion с локальной Whisper-транскрибацией. Детали описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён, Wave 3 / Slices 13–14 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 15: LaTeX monitor UI orchestration extraction**. Цель — отделить polling/single-flight/outcome state удалённого LaTeX monitor от base Qt window, сохранив `RemoteLatexService`, pipeline persistence и remote branch semantics. Детали описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -475,4 +476,4 @@ CI включает Windows matrix для Python 3.11–3.14, privacy history ga
 
 **[`PLAN.md`](PLAN.md)**
 
-На текущем этапе Wave 2 и transcription-queue Slice 13 завершены. Приоритет Wave 3 — декомпозиция LLM normalization orchestration, затем LaTeX monitor, shutdown coordination и parallel-review synchronization.
+На текущем этапе Wave 2 и Wave 3 / Slices 13–14 завершены. Приоритет Wave 3 — декомпозиция LaTeX monitor orchestration, затем shutdown coordination и parallel-review synchronization.

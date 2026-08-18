@@ -150,45 +150,72 @@ tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
 
 Финальный product diff: 9 файлов. Exact head прошёл Privacy History Gate и scaling 100/125/150/200%; перед merge получены независимые full-suite SUCCESS минимум на Python 3.12 и 3.14. PR #92 squash-merged в `main`.
 
-## 5. Следующий шаг — Wave 3 / Slice 14
+## 5. Завершённый шаг — Wave 3 / Slice 14
 
 ### LLM normalization presentation/orchestration extraction
 
-**Цель:** отделить scheduling и lifecycle LLM-фильтрации от `ui/app.py`, сохранив ручное подтверждение результата, cancellation/resume, cloud-consent policy и запрет одновременной CPU-heavy Ollama/Whisper обработки.
+**Цель:** отделить scheduling, lifecycle и presentation state LLM-фильтрации от `ui/app.py`, сохранив manual review, cancellation/resume, explicit cloud consent и запрет одновременной CPU-heavy Ollama/Whisper обработки.
 
-План Slice 14:
+Реализовано:
 
-1. проинвентаризировать `normalize_current_transcript`, `_pump_auto_normalization`, worker callbacks, resume-confirmation и control-state synchronization;
-2. выделить Qt-free normalization coordinator/state model для start eligibility, queued auto-normalization, completion/failure/cancel/resume decisions;
-3. оставить `NormalizationWorker` транспортным Qt adapter, не перенося concrete Ollama/Yandex providers в UI abstraction;
-4. ввести typed presentation state для process status/primary action вместо распределённого форматирования по `ui/app.py`;
-5. сохранить explicit Yandex cloud consent и невозможность auto-cloud processing без ручного согласия;
-6. сохранить mutual exclusion с active Whisper queue через transcription coordinator contract;
-7. добавить pure unit tests для manual start, auto queue, busy barriers, cancel, resume/indeterminate, success/failure и cloud-consent gates;
-8. добавить architecture gates, не смешивая Slice 14 с LaTeX monitor или shutdown refactor.
+- новый Qt-free `application/normalization.py` с `NormalizationCoordinator`;
+- coordinator владеет manual-start barriers, lifecycle `idle/running/cancelling`, FIFO/dedup auto-run queue, progress snapshot и post-worker resume decision;
+- manual-start policy сохраняет порядок проверок: lesson → provider configuration → Ollama/Whisper CPU barrier → active normalization → source segments;
+- Yandex auto-normalization не отправляет текст автоматически: pending job остаётся в очереди и возвращает `WAITING_CLOUD_CONSENT` до ручного согласия преподавателя;
+- `ui/normalization_presentation.py` централизует primary/review actions, menu state, process title/detail/tone, progress range/value и result/failure copy;
+- `ui/app.py` теперь собирает context, запрашивает Yandex consent, запускает `NormalizationWorker` и рендерит typed presentation;
+- `_pending_auto_normalizations` и `_retry_indeterminate_after_worker` удалены как UI-owned state;
+- progress/cancel/resume/worker-finished callbacks делегируют state transitions coordinator-у;
+- Ollama ↔ Whisper mutual exclusion продолжает использовать `TranscriptionQueueCoordinator.active` и `TranscriptionWorker.busy`;
+- `NormalizationWorker`, `NormalizationService`, Ollama/Yandex providers, consent dialog и review dialog сохранены как transport/infrastructure/UI adapters.
 
-### Definition of Done Slice 14
+Во время self-review до открытия PR выявлена и исправлена регрессия progress bar: первая версия typed presentation сохраняла текст прогресса, но не обновляла `range/value`. В presentation model добавлены `progress_total/progress_completed`, а adapter снова использует `TranscriptWorkspace.set_progress()`.
 
-- normalization lifecycle decisions тестируются без PySide6;
-- Qt widgets не являются source of truth для normalization execution state;
-- Ollama/Whisper mutual exclusion сохранён;
-- Yandex cloud processing по-прежнему требует explicit consent;
-- cancellation/resume и manual review semantics не изменены;
-- recording/transcription boundaries остаются неизменными;
+Тестовый контур покрывает manual start barriers, provider-specific CPU policy, auto FIFO/dedup, shutdown/transcription barriers, Yandex consent gate, cancellation, progress snapshots, resume-after-worker, controls/result/failure presentation и architecture boundaries.
+
+Финальный product diff: 7 файлов; `ui/app.py` уменьшен на 149 строк net. Exact head `399f3c6a77fd4d3a9480f747562acc78d76f1b36` прошёл Privacy History Gate и scaling 100/125/150/200%; перед merge получены независимые full-suite SUCCESS на Python 3.13 и 3.14. PR #94 squash-merged в `main` как `c0c2cdf18330cf5cdf9039cbb60b044b5a27764c`.
+
+## 6. Следующий шаг — Wave 3 / Slice 15
+
+### LaTeX monitor UI orchestration extraction
+
+**Цель:** отделить polling/scan/compile coordination удалённых LaTeX-веток от `ui/app.py`, сохранив current `RemoteLatexService`, pipeline persistence, retry/fix-request semantics и ручную локальную компиляцию как отдельный workflow.
+
+План Slice 15:
+
+1. проинвентаризировать `toggle_latex_monitor`, `scan_remote_latex`, `_remote_compilation_ready` и ветку `purpose == "latex-monitor"` в `_operation_failed`;
+2. отделить policy monitor lifecycle от Qt timer/worker transport: enabled/disabled, scan-in-flight, idle/no-update, success/failure outcome должны стать typed Qt-free state;
+3. ввести Qt-free application coordinator для решения `should_scan`, single-flight guard и обработки scan outcome, не создавая `RemoteLatexService` внутри application layer;
+4. оставить `QTimer` и generic `Worker` в Qt adapter, а concrete `RemoteLatexService`/`LatexCompiler` — infrastructure concern;
+5. вынести status/message/log/preview presentation mapping автоматического monitor path в typed presentation model, не смешивая с manual `compile_local_tex`;
+6. сохранить `content_service.activity("latex-monitor")`, обход lessons, `RemoteLatexService.is_ready()` и `compile_lesson()` semantics без изменения remote branch protocol;
+7. сохранить `pipeline.save_state(..., force_status=True)` после remote compilation и существующие success/fix-request outcomes;
+8. добавить pure unit tests для enable/disable, single-flight, no-update, success, compile-failure и worker-error paths, плюс architecture gates против возврата raw monitor orchestration в base UI;
+9. не смешивать Slice 15 с application shutdown coordinator или teacher cockpit synchronization.
+
+### Definition of Done Slice 15
+
+- monitor lifecycle/decision state тестируется без PySide6;
+- Qt timer и worker остаются transport-only adapters;
+- повторный poll не запускает второй scan, пока первый не завершён;
+- no-update/success/failure outcomes имеют typed presentation state;
+- remote LaTeX branch/compile/persistence semantics не изменены;
+- manual local compilation остаётся отдельным workflow;
+- recording/transcription/normalization boundaries остаются неизменными;
 - Windows CI, privacy gate и scaling matrix зелёные;
 - минимум два независимых full-suite success;
 - PR squash-merged в `main`.
 
 ### Последующие Wave 3 slices
 
-После Slice 14:
+После Slice 15:
 
-1. LaTeX monitor UI orchestration;
-2. application shutdown coordinator;
-3. teacher cockpit / parallel review synchronization.
+1. application shutdown coordinator;
+2. teacher cockpit / parallel review synchronization.
 
 Каждый этап следует тому же правилу: сначала выделяется реальная policy/orchestration в Qt-free boundary, затем production path переключается на неё, после чего dead legacy-код физически удаляется.
 
+## 7. Инварианты разработки
 ## 6. Инварианты разработки
 
 При дальнейших изменениях сохранять:
@@ -205,7 +232,7 @@ tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
 - **presentation mapping не возвращается в application health policy**;
 - любое изменение recording lifecycle сопровождается regression/architecture tests.
 
-## 7. Рабочий порядок для следующих slices
+## 8. Рабочий порядок для следующих slices
 
 Для каждого slice:
 
