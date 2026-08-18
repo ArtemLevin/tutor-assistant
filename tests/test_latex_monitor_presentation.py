@@ -20,6 +20,7 @@ def test_toggle_presentations_preserve_existing_copy() -> None:
     assert enabled.tone == "working"
     assert disabled.monitor_status == "Мониторинг выключен"
     assert disabled.app_status == "Автомониторинг LaTeX выключен"
+    assert disabled.tone == "success"
 
 
 def test_scanning_and_no_update_presentations_are_typed() -> None:
@@ -30,6 +31,7 @@ def test_scanning_and_no_update_presentations_are_typed() -> None:
     assert scanning.app_status == "Проверяю ветки занятий…"
     assert scanning.tone == "working"
     assert no_update.monitor_status == "Новых TEX-файлов нет"
+    assert no_update.tone == "success"
     assert no_update.dialog_message is None
 
 
