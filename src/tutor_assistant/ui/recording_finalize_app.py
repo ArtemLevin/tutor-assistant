@@ -16,7 +16,7 @@ from ..domain import Lesson
 from ..recording import RecordingResult
 from . import app as base_app
 from .audio_resilient_app import MainWindow as AudioResilientMainWindow
-from .theme import refresh_style
+from .recording_presentation import RecordingPanelPhase
 
 
 class MainWindow(AudioResilientMainWindow):
@@ -57,7 +57,7 @@ class MainWindow(AudioResilientMainWindow):
         self._recording_stop_started = True
         self.timer.stop()
         self.stop_button.setEnabled(False)
-        self.recording_state_label.setText("СОХРАНЯЮ ЗАПИСЬ…")
+        self._set_recording_panel_phase(RecordingPanelPhase.SAVING)
         self._set_status("Сохраняю и проверяю аудиодорожки…", "working")
         if reason:
             logging.warning("Аварийное завершение записи: %s", reason)
@@ -149,9 +149,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self.quick_start_button.setText("Начать занятие")
-        self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА")
-        self.recording_state_label.setProperty("active", False)
-        refresh_style(self.recording_state_label)
+        self._set_recording_panel_phase(RecordingPanelPhase.SAVED)
 
         warnings: list[str] = []
         quality_ready = None
@@ -209,9 +207,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self._quick_auto_transcribe_active = False
         self._refresh_quick_readiness()
-        self.recording_state_label.setText("ЗАПИСЬ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ")
-        self.recording_state_label.setProperty("active", False)
-        refresh_style(self.recording_state_label)
+        self._set_recording_panel_phase(RecordingPanelPhase.RECOVERY_REQUIRED)
         self._set_status("Запись сохранена частично; доступно восстановление", "error")
         self.recording_workflow.mark_recovery_required()
         QMessageBox.critical(
@@ -235,9 +231,7 @@ class MainWindow(AudioResilientMainWindow):
         self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
         self._refresh_quick_readiness()
-        self.recording_state_label.setText("ЗАПИСЬ СОХРАНЕНА С ОШИБКОЙ")
-        self.recording_state_label.setProperty("active", False)
-        refresh_style(self.recording_state_label)
+        self._set_recording_panel_phase(RecordingPanelPhase.FAILED)
         self._set_status("Аудио сохранено, оформление занятия завершилось с ошибкой", "error")
         self.recording_workflow.mark_failed()
         audio_hint = f"Аудиофайл сохранён: {result.mixed_file}\n\n" if result is not None else ""

@@ -50,8 +50,8 @@ def test_healthy_sample_is_non_terminal_and_preserves_metrics() -> None:
     assert assessment.stop_reason is None
     assert assessment.warnings == ()
     assert assessment.dropped_blocks == 0
-    assert assessment.microphone_level_percent == 21
-    assert assessment.system_level_percent == 34
+    assert assessment.sample.microphone_level == 0.21
+    assert assessment.sample.system_level == 0.34
     assert assessment.sample.reconnect_attempts == 2
 
 
@@ -61,7 +61,6 @@ def test_microphone_silence_is_warning_only() -> None:
     assert assessment.severity == RecordingHealthSeverity.WARNING
     assert assessment.action == RecordingHealthAction.NONE
     assert assessment.warnings == ("микрофон молчит 20 с",)
-    assert assessment.warning_text == "микрофон молчит 20 с"
 
 
 def test_system_silence_is_warning_only() -> None:

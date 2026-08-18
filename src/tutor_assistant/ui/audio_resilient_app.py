@@ -28,7 +28,7 @@ from ..recording import (
 )
 from ..recording.devices import probe_input_device
 from . import app as base_app
-from .theme import refresh_style
+from .recording_presentation import RecordingPanelPhase
 from .transcript_publication_app import MainWindow as ProductionMainWindow
 
 
@@ -102,9 +102,7 @@ class MainWindow(ProductionMainWindow):
         if self._quick_auto_transcribe_active:
             self.quick_start_button.setText("Завершить занятие")
             self.quick_start_button.setEnabled(True)
-        self.recording_state_label.setText("●  ИДЁТ ЗАПИСЬ")
-        self.recording_state_label.setProperty("active", True)
-        refresh_style(self.recording_state_label)
+        self._set_recording_panel_phase(RecordingPanelPhase.RECORDING)
         self._set_status("Идёт запись", "working")
         logging.info(
             "Запись начата через application use case: lesson=%s mic=%s system=%s",
