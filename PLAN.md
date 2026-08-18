@@ -6,7 +6,9 @@
 
 ## 1. Текущее состояние
 
-Wave 2 архитектурной стабилизации production-контура записи завершён. В Wave 3 завершены Slices 13–15: orchestration очереди транскрибации, LLM normalization и LaTeX monitor отделены от базового Qt-окна. Следующий фокус — application shutdown coordination.
+Wave 2 архитектурной стабилизации production-контура записи завершён. В Wave 3 завершены Slices 13–16: orchestration очереди транскрибации, LLM normalization, LaTeX monitor и безопасного завершения приложения отделены от базового Qt-окна.
+
+Следующий фокус — **Wave 3 / Slice 17: Teacher cockpit / parallel-review synchronization**.
 
 Production GUI запускается через:
 
@@ -15,19 +17,31 @@ tutor-assistant-gui
 → tutor_assistant.ui.recording_recovery_app:main
 ```
 
-Актуальная цепочка ответственности:
+Текущая production composition после Slice 16:
 
 ```text
-Qt presentation / composition adapters
-        ↓
-application use cases + structural ports
-        ↓
+recording_recovery_app.MainWindow
+→ recording_finalize_app.MainWindow
+→ audio_resilient_app.MainWindow
+→ transcript_publication_app.MainWindow
+→ shutdown_app.MainWindow
+→ concurrent_app.MainWindow
+→ ui.app.MainWindow
+```
+
+Общая архитектурная граница:
+
+```text
+Qt presentation / production composition adapters
+                ↓
+application use cases + coordinators + structural ports
+                ↓
 domain / pipeline services
-        ↓
+                ↓
 recording, persistence and external infrastructure
 ```
 
-Базовый `ui/app.py` остаётся общим presentation shell и набором command ports. Он больше не должен владеть транзакциями старта/остановки/восстановления записи, preflight capture, concrete recorder construction, hardware discovery, health-policy interpretation или форматированием состояния recording panel.
+`ui/app.py` остаётся общим presentation shell и набором command ports. Новая функциональная orchestration должна добавляться через typed Qt-free boundaries и production adapters, а не возвращаться в base god-object.
 
 ## 2. Завершённая стабилизация
 
@@ -40,207 +54,215 @@ recording, persistence and external infrastructure
 - идемпотентное восстановление незавершённой записи;
 - SQLite concurrency/PRAGMA contracts;
 - cancelled lessons;
-- исправление CI-контрактов после введения recording state machine.
+- CI-контракты для recording state machine.
 
-### Wave 2 — декомпозиция production recording path
+### Wave 2 — production recording path
 
-Завершены следующие slices:
+Завершены Slices 1–12:
 
-1. **Recording lifecycle controller** — Qt-free управление фазами recording workflow.
-2. **StartRecordingUseCase** — создание занятия, lease, recorder start и rollback перенесены в application layer.
-3. **Stop/Finalize** — безопасная остановка, finalize и recovery-required semantics вынесены из base UI.
-4. **Recovery** — восстановление аудио и metadata orchestration перенесены в `RecoverRecordingUseCase`.
-5. **Legacy recording cleanup** — физически удалены старые start/stop/recovery orchestration и callback bridges из `ui/app.py` и промежуточных MRO-слоёв.
-6. **Audio Preflight boundary** — production diagnostic capture выполняется через `AudioPreflightUseCase` и typed result.
-7. **Legacy Audio Preflight cleanup** — удалены dead capture/JSON/sleep callbacks из base UI.
-8. **Recording runtime port** — concrete `DualRecorder` исключён из base UI; monitoring работает через `RecordingRuntimeRecorder`, `RecordingLevelsSnapshot` и `RecordingHealthSnapshot`.
-9. **Audio device discovery boundary** — hardware discovery/resolution/probe вынесены за base UI; production adapter использует `RefreshAudioDevicesUseCase`, а stable microphone identity централизована в нейтральном resolver.
-10. **Recording runtime health policy** — интерпретация stream errors, callback timeout, silence и dropped blocks вынесена из `_tick()` в Qt-free `RecordingHealthMonitor`; UI получает typed assessment и только отображает состояние/исполняет terminal stop action.
-11. **Recording presentation extraction** — timer formatting, level normalization, health summary, warning/recovery presentation cues и канонические visual phases recording panel вынесены в Qt-free `ui/recording_presentation.py`; start/finalize adapters больше не форматируют recording-state label вручную.
-12. **Production composition cleanup** — общий GUI bootstrap принимает explicit `window_type`; устранены module-global `base_app.MainWindow = MainWindow` rebinding во всех production adapters, при этом responsibility-bearing MRO и стабильный console entrypoint сохранены и закреплены architecture tests.
+1. `RecordingWorkflowController`;
+2. `StartRecordingUseCase`;
+3. application-owned stop/finalize;
+4. `RecoverRecordingUseCase`;
+5. legacy recording cleanup;
+6. `AudioPreflightUseCase`;
+7. legacy preflight cleanup;
+8. `RecordingRuntimeRecorder` port;
+9. audio-device discovery / stable identity boundary;
+10. `RecordingHealthMonitor`;
+11. `recording_presentation`;
+12. explicit production composition root без `base_app.MainWindow` rebinding.
 
-На момент завершения Slice 12 exact feature head прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs минимум на Python 3.12 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
+К завершению Wave 2 recording lifecycle, start/stop/recovery, preflight, device discovery, runtime health, presentation и production composition имеют отдельные regression/architecture contracts.
 
-## 3. Завершённый шаг — Wave 2 / Slice 12
+## 3. Wave 3 — завершённые slices
 
-### Production composition cleanup
-
-**Цель:** завершить recording-focused Wave 2 явным composition root без module-global подмены класса окна и без искусственного схлопывания слоёв, которые всё ещё несут самостоятельную ответственность.
-
-Инвентаризация production MRO подтвердила, что все слои остаются содержательными:
-
-```text
-recording_recovery_app.MainWindow
-→ recording_finalize_app.MainWindow
-→ audio_resilient_app.MainWindow
-→ transcript_publication_app.MainWindow
-→ concurrent_app.MainWindow
-→ ui.app.MainWindow
-```
-
-Ответственности остаются разделены:
-
-- `concurrent_app` — background tasks и parallel-review coordination;
-- `transcript_publication_app` — publication/cockpit presentation;
-- `audio_resilient_app` — audio-device refresh, preflight и start recording;
-- `recording_finalize_app` — stop/finalize и recovery-required outcome presentation;
-- `recording_recovery_app` — discovery и восстановление незавершённых recording sessions.
-
-Поэтому Slice 12 не удаляет эти классы. Вместо старого механизма:
-
-```python
-base_app.MainWindow = MainWindow
-base_app.main()
-```
-
-общий bootstrap теперь принимает явный тип окна:
-
-```python
-def main(window_type: type[MainWindow] = MainWindow) -> None:
-    ...
-    window = window_type(config_path)
-```
-
-а каждый production adapter запускается через:
-
-```python
-base_app.main(MainWindow)
-```
-
-Console entrypoint остаётся прежним:
-
-```text
-tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
-```
-
-### Architecture gates Slice 12
-
-`tests/test_production_composition.py` закрепляет:
-
-- explicit `window_type` injection в общем bootstrap;
-- отсутствие `base_app.MainWindow = MainWindow` во всех production composition modules;
-- точный responsibility-bearing MRO;
-- наличие собственной ответственности у каждого слоя;
-- неизменность production console entrypoint;
-- отсутствие временных migration files.
-
-Первые CI-запуски выявили только `Ruff I001` в новом architecture test. Runtime diff не менялся; import formatting теста приведён к проектному стандарту, после чего свежий exact head прошёл ранние gates и требуемые full-suite проверки.
-
-**Итог Wave 2:** recording lifecycle, start/stop/recovery, preflight, device discovery, runtime recorder contract, health policy, presentation mapping и production composition имеют явные границы и regression/architecture coverage. Дальнейшая декомпозиция должна идти уже по другим функциональным зонам `ui/app.py`.
-
-## 4. Завершённый шаг — Wave 3 / Slice 13
-
-### Transcription queue presentation/orchestration extraction
-
-**Цель:** отделить управление локальной очередью транскрибации и её presentation state от базового Qt god-object, сохранив storage/retry/shutdown semantics и не меняя recording path.
+### Slice 13 — Transcription queue presentation/orchestration extraction
 
 Реализовано:
 
-- новый Qt-free `application/transcription_queue.py` с `TranscriptionQueueCoordinator`;
-- coordinator владеет restore/pump/retry/complete/fail/discard decisions поверх существующей `TranscriptionQueue` state machine;
-- `TranscriptionQueueSnapshot` и entry snapshots дают UI immutable queue state без чтения widgets как source of truth;
-- `ui/transcription_queue_presentation.py` централизует labels, row text/tooltips, counters и quick badge;
-- `TranscriptionWorker` физически вынесен из `ui/app.py` в `ui/transcription_worker.py` как Qt transport adapter;
-- `ui/app.py` делегирует restore/pump/retry/completion coordinator-у и только запускает worker/рендерит presentation;
-- `concurrent_app.py` больше не дублирует Lesson transition, persistence и raw queue retry;
-- normalization busy gates читают active transcription через coordinator, сохраняя CPU mutual exclusion Ollama ↔ Whisper;
-- временная migration infrastructure удалена из итогового product diff.
+- Qt-free `TranscriptionQueueCoordinator` для restore/pump/retry/complete/fail/discard decisions;
+- immutable queue snapshots для UI;
+- `transcription_queue_presentation`;
+- `TranscriptionWorker` вынесен из `ui/app.py` в отдельный Qt transport adapter;
+- raw queue mutation удалена из production UI orchestration;
+- сохранены persisted restore, retry и Ollama ↔ Whisper mutual exclusion semantics.
 
-Тестовый контур покрывает sequential pump, shutdown/normalization barriers, fail→next, retry и missing audio, persisted restore semantics, orphan recovery, snapshots, presentation formatting и architecture boundaries.
+Product PR #92 squash-merged в `main`.
 
-Финальный product diff: 9 файлов. Exact head прошёл Privacy History Gate и scaling 100/125/150/200%; перед merge получены независимые full-suite SUCCESS минимум на Python 3.12 и 3.14. PR #92 squash-merged в `main`.
-
-## 5. Завершённый шаг — Wave 3 / Slice 14
-
-### LLM normalization presentation/orchestration extraction
-
-**Цель:** отделить scheduling, lifecycle и presentation state LLM-фильтрации от `ui/app.py`, сохранив manual review, cancellation/resume, explicit cloud consent и запрет одновременной CPU-heavy Ollama/Whisper обработки.
+### Slice 14 — LLM normalization presentation/orchestration extraction
 
 Реализовано:
 
-- новый Qt-free `application/normalization.py` с `NormalizationCoordinator`;
-- coordinator владеет manual-start barriers, lifecycle `idle/running/cancelling`, FIFO/dedup auto-run queue, progress snapshot и post-worker resume decision;
-- manual-start policy сохраняет порядок проверок: lesson → provider configuration → Ollama/Whisper CPU barrier → active normalization → source segments;
-- Yandex auto-normalization не отправляет текст автоматически: pending job остаётся в очереди и возвращает `WAITING_CLOUD_CONSENT` до ручного согласия преподавателя;
-- `ui/normalization_presentation.py` централизует primary/review actions, menu state, process title/detail/tone, progress range/value и result/failure copy;
-- `ui/app.py` теперь собирает context, запрашивает Yandex consent, запускает `NormalizationWorker` и рендерит typed presentation;
-- `_pending_auto_normalizations` и `_retry_indeterminate_after_worker` удалены как UI-owned state;
-- progress/cancel/resume/worker-finished callbacks делегируют state transitions coordinator-у;
-- Ollama ↔ Whisper mutual exclusion продолжает использовать `TranscriptionQueueCoordinator.active` и `TranscriptionWorker.busy`;
-- `NormalizationWorker`, `NormalizationService`, Ollama/Yandex providers, consent dialog и review dialog сохранены как transport/infrastructure/UI adapters.
+- Qt-free `NormalizationCoordinator`;
+- manual-start barriers и provider-specific CPU policy;
+- FIFO/dedup auto-run queue;
+- cancellation/progress/resume state;
+- explicit Yandex cloud-consent gate;
+- Qt-free `normalization_presentation` для controls/process/result state;
+- сохранена ручная review/apply модель результата.
 
-Во время self-review до открытия PR выявлена и исправлена регрессия progress bar: первая версия typed presentation сохраняла текст прогресса, но не обновляла `range/value`. В presentation model добавлены `progress_total/progress_completed`, а adapter снова использует `TranscriptWorkspace.set_progress()`.
+Product PR #94 squash-merged в `main` как `c0c2cdf18330cf5cdf9039cbb60b044b5a27764c`.
 
-Тестовый контур покрывает manual start barriers, provider-specific CPU policy, auto FIFO/dedup, shutdown/transcription barriers, Yandex consent gate, cancellation, progress snapshots, resume-after-worker, controls/result/failure presentation и architecture boundaries.
-
-Финальный product diff: 7 файлов; `ui/app.py` уменьшен на 149 строк net. Exact head `399f3c6a77fd4d3a9480f747562acc78d76f1b36` прошёл Privacy History Gate и scaling 100/125/150/200%; перед merge получены независимые full-suite SUCCESS на Python 3.13 и 3.14. PR #94 squash-merged в `main` как `c0c2cdf18330cf5cdf9039cbb60b044b5a27764c`.
-
-## 6. Завершённый шаг — Wave 3 / Slice 15
-
-### LaTeX monitor UI orchestration extraction
-
-**Цель:** отделить polling/scan lifecycle и presentation автоматического LaTeX monitor от `ui/app.py`, сохранив `RemoteLatexService`, pipeline persistence, retry/fix-request semantics и ручную локальную компиляцию как отдельный workflow.
+### Slice 15 — LaTeX monitor UI orchestration extraction
 
 Реализовано:
 
-- новый Qt-free `application/latex_monitor.py` с `LatexMonitorCoordinator`;
-- coordinator владеет enabled/disabled state, manual/periodic/enable scan eligibility и single-flight guard;
-- manual «Проверить сейчас» остаётся доступным при выключенном auto-monitor, тогда как periodic/enable triggers требуют включённого monitor;
-- `worker.purpose == "latex-monitor"` больше не используется как source of truth для lifecycle;
-- новый Qt-free `ui/latex_monitor_presentation.py` централизует toggle/scanning/no-update/success/compile-failure/worker-error presentation state;
-- `QTimer`, generic `Worker`, `QMessageBox` и widget mutation остаются transport/presentation adapters;
-- concrete `RemoteLatexService` остаётся infrastructure concern; `content_service.activity("latex-monitor")`, обход lessons, `is_ready()` и `compile_lesson()` сохранены без изменения remote branch protocol;
-- `_remote_compilation_ready` по-прежнему выполняет `pipeline.save_state(..., force_status=True)` перед presentation результата;
-- compile-failure по-прежнему сообщает об `reports/latex/latex_fix_request.md`, а success сохраняет сообщение о PDF и branch;
-- generic `_operation_failed` больше не владеет LaTeX-monitor state; worker error имеет отдельный typed presentation path;
-- `compile_local_tex()` и локальный `LatexCompiler` workflow не изменялись;
-- временная migration infrastructure удалена из итогового product diff.
+- Qt-free `LatexMonitorCoordinator`;
+- enabled/disabled lifecycle;
+- manual/periodic/enable scan triggers;
+- single-flight guard;
+- Qt-free `latex_monitor_presentation`;
+- `RemoteLatexService`, `QTimer` и worker transport остались в соответствующих infrastructure/UI слоях;
+- `content_service.activity("latex-monitor")`, remote branch protocol, `pipeline.save_state(..., force_status=True)` и fix-request semantics сохранены;
+- manual `compile_local_tex()` не смешивался с monitor workflow.
 
-Тестовый контур покрывает disabled/enabled lifecycle, manual и periodic triggers, single-flight, disable-during-scan, idempotent finish, no-update, success, compile-failure, worker-error, exact legacy copy/tone и architecture boundaries.
+Product PR #97 squash-merged в `main` как `c7bb109db8cc93373f9ece2a9f9615584c5fd64b`.
 
-Первый PR CI обнаружил только `Ruff I001` в import block `ui/app.py`; runtime semantics не менялись. После исправления import ordering свежий exact head `49cf6930f1c6afa70d518620825b84acb6bc5696` прошёл Privacy History Gate и scaling 100/125/150/200%; перед merge получены независимые full-suite SUCCESS на Python 3.12 и 3.13. PR #97 squash-merged в `main` как `c7bb109db8cc93373f9ece2a9f9615584c5fd64b`.
-
-## 7. Следующий шаг — Wave 3 / Slice 16
+## 4. Завершённый шаг — Wave 3 / Slice 16
 
 ### Application shutdown coordinator
 
-**Цель:** вынести decision/state безопасного завершения приложения из `closeEvent()` / `_maybe_finish_shutdown()` за Qt-free application boundary, сохранив audio-first recording finalize safety, cancellation активной normalization, корректное завершение transcription worker и persisted pending jobs.
+**Цель:** вынести decision/state безопасного завершения приложения из Qt `closeEvent()` за тестируемую application boundary, сохранив recording finalize safety, cancellation normalization, корректный drain фоновых задач и persisted transcription queue.
 
-План Slice 16:
+Реализовано:
 
-1. проинвентаризировать `closeEvent`, `_maybe_finish_shutdown`, `_shutdown_requested/_shutdown_ready`, остановку timers, normalization cancellation и `TranscriptionWorker.shutdown()/wait()`;
-2. ввести Qt-free shutdown coordinator/state model с явными фазами вроде idle/requested/draining/ready и typed close decisions/actions;
-3. отделить policy от Qt: `QCloseEvent`, `QMessageBox`, `QTimer.singleShot`, widget disabling и thread wait остаются UI/transport adapters;
-4. сохранить быстрый путь закрытия без активной записи/фоновых работ, включая корректный shutdown/wait transcription thread;
-5. при подтверждённом busy shutdown сохранить normalization cancellation, stop всех runtime timers, запрет нового старта и безопасный `_stop_recording_async(...)` для активной записи;
-6. не очищать persisted transcription queue: ожидающие jobs должны по-прежнему продолжаться при следующем запуске;
-7. учитывать recording finalize, generic workers и transcription thread как независимые drain barriers; `ready` разрешается только после снятия всех барьеров;
-8. сделать transition в ready идемпотентным и исключить повторные prompt/stop/cancel side effects при повторном `closeEvent`;
-9. добавить pure unit tests для immediate close, busy→prompt, user cancel, confirmed drain, recording barrier, worker/transcription barriers, normalization cancellation action и final ready transition;
-10. добавить architecture gates против возврата shutdown policy в `closeEvent`, не смешивая Slice 16 с teacher cockpit / parallel-review synchronization.
+- новый Qt-free `application/shutdown.py` с `ShutdownCoordinator`;
+- явные фазы `IDLE / DRAINING / READY`;
+- typed close actions `ACCEPT / PROMPT / TRY_IMMEDIATE / IGNORE`;
+- `ShutdownRuntimeSnapshot` различает:
+  - active recording;
+  - recording finalize in-flight;
+  - generic workers;
+  - `transcription_busy` как причину prompt;
+  - `transcription_running` как drain barrier;
+  - наличие cancellable normalization;
+- `ShutdownDrainPlan` выдаёт однократные side-effect actions для cancellation, transcription shutdown, runtime quiesce и safe recording finalize;
+- повторный close во время draining возвращает `IGNORE` и не повторяет destructive side effects;
+- ready transition выполняется только после снятия recording/worker/transcription barriers;
+- persisted transcription queue не очищается при shutdown.
 
-### Definition of Done Slice 16
+### Production adapter Slice 16
 
-- shutdown lifecycle decisions тестируются без PySide6;
-- `QCloseEvent` и dialogs только исполняют typed decisions coordinator-а;
-- recording finalize нельзя обойти при закрытии;
-- active normalization получает cancellation request ровно один раз на shutdown lifecycle;
-- pending transcription jobs не теряются и не удаляются;
-- application достигает ready только после recording/worker/transcription drain;
-- повторный close во время draining не дублирует destructive side effects;
+Чтобы не выполнять рискованную механическую миграцию большого `ui/app.py`, введён отдельный `ui/shutdown_app.py`.
+
+Он вставлен в cooperative C3 MRO между teacher-cockpit/publication слоем и `concurrent_app`:
+
+```text
+recording_recovery
+→ recording_finalize
+→ audio_resilient
+→ transcript_publication
+→ shutdown_app
+→ concurrent_app
+→ ui.app
+```
+
+Это сохраняет важный порядок:
+
+1. `transcript_publication_app.closeEvent()` сначала сохраняет UI/cockpit session;
+2. затем `shutdown_app.closeEvent()` принимает typed shutdown decision;
+3. legacy `concurrent_app/base_app.closeEvent()` больше не является production policy path.
+
+`BackgroundTaskCoordinator.begin_shutdown()` интегрирован в новый adapter, поэтому deferred/retry tasks перестают запускаться, а running background tasks получают cancellation. Active normalization, transcription thread и recording finalize сохраняют прежние safety semantics.
+
+Исторические `_shutdown_requested/_shutdown_ready` пока остаются в нижних слоях как **compatibility mirrors** для `audio_resilient_app` и maintenance gates. Новый shutdown adapter их записывает, но не читает как источник lifecycle policy. Источником истины является `ShutdownCoordinator`.
+
+### Tests / CI Slice 16
+
+Добавлены:
+
+- `tests/test_shutdown_coordinator.py` — immediate close, busy→prompt, cancel, confirmed drain, independent barriers, idempotency и ready transition;
+- `tests/test_shutdown_ui_architecture.py` — Qt-free application boundary, typed production adapter, compatibility-mirror contract и запрет очистки persisted queue;
+- обновлён `tests/test_production_composition.py` для нового responsibility-bearing MRO.
+
+Первый PR CI обнаружил только `Ruff I001` в новом architecture test. Import formatting исправлен без изменения production semantics.
+
+Exact feature head `4284eac1ff7d35a1d944a729b211f1a03155cd0f` прошёл:
+
+- Privacy History Gate — SUCCESS;
+- accessibility/scaling 100 / 125 / 150 / 200% — SUCCESS;
+- lint / compile / privacy import / secret scan / contracts / whitespace на Windows Python 3.11–3.14;
+- перед merge подтверждены независимые full-suite SUCCESS на Python 3.12 и 3.14.
+
+Product PR #99 squash-merged в `main` как:
+
+```text
+029705c256045fe6eeedd771aa01e23b8087041d
+```
+
+Итоговый product diff: 7 файлов, +558 / −2.
+
+## 5. Следующий шаг — Wave 3 / Slice 17
+
+### Teacher cockpit / parallel-review synchronization
+
+**Цель:** сделать recording context, review context и Teacher Cockpit согласованными через typed state/snapshot boundary вместо прямой интроспекции Qt window и разрозненных widget-driven refresh calls.
+
+### Фактическое состояние перед Slice 17
+
+Сейчас:
+
+- `TeacherCockpitController.refresh()` каждые 30 секунд вызывает `build_cockpit_snapshot(window)`;
+- `teacher_cockpit_data.py` Qt-free по импортам, но читает `window`, `workers`, `crm_store`, `pipeline.store`, `lesson`, `students` через динамическую интроспекцию;
+- `concurrent_app` хранит отдельные понятия `recording_lesson` и `review_lesson`, но синхронизация presentation выполняется через `_sync_parallel_review_ui()`;
+- `ParallelReviewPolicy` уже защищает важные инварианты: review можно открыть во время записи, playback запрещён во время recording, recording form нельзя подменять review lesson;
+- context bar, processing queue, lesson transitions, recording callbacks и cockpit refresh вызывают обновления независимо друг от друга;
+- 30-секундный cockpit timer полезен как fallback, но не должен быть основным механизмом согласования состояния после локальных событий.
+
+### План Slice 17
+
+1. Проинвентаризировать все producer-ы workspace state:
+   - recording start/stop/finalize/recovery;
+   - выбор/open review lesson;
+   - transcription/normalization/publication transitions;
+   - trash/purge/archive changes;
+   - CRM/schedule updates;
+   - background task lifecycle.
+2. Ввести Qt-free typed context model для как минимум двух независимых контекстов:
+   - active recording context;
+   - current review context.
+3. Централизовать policy выбора/смены review context во время активной записи, сохранив:
+   - `review_open_allowed=True`;
+   - запрет playback при recording busy;
+   - запрет восстановления review lesson в recording form при recording busy;
+   - stop button всегда относится только к active recording.
+4. Убрать использование Qt window как неявного data contract для cockpit snapshot:
+   - snapshot builder должен получать typed inputs/ports;
+   - CRM/store access остаётся query/infrastructure concern;
+   - UI widgets не должны быть source of truth для pipeline state.
+5. Добавить event-driven invalidation/refresh для локальных изменений workspace state.
+6. Сохранить 30-секундный timer как defensive fallback для внешних/периодических изменений, но не полагаться на него после внутренних transitions.
+7. Централизовать parallel-context presentation (`recording + review + elapsed`) поверх typed snapshot.
+8. Обработать stale review context:
+   - удалённый/trashed lesson;
+   - завершённый publish/apply transition;
+   - смена selected lesson;
+   - recovery/open-from-processing.
+9. Добавить unit tests для context transitions и regression tests для сценария:
+   - идёт запись ученика A;
+   - преподаватель открывает/проверяет занятие ученика B;
+   - recording controls остаются привязаны к A;
+   - review/publish controls относятся к B;
+   - playback B заблокирован, пока запись A активна.
+10. Добавить architecture gates против возврата `build_cockpit_snapshot(window)` / raw widget inspection как центрального synchronization mechanism.
+11. Не смешивать Slice 17 с визуальным редизайном Teacher Cockpit, новой CRM-функциональностью или изменением publication protocol.
+
+### Definition of Done Slice 17
+
+- recording/review workspace contexts имеют typed testable model;
+- cockpit snapshot строится из явных data inputs, а не из произвольного Qt window object;
+- internal state transitions обновляют cockpit/parallel context event-driven;
+- 30-second timer остаётся только fallback refresh;
+- активная запись и открытый review lesson не могут взаимно подменить контекст;
+- playback safety во время recording сохраняется;
+- stale review context корректно инвалидируется;
+- production UI остаётся тонким renderer/router слоя;
 - Windows CI, privacy gate и scaling matrix зелёные;
 - минимум два независимых full-suite success;
 - PR squash-merged в `main`.
 
-### Последующие Wave 3 slices
-
-После Slice 16:
-
-1. teacher cockpit / parallel review synchronization.
-
-Каждый этап следует тому же правилу: сначала выделяется реальная policy/orchestration в Qt-free boundary, затем production path переключается на неё, после чего dead legacy-код физически удаляется.
-
-## 8. Инварианты разработки
+## 6. Инварианты разработки
 
 При дальнейших изменениях сохранять:
 
@@ -251,12 +273,14 @@ tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
 - **local-first privacy:** аудио не отправляется во внешние сервисы;
 - **explicit cloud consent** для Yandex AI Studio;
 - **no concrete audio infrastructure in base UI**;
-- **no Qt in application use cases**;
+- **no Qt in application use cases/coordinators**;
 - **stable device identity** не должна зависеть только от transient PortAudio index;
-- **presentation mapping не возвращается в application health policy**;
-- любое изменение recording lifecycle сопровождается regression/architecture tests.
+- **presentation mapping не возвращается в application policy**;
+- persisted transcription queue не очищается при обычном shutdown;
+- recording context и review context должны оставаться независимыми во время parallel review;
+- любое изменение recording/shutdown lifecycle сопровождается regression/architecture tests.
 
-## 9. Рабочий порядок для следующих slices
+## 7. Рабочий порядок для следующих slices
 
 Для каждого slice:
 
@@ -264,9 +288,10 @@ tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
 2. определить минимальную архитектурную границу;
 3. не смешивать соседние refactor-задачи в один PR;
 4. сначала добавить/перенести contract и тесты;
-5. физически удалить старую orchestration после переключения production path;
-6. выполнить self-review diff;
-7. прогнать Windows CI и policy gates;
-8. получить минимум два независимых full-suite success для существенных orchestration/refactor changes;
-9. squash merge с проверкой expected head SHA;
-10. обновлять этот `PLAN.md`, когда завершённый slice меняет следующую архитектурную границу.
+5. переключить production path на новую boundary;
+6. физически удалить dead legacy orchestration там, где это безопасно и не требует рискованной механической миграции;
+7. выполнить self-review diff;
+8. прогнать Windows CI и policy gates;
+9. получить минимум два независимых full-suite success для существенных orchestration/refactor changes;
+10. squash merge с проверкой expected head SHA;
+11. обновить `PLAN.md` и соответствующий current-state блок README.
