@@ -7,6 +7,7 @@ from pathlib import Path
 
 from tutor_assistant.application import recording_health
 from tutor_assistant.ui import app as base_app
+from tutor_assistant.ui.audio_resilient_app import MainWindow as ProductionAudioMainWindow
 
 
 def test_recording_health_policy_is_qt_and_infrastructure_free() -> None:
@@ -49,6 +50,13 @@ def test_base_ui_configures_qt_free_monitor_once() -> None:
     assert "RecordingHealthPolicy(" in init_source
     assert "self.config.recording.device_timeout_seconds" in init_source
     assert "self.config.recording.silence_warning_seconds" in init_source
+
+
+def test_production_start_resets_warning_state_for_each_recording() -> None:
+    source = inspect.getsource(ProductionAudioMainWindow._present_recording_started)
+
+    assert "self.recording_health_monitor.reset()" in source
+    assert "_active_audio_warning" not in source
 
 
 def test_base_ui_does_not_import_recording_health_from_infrastructure() -> None:
