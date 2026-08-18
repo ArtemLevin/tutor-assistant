@@ -18,10 +18,11 @@ from ..recording import (
 )
 from . import app as base_app
 from .recording_finalize_app import MainWindow as RecordingFinalizeMainWindow
+from .shutdown_app import MainWindow as ShutdownMainWindow
 
 
-class MainWindow(RecordingFinalizeMainWindow):
-    """Production window with application-owned recording recovery semantics."""
+class MainWindow(RecordingFinalizeMainWindow, ShutdownMainWindow):
+    """Production window with recording recovery and coordinated shutdown."""
 
     def __init__(self, config_path):
         super().__init__(config_path)
