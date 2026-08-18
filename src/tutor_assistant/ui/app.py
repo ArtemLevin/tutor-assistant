@@ -88,7 +88,6 @@ from ..security.credentials import (
 from ..transcript_editing import select_verified_text
 from .accessibility import sync_text_status
 from .crm import SchedulePage, StudentsPage
-from .localization import select_subject, set_subject_combo, subject_value
 from .latex_monitor_presentation import (
     LatexMonitorPresentation,
     build_latex_monitor_failure_presentation,
@@ -97,6 +96,7 @@ from .latex_monitor_presentation import (
     build_latex_monitor_scanning_presentation,
     build_latex_monitor_toggle_presentation,
 )
+from .localization import select_subject, set_subject_combo, subject_value
 from .normalization import NormalizationReviewDialog
 from .normalization_presentation import (
     NormalizationControlContext,
