@@ -12,6 +12,7 @@ on:
       - agent/wave3-transcription-queue-boundary
     paths:
       - scripts/_migrate_wave3_transcription_queue.py
+      - scripts/_patch_wave3_transcription_migration.py
       - .github/workflows/_wave3_transcription_queue_migration.yml
 
 permissions:
@@ -29,6 +30,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Patch migration transform
+        run: python scripts/_patch_wave3_transcription_migration.py
       - name: Apply migration
         run: python scripts/_migrate_wave3_transcription_queue.py
       - name: Diagnose raw queue references
@@ -39,11 +42,12 @@ jobs:
       - name: Remove migration helpers
         run: |
           rm scripts/_migrate_wave3_transcription_queue.py
+          rm scripts/_patch_wave3_transcription_migration.py
           rm .github/workflows/_wave3_transcription_queue_migration.yml
       - name: Commit migrated production path
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/tutor_assistant/ui/app.py src/tutor_assistant/ui/concurrent_app.py scripts/_migrate_wave3_transcription_queue.py .github/workflows/_wave3_transcription_queue_migration.yml
+          git add src/tutor_assistant/ui/app.py src/tutor_assistant/ui/concurrent_app.py scripts/_migrate_wave3_transcription_queue.py scripts/_patch_wave3_transcription_migration.py .github/workflows/_wave3_transcription_queue_migration.yml
           git commit -m "route transcription queue through application coordinator"
           git push origin HEAD:agent/wave3-transcription-queue-boundary
