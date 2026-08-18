@@ -81,7 +81,7 @@ class MainWindow(ConcurrentMainWindow):
             self._begin_background_shutdown()
             self.transcription_worker.shutdown()
             stopped = self.transcription_worker.wait(decision.transcription_wait_ms or 0)
-            phase = self.shutdown_coordinator.complete_immediate_shutdown(
+            self.shutdown_coordinator.complete_immediate_shutdown(
                 transcription_stopped=stopped
             )
             if stopped:
@@ -90,8 +90,6 @@ class MainWindow(ConcurrentMainWindow):
             else:
                 self._shutdown_requested = True
                 event.ignore()
-            logging_phase = getattr(phase, "value", str(phase))
-            del logging_phase
             return
 
         if decision.action != ShutdownCloseAction.PROMPT:
