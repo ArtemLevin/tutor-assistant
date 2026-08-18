@@ -1,6 +1,12 @@
 name: Wave 3 transcription queue migration
 
 on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
   push:
     branches:
       - agent/wave3-transcription-queue-boundary
@@ -13,6 +19,7 @@ permissions:
 
 jobs:
   migrate:
+    if: github.head_ref == 'agent/wave3-transcription-queue-boundary' || github.ref_name == 'agent/wave3-transcription-queue-boundary'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
