@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import queue
 import sys
 import traceback
 from datetime import date, timedelta
@@ -48,6 +47,9 @@ from ..application import (
     RecordingHealthSample,
     RecordingRuntimeRecorder,
     SystemAudioSourceSnapshot,
+    TranscriptionAudioMissingError,
+    TranscriptionPumpContext,
+    TranscriptionQueueCoordinator,
 )
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
@@ -76,7 +78,6 @@ from ..security.credentials import (
     save_yandex_api_key,
 )
 from ..transcript_editing import select_verified_text
-from ..transcription_queue import QueueStatus, TranscriptionQueue
 from .accessibility import sync_text_status
 from .crm import SchedulePage, StudentsPage
 from .localization import select_subject, set_subject_combo, subject_value
@@ -104,6 +105,8 @@ from .transcript_workspace import (
     NormalizationSettingsDialog,
     TranscriptWorkspace,
 )
+from .transcription_queue_presentation import build_transcription_queue_presentation
+from .transcription_worker import TranscriptionWorker
 
 
 class Worker(QThread):
@@ -120,46 +123,6 @@ class Worker(QThread):
             self.succeeded.emit(self.callable(*self.args))
         except Exception:
             self.failed.emit(traceback.format_exc())
-
-
-class TranscriptionWorker(QThread):
-    succeeded = Signal(str, object)
-    failed = Signal(str, str)
-    became_idle = Signal()
-
-    def __init__(self, pipeline: LessonPipeline) -> None:
-        super().__init__()
-        self.pipeline = pipeline
-        self.pending: queue.Queue[tuple[str, Lesson, Path] | None] = queue.Queue()
-        self.busy = False
-        self._shutdown_sent = False
-
-    def submit(self, job_id: str, lesson: Lesson, audio: Path) -> None:
-        if self._shutdown_sent:
-            raise RuntimeError("Поток транскрибации завершает работу")
-        self.pending.put((job_id, lesson, audio))
-
-    def shutdown(self) -> None:
-        if not self._shutdown_sent:
-            self._shutdown_sent = True
-            self.pending.put(None)
-
-    def run(self) -> None:
-        while True:
-            item = self.pending.get()
-            if item is None:
-                self.pending.task_done()
-                return
-            job_id, lesson, audio = item
-            self.busy = True
-            try:
-                self.succeeded.emit(job_id, self.pipeline.transcribe(lesson, audio))
-            except Exception:
-                self.failed.emit(job_id, traceback.format_exc())
-            finally:
-                self.busy = False
-                self.pending.task_done()
-                self.became_idle.emit()
 
 
 class MainWindow(QMainWindow):
@@ -210,7 +173,10 @@ class MainWindow(QMainWindow):
         self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
         self.workers: list[Worker] = []
-        self.transcription_queue = TranscriptionQueue(self.pipeline.store)
+        self.transcription_queue_coordinator = TranscriptionQueueCoordinator(
+            self.pipeline.store,
+            retry_state_writer=self._persist_transcription_retry_state,
+        )
         self._loading_segments = False
         self._summary_dirty = False
         self._shutdown_requested = False
@@ -518,7 +484,7 @@ class MainWindow(QMainWindow):
 
     def _forget_trashed_lesson(self, lesson_id: str) -> None:
         try:
-            self.transcription_queue.discard(lesson_id)
+            self.transcription_queue_coordinator.discard(lesson_id)
         except ValueError:
             logging.warning("Активное задание не удалено из очереди: %s", lesson_id)
         if self.lesson and self.lesson.lesson_id == lesson_id:
@@ -639,35 +605,19 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             self._load_lesson(lesson)
 
+    def _persist_transcription_retry_state(self, lesson: Lesson) -> None:
+        self.pipeline.save_state(
+            lesson,
+            "status",
+            "error",
+            force_status=True,
+        )
+
     def _restore_background_jobs(self) -> None:
-        restored = 0
-        lessons = {lesson.lesson_id: lesson for lesson in self.pipeline.store.list(limit=1000)}
-        for stored in self.pipeline.store.list_transcription_jobs():
-            lesson = lessons.get(stored.lesson_id)
-            if lesson is None:
-                continue
-            try:
-                status = QueueStatus(stored.status)
-            except ValueError:
-                continue
-            audio = Path(stored.audio_path)
-            if status in {QueueStatus.WAITING, QueueStatus.RUNNING} and not audio.is_file():
-                continue
-            self.transcription_queue.restore(lesson, audio, status, stored.error)
-            restored += 1
-        known = {job.id for job in self.transcription_queue.jobs}
-        for lesson in reversed(tuple(lessons.values())):
-            if lesson.status not in {JobStatus.RECORDED, JobStatus.TRANSCRIBING}:
-                continue
-            if lesson.lesson_id in known:
-                continue
-            if not lesson.source_audio_local:
-                continue
-            audio = Path(lesson.source_audio_local)
-            if not audio.is_file():
-                continue
-            self.transcription_queue.enqueue(lesson, audio)
-            restored += 1
+        restored = self.transcription_queue_coordinator.restore_history(
+            self.pipeline.store.list(limit=1000),
+            self.pipeline.store.list_transcription_jobs(),
+        )
         if restored:
             self._update_transcription_queue_ui()
             self._pump_transcription_queue()
@@ -1576,22 +1526,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(exc))
 
     def _enqueue_transcription(self, lesson: Lesson, audio: Path) -> None:
-        job = self.transcription_queue.enqueue(lesson, audio)
+        job = self.transcription_queue_coordinator.enqueue(lesson, audio)
         logging.info("Транскрибация поставлена в очередь: lesson=%s audio=%s", job.id, audio)
         self._update_transcription_queue_ui()
         self._pump_transcription_queue()
 
     def _pump_transcription_queue(self) -> None:
-        if self._shutdown_requested or self._normalization_cancellation is not None:
-            return
-        job = self.transcription_queue.start_next()
-        if job is None:
+        submission = self.transcription_queue_coordinator.pump(
+            TranscriptionPumpContext(
+                shutdown_requested=self._shutdown_requested,
+                normalization_active=self._normalization_cancellation is not None,
+            )
+        )
+        if submission is None:
             return
         self._update_transcription_queue_ui()
-        self.transcription_worker.submit(job.id, job.lesson, job.audio)
+        self.transcription_worker.submit(
+            submission.job_id,
+            submission.lesson,
+            submission.audio,
+        )
 
     def _background_transcription_ready(self, job_id: str, lesson: Lesson) -> None:
-        self.transcription_queue.complete(job_id, lesson)
+        self.transcription_queue_coordinator.complete(job_id, lesson)
         if (
             self.config.normalization.enabled
             and self.config.normalization.auto_run
@@ -1605,7 +1562,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._pump_auto_normalization)
 
     def _background_transcription_failed(self, job_id: str, details: str) -> None:
-        job = self.transcription_queue.fail(job_id, details)
+        job = self.transcription_queue_coordinator.fail(job_id, details)
         self._update_transcription_queue_ui()
         logging.error("Фоновая транскрибация завершилась с ошибкой: lesson=%s\n%s", job_id, details)
         self._set_status(f"Ошибка транскрибации · {job.lesson.student.full_name}", "error")
@@ -1614,28 +1571,19 @@ class MainWindow(QMainWindow):
     def _update_transcription_queue_ui(self) -> None:
         if not hasattr(self, "processing_list"):
             return
-        labels = {
-            QueueStatus.WAITING: "Ожидает",
-            QueueStatus.RUNNING: "Транскрибируется",
-            QueueStatus.READY: "Готов к проверке",
-            QueueStatus.FAILED: "Ошибка",
-        }
-        self.processing_list.clear()
-        for job in reversed(self.transcription_queue.jobs):
-            item = QListWidgetItem(
-                f"{labels[job.status]}  ·  {job.lesson.student.full_name}  ·  {job.lesson.topic}"
-            )
-            item.setData(256, job.id)
-            if job.error:
-                item.setToolTip(job.error[-1500:])
-            self.processing_list.addItem(item)
-        unfinished = self.transcription_queue.unfinished_count
-        ready = sum(job.status == QueueStatus.READY for job in self.transcription_queue.jobs)
-        self.processing_summary.setText(f"В обработке: {unfinished} · готовы к проверке: {ready}")
-        self.quick_queue_button.setText(f"≡ {unfinished + ready}")
-        self.quick_queue_button.setToolTip(
-            f"В обработке: {unfinished}\nГотовы к проверке: {ready}\nНажмите, чтобы открыть очередь"
+        presentation = build_transcription_queue_presentation(
+            self.transcription_queue_coordinator.snapshot()
         )
+        self.processing_list.clear()
+        for row in presentation.rows:
+            item = QListWidgetItem(row.text)
+            item.setData(256, row.job_id)
+            if row.tooltip:
+                item.setToolTip(row.tooltip)
+            self.processing_list.addItem(item)
+        self.processing_summary.setText(presentation.summary_text)
+        self.quick_queue_button.setText(presentation.badge_text)
+        self.quick_queue_button.setToolTip(presentation.badge_tooltip)
 
     def _show_processing_queue(self) -> None:
         self._set_mode("detailed")
@@ -1650,8 +1598,18 @@ class MainWindow(QMainWindow):
         if item is not None:
             self._open_processing_item(item)
 
+    def _retry_transcription_job(self, job_id: str) -> bool:
+        try:
+            self.transcription_queue_coordinator.retry(job_id)
+        except TranscriptionAudioMissingError as exc:
+            QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {exc.path}")
+            return False
+        self._update_transcription_queue_ui()
+        self._pump_transcription_queue()
+        return True
+
     def _open_processing_item(self, item: QListWidgetItem) -> None:
-        job = self.transcription_queue.get(str(item.data(256)))
+        job = self.transcription_queue_coordinator.get(str(item.data(256)))
         if job is None:
             return
         if (self.recorder and self.recorder.active) or self._recording_stop_started:
@@ -1661,7 +1619,7 @@ class MainWindow(QMainWindow):
                 "Завершите текущую запись перед открытием другого занятия.",
             )
             return
-        if job.status == QueueStatus.FAILED:
+        if job.status.value == "failed":
             answer = QMessageBox.question(
                 self,
                 "Ошибка транскрибации",
@@ -1670,21 +1628,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes,
             )
             if answer == QMessageBox.Yes:
-                if not job.audio.is_file():
-                    QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {job.audio}")
-                    return
-                job.lesson.transition(JobStatus.RECORDED, force=True)
-                self.pipeline.save_state(
-                    job.lesson,
-                    "status",
-                    "error",
-                    force_status=True,
-                )
-                self.transcription_queue.retry(job.id)
-                self._update_transcription_queue_ui()
-                self._pump_transcription_queue()
+                self._retry_transcription_job(job.id)
             return
-        if job.status != QueueStatus.READY:
+        if job.status.value != "ready":
             self._set_status("Транскрипт ещё обрабатывается", "working")
             return
         self._load_lesson(job.lesson)
@@ -2395,7 +2341,10 @@ class MainWindow(QMainWindow):
         if configuration_error:
             QMessageBox.warning(self, "LLM-фильтрация", configuration_error)
             return
-        if provider == "ollama" and (self.transcription_worker.busy or self.transcription_queue.active):
+        if provider == "ollama" and (
+            self.transcription_worker.busy
+            or self.transcription_queue_coordinator.active
+        ):
             QMessageBox.warning(
                 self,
                 "LLM-фильтрация",
@@ -2482,7 +2431,10 @@ class MainWindow(QMainWindow):
             or self._normalization_cancellation is not None
             or (
                 self.config.normalization.provider == "ollama"
-                and (self.transcription_worker.busy or self.transcription_queue.active is not None)
+                and (
+                    self.transcription_worker.busy
+                    or self.transcription_queue_coordinator.active is not None
+                )
             )
             or not self._pending_auto_normalizations
         ):
