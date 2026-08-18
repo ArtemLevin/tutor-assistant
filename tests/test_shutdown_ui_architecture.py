@@ -3,10 +3,12 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from tutor_assistant.ui import concurrent_app
-from tutor_assistant.ui import recording_recovery_app
-from tutor_assistant.ui import shutdown_app
-from tutor_assistant.ui import transcript_publication_app
+from tutor_assistant.ui import (
+    concurrent_app,
+    recording_recovery_app,
+    shutdown_app,
+    transcript_publication_app,
+)
 
 
 def _source(path: str) -> str:
