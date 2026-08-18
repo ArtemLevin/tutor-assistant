@@ -1,0 +1,46 @@
+name: one-shot README refresh
+
+on:
+  push:
+    branches:
+      - docs/update-readme-plan-wave2
+    paths:
+      - scripts/_refresh_readme_wave2.py
+      - .github/workflows/_refresh_readme_wave2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/update-readme-plan-wave2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Refresh README
+        run: python scripts/_refresh_readme_wave2.py
+      - name: Validate docs
+        shell: bash
+        run: |
+          grep -F 'Wave 2 / Slice 10' README.md
+          grep -F 'RefreshAudioDevicesUseCase' README.md
+          grep -F 'Recording Runtime Health / Warning Policy extraction' PLAN.md
+          grep -F 'tutor-assistant.ui.recording_recovery_app:main' README.md
+      - name: Remove one-shot files and commit
+        shell: bash
+        run: |
+          rm scripts/_refresh_readme_wave2.py
+          rm .github/workflows/_refresh_readme_wave2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md PLAN.md scripts/_refresh_readme_wave2.py .github/workflows/_refresh_readme_wave2.yml
+          if git diff --cached --quiet; then
+            echo 'No documentation changes to commit'
+            exit 1
+          fi
+          git commit -m 'docs: synchronize README with Wave 2 architecture'
+          git push origin HEAD:docs/update-readme-plan-wave2
