@@ -5,7 +5,7 @@ on:
     branches:
       - agent/wave3-normalization-orchestration
     paths:
-      - scripts/_migrate_wave3_normalization.py
+      - scripts/_trigger_wave3_normalization.txt
 
 permissions:
   contents: write
@@ -28,11 +28,12 @@ jobs:
       - name: Remove migration helpers
         run: |
           rm scripts/_migrate_wave3_normalization.py
+          rm scripts/_trigger_wave3_normalization.txt
           rm .github/workflows/_wave3_normalization_migration.yml
       - name: Commit migrated production path
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/tutor_assistant/ui/app.py scripts/_migrate_wave3_normalization.py .github/workflows/_wave3_normalization_migration.yml
+          git add src/tutor_assistant/ui/app.py scripts/_migrate_wave3_normalization.py scripts/_trigger_wave3_normalization.txt .github/workflows/_wave3_normalization_migration.yml
           git commit -m "route normalization through application coordinator"
           git push origin HEAD:agent/wave3-normalization-orchestration
