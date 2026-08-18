@@ -12,6 +12,13 @@ from .audio_devices import (
     SystemAudioSourceSnapshot,
 )
 from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
+from .latex_monitor import (
+    LatexMonitorCoordinator,
+    LatexMonitorLifecycleState,
+    LatexMonitorScanAction,
+    LatexMonitorScanDecision,
+    LatexMonitorScanTrigger,
+)
 from .normalization import (
     NormalizationAfterWorkerAction,
     NormalizationAutoAction,
@@ -71,6 +78,11 @@ __all__ = [
     "RefreshAudioDevicesUseCase",
     "SystemAudioSourceSnapshot",
     "AudioPreflightUseCase",
+    "LatexMonitorCoordinator",
+    "LatexMonitorLifecycleState",
+    "LatexMonitorScanAction",
+    "LatexMonitorScanDecision",
+    "LatexMonitorScanTrigger",
     "NormalizationAfterWorkerAction",
     "NormalizationAutoAction",
     "NormalizationAutoContext",
