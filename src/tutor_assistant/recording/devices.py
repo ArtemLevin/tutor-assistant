@@ -94,6 +94,7 @@ def resolve_input_device(
         ),
     )
 
+
 def probe_input_device(device: AudioDevice, *, channels: int = 1) -> None:
     """Open and close the live endpoint so stale Windows/PortAudio IDs fail before lesson creation."""
 
