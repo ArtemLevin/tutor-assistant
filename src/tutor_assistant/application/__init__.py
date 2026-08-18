@@ -12,6 +12,18 @@ from .audio_devices import (
     SystemAudioSourceSnapshot,
 )
 from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
+from .normalization import (
+    NormalizationAfterWorkerAction,
+    NormalizationAutoAction,
+    NormalizationAutoContext,
+    NormalizationAutoDecision,
+    NormalizationCoordinator,
+    NormalizationLifecycleState,
+    NormalizationManualStartContext,
+    NormalizationProgressSnapshot,
+    NormalizationStartBlock,
+    NormalizationStartDecision,
+)
 from .recording import (
     RecordingHealthSnapshot,
     RecordingLevelsSnapshot,
@@ -59,6 +71,16 @@ __all__ = [
     "RefreshAudioDevicesUseCase",
     "SystemAudioSourceSnapshot",
     "AudioPreflightUseCase",
+    "NormalizationAfterWorkerAction",
+    "NormalizationAutoAction",
+    "NormalizationAutoContext",
+    "NormalizationAutoDecision",
+    "NormalizationCoordinator",
+    "NormalizationLifecycleState",
+    "NormalizationManualStartContext",
+    "NormalizationProgressSnapshot",
+    "NormalizationStartBlock",
+    "NormalizationStartDecision",
     "RecordingHealthAction",
     "RecordingHealthAssessment",
     "RecordingHealthMonitor",
