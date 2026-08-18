@@ -14,6 +14,16 @@ from tutor_assistant.application.audio_devices import (
 )
 
 
+def test_neutral_device_selection_rule_has_no_application_or_hardware_dependency() -> None:
+    source = Path("src/tutor_assistant/device_selection.py").read_text(encoding="utf-8")
+
+    assert "application" not in source
+    assert "recording" not in source
+    assert "PySide6" not in source
+    assert "sounddevice" not in source
+    assert "soundcard" not in source
+
+
 def test_application_device_boundary_is_qt_and_hardware_api_independent() -> None:
     source = Path("src/tutor_assistant/application/audio_devices.py").read_text(
         encoding="utf-8"
@@ -24,6 +34,7 @@ def test_application_device_boundary_is_qt_and_hardware_api_independent() -> Non
     assert "soundcard" not in source
     assert "from ..recording" not in source
     assert "import tutor_assistant.recording" not in source
+    assert "from ..device_selection" in source
 
 
 def test_device_boundary_is_exported_by_application_package() -> None:
@@ -56,6 +67,7 @@ def test_production_audio_adapter_owns_discovery_refresh_and_probe() -> None:
     assert "list_system_audio_sources" in source
     assert "probe_input_device" in source
     assert "self.audio_devices_use_case.refresh(" in source
+    assert "self.audio_devices_use_case.probe_microphone(" in source
     assert "resolve_input_device(" not in source
     assert "probe_input_device(microphone" not in source
 
@@ -69,8 +81,8 @@ def test_quick_start_depends_on_application_snapshot_contracts() -> None:
     assert "from .recording" not in source
 
 
-def test_recording_device_resolver_delegates_to_application_identity_rule() -> None:
+def test_recording_device_resolver_uses_neutral_identity_rule() -> None:
     source = Path("src/tutor_assistant/recording/devices.py").read_text(encoding="utf-8")
 
-    assert "resolve_input_device_identity" in source
+    assert "from ..device_selection import resolve_input_device_identity" in source
     assert "return cast(" in source
