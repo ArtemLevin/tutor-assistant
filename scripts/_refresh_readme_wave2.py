@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# One-shot documentation migration; removed by its workflow after success.
 path = Path("README.md")
 text = path.read_text(encoding="utf-8")
 
