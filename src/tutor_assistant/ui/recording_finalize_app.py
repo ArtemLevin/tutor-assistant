@@ -243,8 +243,7 @@ class MainWindow(AudioResilientMainWindow):
 
 
 def main() -> None:
-    base_app.MainWindow = MainWindow
-    base_app.main()
+    base_app.main(MainWindow)
 
 
 if __name__ == "__main__":
