@@ -70,3 +70,10 @@ def test_retry_orchestration_is_shared_and_not_duplicated_in_concurrent_layer() 
     assert "pipeline.save_state(" not in concurrent_open
     assert "transcription_queue.retry(" not in concurrent_open
     assert "_retry_transcription_job(job.id)" in concurrent_open
+
+
+def test_normalization_busy_gates_read_queue_activity_through_coordinator() -> None:
+    source = _source("src/tutor_assistant/ui/app.py")
+
+    assert "self.transcription_queue.active" not in source
+    assert source.count("self.transcription_queue_coordinator.active") == 2
