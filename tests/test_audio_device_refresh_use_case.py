@@ -57,7 +57,7 @@ def test_identity_resolution_survives_portaudio_reindex_and_prefers_wasapi() -> 
     assert resolved is devices[1]
 
 
-def test_refresh_discovers_resolves_and_probes_one_coherent_inventory() -> None:
+def test_refresh_discovers_and_resolves_one_coherent_inventory_before_probe() -> None:
     events: list[object] = []
     devices = [FakeInputDevice(41, "Microphone FIFINE")]
     sources = [
@@ -86,8 +86,6 @@ def test_refresh_discovers_resolves_and_probes_one_coherent_inventory() -> None:
             system_backend="soundcard",
         ),
         target_sample_rate=48_000,
-        channels=2,
-        probe=True,
     )
 
     assert inventory.input_devices == tuple(devices)
@@ -97,8 +95,11 @@ def test_refresh_discovers_resolves_and_probes_one_coherent_inventory() -> None:
     assert events == [
         "inputs",
         ("sources", devices, 48_000),
-        ("probe", devices[0], 2),
     ]
+
+    use_case.probe_microphone(devices[0], channels=2)
+
+    assert events[-1] == ("probe", devices[0], 2)
 
 
 def test_refresh_preserves_legacy_loopback_fallback() -> None:
@@ -150,7 +151,7 @@ def test_refresh_uses_first_system_source_only_for_unconfigured_identity() -> No
     assert disconnected.system_source is None
 
 
-def test_refresh_does_not_probe_when_saved_microphone_is_missing() -> None:
+def test_refresh_has_no_probe_side_effect_when_saved_microphone_is_missing() -> None:
     probe_calls = 0
 
     def probe(_device, *, channels: int = 1) -> None:
@@ -170,7 +171,6 @@ def test_refresh_does_not_probe_when_saved_microphone_is_missing() -> None:
             microphone_host_api="Windows WASAPI",
         ),
         target_sample_rate=48_000,
-        probe=True,
     )
 
     assert inventory.microphone is None
