@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import cast
 
-from ..application.audio_devices import resolve_input_device_identity
+from ..device_selection import resolve_input_device_identity
 
 
 @dataclass(frozen=True)
