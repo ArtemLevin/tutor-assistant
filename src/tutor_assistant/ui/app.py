@@ -42,6 +42,10 @@ from PySide6.QtWidgets import (
 
 from ..application import (
     AudioInputDeviceSnapshot,
+    RecordingHealthAction,
+    RecordingHealthMonitor,
+    RecordingHealthPolicy,
+    RecordingHealthSample,
     RecordingRuntimeRecorder,
     SystemAudioSourceSnapshot,
 )
@@ -184,11 +188,16 @@ class MainWindow(QMainWindow):
         self.lesson: Lesson | None = None
         self.recording_lesson: Lesson | None = None
         self.recorder: RecordingRuntimeRecorder | None = None
+        self.recording_health_monitor = RecordingHealthMonitor(
+            RecordingHealthPolicy(
+                device_timeout_seconds=self.config.recording.device_timeout_seconds,
+                silence_warning_seconds=self.config.recording.silence_warning_seconds,
+            )
+        )
         self._recording_lease = None
         self.preflight_passed = False
         self.preflight_result = None
         self._recording_stop_started = False
-        self._active_audio_warning = ""
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
         self._quick_countdown_remaining = 0
@@ -3027,42 +3036,36 @@ class MainWindow(QMainWindow):
         minutes, seconds = divmod(remainder, 60)
         self.duration.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
         if self.recorder and self.recorder.active:
-            levels = self.recorder.levels
-            health = self.recorder.health
-            self.mic_level.setValue(round(levels.microphone * 100))
-            self.system_level.setValue(round(levels.system * 100))
-            dropped = health.microphone_dropped_blocks + health.system_dropped_blocks
-            self.recording_health_label.setText(
-                f"Очереди: {health.microphone_queue_percent}% / {health.system_queue_percent}%; "
-                f"потеряно блоков: {dropped}; задержка writer: {health.max_writer_latency_ms:.1f} мс; "
-                f"тишина: {health.microphone_silence_seconds:.0f} / "
-                f"{health.system_silence_seconds:.0f} с; переподключения: {health.reconnect_attempts}"
+            assessment = self.recording_health_monitor.assess(
+                RecordingHealthSample.from_runtime(
+                    elapsed_seconds=self.recording_seconds,
+                    levels=self.recorder.levels,
+                    health=self.recorder.health,
+                )
             )
-            timeout = self.config.recording.device_timeout_seconds
-            if health.stream_errors:
-                self._stop_recording_async("Ошибка аудиоустройства: " + "; ".join(health.stream_errors))
+            sample = assessment.sample
+            self.mic_level.setValue(assessment.microphone_level_percent)
+            self.system_level.setValue(assessment.system_level_percent)
+            self.recording_health_label.setText(
+                f"Очереди: {sample.microphone_queue_percent}% / {sample.system_queue_percent}%; "
+                f"потеряно блоков: {assessment.dropped_blocks}; "
+                f"задержка writer: {sample.max_writer_latency_ms:.1f} мс; "
+                f"тишина: {sample.microphone_silence_seconds:.0f} / "
+                f"{sample.system_silence_seconds:.0f} с; "
+                f"переподключения: {sample.reconnect_attempts}"
+            )
+            if assessment.action == RecordingHealthAction.STOP:
+                self._stop_recording_async(
+                    assessment.stop_reason or "Контроль записи запросил безопасную остановку"
+                )
                 return
-            if self.recording_seconds > timeout and (
-                health.microphone_callback_age_seconds > timeout
-                or health.system_callback_age_seconds > timeout
-            ):
-                self._stop_recording_async("Потерян поток аудиоустройства; сохранены доступные чанки записи")
-                return
-            silence_limit = self.config.recording.silence_warning_seconds
-            warnings = []
-            if health.microphone_silence_seconds >= silence_limit:
-                warnings.append(f"микрофон молчит {health.microphone_silence_seconds:.0f} с")
-            if health.system_silence_seconds >= silence_limit:
-                warnings.append(f"звук ученика отсутствует {health.system_silence_seconds:.0f} с")
-            if dropped:
-                warnings.append(f"потеряно блоков: {dropped}")
-            warning = "; ".join(warnings)
-            if warning and warning != self._active_audio_warning:
-                self._active_audio_warning = warning
-                self._set_status("Проверьте аудио · " + warning, "warning")
-                logging.warning("Контроль записи: %s", warning)
-            elif not warning and self._active_audio_warning:
-                self._active_audio_warning = ""
+            if assessment.warning_changed and assessment.warnings:
+                self._set_status(
+                    "Проверьте аудио · " + assessment.warning_text,
+                    "warning",
+                )
+                logging.warning("Контроль записи: %s", assessment.warning_text)
+            elif assessment.recovered_from_warning:
                 self._set_status("Идёт запись", "working")
 
 

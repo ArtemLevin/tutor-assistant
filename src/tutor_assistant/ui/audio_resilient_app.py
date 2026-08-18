@@ -94,7 +94,7 @@ class MainWindow(ProductionMainWindow):
         )
         self.recording_seconds = 0
         self._recording_stop_started = False
-        self._active_audio_warning = ""
+        self.recording_health_monitor.reset()
         self.timer.start(1000)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
