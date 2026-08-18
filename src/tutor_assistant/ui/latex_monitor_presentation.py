@@ -9,7 +9,7 @@ from typing import Iterable
 class LatexMonitorPresentation:
     monitor_status: str
     app_status: str
-    tone: str = "neutral"
+    tone: str = "success"
     log_text: str | None = None
     preview_paths: tuple[Path, ...] = ()
     replace_previews: bool = False
