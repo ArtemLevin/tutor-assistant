@@ -92,6 +92,12 @@ from .normalization_provider import (
 from .normalization_worker import NormalizationWorker
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
+from .recording_presentation import (
+    RecordingPanelPhase,
+    RecordingTickPresentation,
+    build_recording_tick_presentation,
+    recording_panel_visual,
+)
 from .student_content import StudentContentPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 from .transcript_workspace import (
@@ -1127,8 +1133,10 @@ class MainWindow(QMainWindow):
         recording_header = QHBoxLayout()
         timer_block = QVBoxLayout()
         timer_block.setSpacing(1)
-        self.recording_state_label = QLabel("ГОТОВО К ЗАПИСИ")
+        ready_visual = recording_panel_visual(RecordingPanelPhase.READY)
+        self.recording_state_label = QLabel(ready_visual.text)
         self.recording_state_label.setObjectName("recordingState")
+        self.recording_state_label.setProperty("active", ready_visual.active)
         self.duration = QLabel("00:00:00")
         self.duration.setObjectName("timerDisplay")
         timer_block.addWidget(self.recording_state_label)
@@ -3030,11 +3038,31 @@ class MainWindow(QMainWindow):
         self._shutdown_ready = True
         QTimer.singleShot(0, self.close)
 
+    def _apply_recording_tick_presentation(
+        self,
+        presentation: RecordingTickPresentation,
+    ) -> None:
+        self.duration.setText(presentation.duration_text)
+        if presentation.microphone_level_percent is not None:
+            self.mic_level.setValue(presentation.microphone_level_percent)
+        if presentation.system_level_percent is not None:
+            self.system_level.setValue(presentation.system_level_percent)
+        if presentation.health_text is not None:
+            self.recording_health_label.setText(presentation.health_text)
+        if presentation.status_message is not None and presentation.status_tone is not None:
+            self._set_status(presentation.status_message, presentation.status_tone)
+        if presentation.warning_log is not None:
+            logging.warning("Контроль записи: %s", presentation.warning_log)
+
+    def _set_recording_panel_phase(self, phase: RecordingPanelPhase) -> None:
+        visual = recording_panel_visual(phase)
+        self.recording_state_label.setText(visual.text)
+        self.recording_state_label.setProperty("active", visual.active)
+        refresh_style(self.recording_state_label)
+
     def _tick(self) -> None:
         self.recording_seconds += 1
-        hours, remainder = divmod(self.recording_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        self.duration.setText(f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        assessment = None
         if self.recorder and self.recorder.active:
             assessment = self.recording_health_monitor.assess(
                 RecordingHealthSample.from_runtime(
@@ -3043,30 +3071,17 @@ class MainWindow(QMainWindow):
                     health=self.recorder.health,
                 )
             )
-            sample = assessment.sample
-            self.mic_level.setValue(assessment.microphone_level_percent)
-            self.system_level.setValue(assessment.system_level_percent)
-            self.recording_health_label.setText(
-                f"Очереди: {sample.microphone_queue_percent}% / {sample.system_queue_percent}%; "
-                f"потеряно блоков: {assessment.dropped_blocks}; "
-                f"задержка writer: {sample.max_writer_latency_ms:.1f} мс; "
-                f"тишина: {sample.microphone_silence_seconds:.0f} / "
-                f"{sample.system_silence_seconds:.0f} с; "
-                f"переподключения: {sample.reconnect_attempts}"
+        presentation = build_recording_tick_presentation(
+            self.recording_seconds,
+            assessment,
+        )
+        self._apply_recording_tick_presentation(presentation)
+        if assessment is not None and assessment.action == RecordingHealthAction.STOP:
+            self._stop_recording_async(
+                assessment.stop_reason or "Контроль записи запросил безопасную остановку"
             )
-            if assessment.action == RecordingHealthAction.STOP:
-                self._stop_recording_async(
-                    assessment.stop_reason or "Контроль записи запросил безопасную остановку"
-                )
-                return
-            if assessment.warning_changed and assessment.warnings:
-                self._set_status(
-                    "Проверьте аудио · " + assessment.warning_text,
-                    "warning",
-                )
-                logging.warning("Контроль записи: %s", assessment.warning_text)
-            elif assessment.recovered_from_warning:
-                self._set_status("Идёт запись", "working")
+            return
+
 
 
 def main() -> None:
