@@ -27,8 +27,6 @@ def test_base_tick_consumes_health_assessment_instead_of_interpreting_raw_health
     assert "self.recording_health_monitor.assess" in tick
     assert "RecordingHealthAction.STOP" in tick
     assert "assessment.stop_reason" in tick
-    assert "assessment.warning_changed" in tick
-    assert "assessment.recovered_from_warning" in tick
 
     forbidden = (
         "health.stream_errors",
@@ -38,6 +36,9 @@ def test_base_tick_consumes_health_assessment_instead_of_interpreting_raw_health
         "silence_warning_seconds",
         "microphone_dropped_blocks",
         "system_dropped_blocks",
+        "assessment.warning_changed",
+        "assessment.recovered_from_warning",
+        "assessment.warning_text",
     )
     for token in forbidden:
         assert token not in tick
