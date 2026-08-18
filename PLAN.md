@@ -216,7 +216,6 @@ tutor-assistant-gui = tutor_assistant.ui.recording_recovery_app:main
 Каждый этап следует тому же правилу: сначала выделяется реальная policy/orchestration в Qt-free boundary, затем production path переключается на неё, после чего dead legacy-код физически удаляется.
 
 ## 7. Инварианты разработки
-## 6. Инварианты разработки
 
 При дальнейших изменениях сохранять:
 
