@@ -31,6 +31,11 @@ jobs:
           python-version: "3.13"
       - name: Apply migration
         run: python scripts/_migrate_wave3_transcription_queue.py
+      - name: Diagnose raw queue references
+        if: failure()
+        run: |
+          grep -n "self\.transcription_queue\." src/tutor_assistant/ui/app.py || true
+          grep -n "self\.transcription_queue\." src/tutor_assistant/ui/concurrent_app.py || true
       - name: Remove migration helpers
         run: |
           rm scripts/_migrate_wave3_transcription_queue.py
