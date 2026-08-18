@@ -60,8 +60,9 @@ recording, persistence and external infrastructure
 - explicit production composition: общий bootstrap получает `window_type`, а production adapters больше не меняют `base_app.MainWindow` через module-global rebinding; responsibility-bearing MRO закреплён architecture tests.
 - Qt-free `TranscriptionQueueCoordinator` для restore/pump/retry/complete/fail decisions; queue UI получает typed snapshot, а `TranscriptionWorker` вынесен из `ui/app.py` в отдельный Qt transport adapter.
 - Qt-free `NormalizationCoordinator` для manual/auto scheduling, lifecycle, cancellation/progress и resume decisions; `normalization_presentation` централизует actions/process/result state, а explicit Yandex consent остаётся в UI adapter.
+- Qt-free `LatexMonitorCoordinator` для enable/disable, manual/periodic scan eligibility и single-flight state; `latex_monitor_presentation` централизует no-update/success/failure UI state, а `RemoteLatexService` остаётся infrastructure concern.
 
-**Wave 2 завершён, Wave 3 / Slices 13–14 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 15: LaTeX monitor UI orchestration extraction**. Цель — отделить polling/single-flight/outcome state удалённого LaTeX monitor от base Qt window, сохранив `RemoteLatexService`, pipeline persistence и remote branch semantics. Детали описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён, Wave 3 / Slices 13–15 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 16: Application shutdown coordinator**. Цель — вынести решение о безопасном закрытии, drain barriers и ready transition из base Qt window, сохранив recording finalize safety, normalization cancellation и persisted transcription queue semantics. Детали описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -476,4 +477,4 @@ CI включает Windows matrix для Python 3.11–3.14, privacy history ga
 
 **[`PLAN.md`](PLAN.md)**
 
-На текущем этапе Wave 2 и Wave 3 / Slices 13–14 завершены. Приоритет Wave 3 — декомпозиция LaTeX monitor orchestration, затем shutdown coordination и parallel-review synchronization.
+На текущем этапе Wave 2 и Wave 3 / Slices 13–15 завершены. Приоритет Wave 3 — application shutdown coordination, затем teacher cockpit / parallel-review synchronization.
