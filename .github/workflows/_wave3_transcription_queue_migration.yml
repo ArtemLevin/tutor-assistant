@@ -1,0 +1,37 @@
+name: Wave 3 transcription queue migration
+
+on:
+  push:
+    branches:
+      - agent/wave3-transcription-queue-boundary
+    paths:
+      - scripts/_migrate_wave3_transcription_queue.py
+      - .github/workflows/_wave3_transcription_queue_migration.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/wave3-transcription-queue-boundary
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Apply migration
+        run: python scripts/_migrate_wave3_transcription_queue.py
+      - name: Remove migration helpers
+        run: |
+          rm scripts/_migrate_wave3_transcription_queue.py
+          rm .github/workflows/_wave3_transcription_queue_migration.yml
+      - name: Commit migrated production path
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/tutor_assistant/ui/app.py src/tutor_assistant/ui/concurrent_app.py scripts/_migrate_wave3_transcription_queue.py .github/workflows/_wave3_transcription_queue_migration.yml
+          git commit -m "route transcription queue through application coordinator"
+          git push origin HEAD:agent/wave3-transcription-queue-boundary
