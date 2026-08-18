@@ -72,3 +72,13 @@ def test_enable_trigger_requires_enabled_monitor() -> None:
 
     assert blocked.action == LatexMonitorScanAction.SKIP_DISABLED
     assert started.action == LatexMonitorScanAction.START
+
+
+def test_finish_scan_is_idempotent_and_preserves_enabled_state() -> None:
+    coordinator = LatexMonitorCoordinator(enabled=True)
+    coordinator.request_scan(LatexMonitorScanTrigger.PERIODIC)
+
+    assert coordinator.finish_scan() == LatexMonitorLifecycleState.IDLE
+    assert coordinator.finish_scan() == LatexMonitorLifecycleState.IDLE
+    assert coordinator.enabled
+    assert not coordinator.scan_in_flight
