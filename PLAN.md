@@ -55,16 +55,17 @@ recording, persistence and external infrastructure
 7. **Legacy Audio Preflight cleanup** — удалены dead capture/JSON/sleep callbacks из base UI.
 8. **Recording runtime port** — concrete `DualRecorder` исключён из base UI; monitoring работает через `RecordingRuntimeRecorder`, `RecordingLevelsSnapshot` и `RecordingHealthSnapshot`.
 9. **Audio device discovery boundary** — hardware discovery/resolution/probe вынесены за base UI; production adapter использует `RefreshAudioDevicesUseCase`, а stable microphone identity централизована в нейтральном resolver.
+10. **Recording runtime health policy** — интерпретация stream errors, callback timeout, silence и dropped blocks вынесена из `_tick()` в Qt-free `RecordingHealthMonitor`; UI получает typed assessment и только отображает состояние/исполняет terminal stop action.
 
-На момент завершения Slice 9 production path проверен Windows CI на Python 3.11–3.14; для merge были получены независимые полные успешные regression runs, privacy gate и scaling matrix 100/125/150/200%.
+На момент завершения Slice 10 production path прошёл lint/compile/import/contracts на Windows matrix Python 3.11–3.14; перед merge получены независимые полные успешные regression runs на Python 3.12 и 3.14, а privacy gate и scaling matrix 100/125/150/200% были зелёными.
 
-## 3. Следующий шаг — Wave 2 / Slice 10
+## 3. Завершённый шаг — Wave 2 / Slice 10
 
 ### Recording Runtime Health / Warning Policy extraction
 
 **Цель:** убрать из `ui/app.py` политику интерпретации runtime health recorder-а. Qt должен только отображать уже вычисленное состояние и инициировать stop-команду при terminal assessment.
 
-Сейчас `_tick()` одновременно:
+До Slice 10 `_tick()` одновременно:
 
 - обновляет duration;
 - читает `recorder.levels` и `recorder.health`;
@@ -76,9 +77,9 @@ recording, persistence and external infrastructure
 - собирает и дедуплицирует warning text;
 - решает, когда требуется аварийно завершить запись.
 
-Эта policy должна стать Qt-free и детерминированно тестироваться отдельно от GUI.
+Эта policy теперь Qt-free и детерминированно тестируется отдельно от GUI через `RecordingHealthMonitor`, `RecordingHealthPolicy`, `RecordingHealthSample` и `RecordingHealthAssessment`.
 
-### Предлагаемая архитектура
+### Реализованная архитектура
 
 Новый модуль:
 
@@ -86,7 +87,7 @@ recording, persistence and external infrastructure
 src/tutor_assistant/application/recording_health.py
 ```
 
-Предлагаемые типы:
+Реализованные типы:
 
 ```text
 RecordingHealthPolicy
@@ -167,9 +168,9 @@ Slice 10 считается завершённым, когда:
 - privacy history gate и accessibility scaling остаются зелёными;
 - PR squash-merged в `main`.
 
-## 4. Последующие шаги
+## 4. Следующий шаг и последующие slices
 
-### Wave 2 / Slice 11 — Recording presentation extraction
+### Следующий шаг — Wave 2 / Slice 11 — Recording presentation extraction
 
 После health policy можно вынести из base UI оставшееся состояние presentation recording panel:
 

@@ -43,7 +43,7 @@ domain / pipeline services
 recording, persistence and external infrastructure
 ```
 
-К текущему состоянию завершены P0-стабилизация и **Wave 2 / Slices 1–9**:
+К текущему состоянию завершены P0-стабилизация и **Wave 2 / Slices 1–10**:
 
 - Qt-free `RecordingWorkflowController`;
 - `StartRecordingUseCase` для start transaction и rollback;
@@ -54,9 +54,10 @@ recording, persistence and external infrastructure
 - `RecordingRuntimeRecorder`, `RecordingLevelsSnapshot` и `RecordingHealthSnapshot` вместо concrete `DualRecorder` в base UI;
 - `RefreshAudioDevicesUseCase` для discovery/resolution/hot-plug;
 - stable microphone identity, переживающая PortAudio reindex и предпочитающая WASAPI;
-- отсутствие direct `sounddevice` / `soundcard` discovery в base `ui/app.py`.
+- отсутствие direct `sounddevice` / `soundcard` discovery в base `ui/app.py`;
+- Qt-free `RecordingHealthMonitor` и typed health assessment для stream errors, callback timeout, silence и dropped-block policy.
 
-Следующий архитектурный шаг — **Wave 2 / Slice 10: Recording Runtime Health / Warning Policy extraction**. Детали, критерии готовности и дальнейший порядок работ описаны в [`PLAN.md`](PLAN.md).
+Следующий архитектурный шаг — **Wave 2 / Slice 11: Recording presentation extraction**. Теперь runtime health policy уже application-owned; следующий slice должен вынести из base UI оставшееся форматирование и visual state recording panel. Детали и критерии готовности описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -471,4 +472,4 @@ CI включает Windows matrix для Python 3.11–3.14, privacy history ga
 
 **[`PLAN.md`](PLAN.md)**
 
-На текущем этапе приоритет — завершить Wave 2, вынеся runtime health/warning policy и оставшийся recording presentation state из god-object `ui/app.py`, а затем перейти к декомпозиции transcription, normalization, LaTeX и shutdown orchestration.
+На текущем этапе приоритет — завершить Wave 2, вынеся оставшийся recording presentation state из god-object `ui/app.py`, затем очистить production composition и перейти к декомпозиции transcription, normalization, LaTeX и shutdown orchestration.
