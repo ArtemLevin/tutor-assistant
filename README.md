@@ -61,8 +61,9 @@ recording, persistence and external infrastructure
 - Qt-free `TranscriptionQueueCoordinator` для restore/pump/retry/complete/fail decisions; queue UI получает typed snapshot, а `TranscriptionWorker` вынесен из `ui/app.py` в отдельный Qt transport adapter.
 - Qt-free `NormalizationCoordinator` для manual/auto scheduling, lifecycle, cancellation/progress и resume decisions; `normalization_presentation` централизует actions/process/result state, а explicit Yandex consent остаётся в UI adapter.
 - Qt-free `LatexMonitorCoordinator` для enable/disable, manual/periodic scan eligibility и single-flight state; `latex_monitor_presentation` централизует no-update/success/failure UI state, а `RemoteLatexService` остаётся infrastructure concern.
+- Qt-free `ShutdownCoordinator` для `IDLE/DRAINING/READY`, prompt/immediate-close decisions и drain barriers; `shutdown_app` вставлен в production MRO между publication/cockpit и concurrent layers, сохраняя recording finalize, normalization cancellation, background-task shutdown и persisted transcription queue semantics.
 
-**Wave 2 завершён, Wave 3 / Slices 13–15 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 16: Application shutdown coordinator**. Цель — вынести решение о безопасном закрытии, drain barriers и ready transition из base Qt window, сохранив recording finalize safety, normalization cancellation и persisted transcription queue semantics. Детали описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён, Wave 3 / Slices 13–16 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 17: Teacher cockpit / parallel-review synchronization**. Цель — сделать recording context, review context и cockpit snapshot согласованными через typed state/data boundary и event-driven refresh, сохранив 30-секундный timer только как fallback. Детали описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -477,4 +478,4 @@ CI включает Windows matrix для Python 3.11–3.14, privacy history ga
 
 **[`PLAN.md`](PLAN.md)**
 
-На текущем этапе Wave 2 и Wave 3 / Slices 13–15 завершены. Приоритет Wave 3 — application shutdown coordination, затем teacher cockpit / parallel-review synchronization.
+На текущем этапе Wave 2 и Wave 3 / Slices 13–16 завершены. Приоритет Wave 3 — teacher cockpit / parallel-review synchronization через typed workspace context и event-driven refresh.
