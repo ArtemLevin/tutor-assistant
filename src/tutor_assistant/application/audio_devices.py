@@ -4,15 +4,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from ..device_selection import AudioInputSelectionCandidate, resolve_input_device_identity
 
-class AudioInputDeviceSnapshot(Protocol):
-    """Read-only microphone identity exposed across the application boundary."""
 
-    @property
-    def index(self) -> int: ...
-
-    @property
-    def name(self) -> str: ...
+class AudioInputDeviceSnapshot(AudioInputSelectionCandidate, Protocol):
+    """Read-only microphone snapshot exposed across the application boundary."""
 
     @property
     def max_input_channels(self) -> int: ...
@@ -20,15 +16,9 @@ class AudioInputDeviceSnapshot(Protocol):
     @property
     def default_sample_rate(self) -> int: ...
 
-    @property
-    def host_api(self) -> str: ...
-
-    @property
-    def is_wasapi(self) -> bool: ...
-
 
 class SystemAudioSourceSnapshot(Protocol):
-    """Read-only system-audio identity exposed across the application boundary."""
+    """Read-only system-audio snapshot exposed across the application boundary."""
 
     @property
     def device_id(self) -> str: ...
@@ -101,55 +91,6 @@ class AudioDeviceInventory:
     system_source: SystemAudioSourceSnapshot | None
 
 
-def resolve_input_device_identity(
-    devices: Sequence[AudioInputDeviceSnapshot],
-    *,
-    device_index: int | None = None,
-    device_name: str | None = None,
-    host_api: str | None = None,
-    prefer_wasapi: bool = True,
-) -> AudioInputDeviceSnapshot | None:
-    """Resolve a microphone by stable identity rather than a transient PortAudio index."""
-
-    if not devices:
-        return None
-
-    normalized_name = (device_name or "").strip().casefold()
-    normalized_host = (host_api or "").strip().casefold()
-
-    if normalized_name:
-        named = [device for device in devices if device.name.strip().casefold() == normalized_name]
-        if not named:
-            return None
-        exact_host = [
-            device for device in named if device.host_api.strip().casefold() == normalized_host
-        ]
-        if prefer_wasapi:
-            wasapi = [device for device in named if device.is_wasapi]
-            if wasapi and (not exact_host or not exact_host[0].is_wasapi):
-                return min(wasapi, key=lambda device: device.index)
-        if exact_host:
-            return min(exact_host, key=lambda device: device.index)
-        wasapi = [device for device in named if device.is_wasapi]
-        if wasapi:
-            return min(wasapi, key=lambda device: device.index)
-        return min(named, key=lambda device: device.index)
-
-    indexed = next((device for device in devices if device.index == device_index), None)
-    if indexed is None:
-        return None
-    if prefer_wasapi and not indexed.is_wasapi:
-        same_name_wasapi = [
-            device
-            for device in devices
-            if device.name.strip().casefold() == indexed.name.strip().casefold()
-            and device.is_wasapi
-        ]
-        if same_name_wasapi:
-            return min(same_name_wasapi, key=lambda device: device.index)
-    return indexed
-
-
 class RefreshAudioDevicesUseCase:
     """Discover and resolve live audio endpoints without exposing hardware APIs to UI code."""
 
@@ -168,8 +109,6 @@ class RefreshAudioDevicesUseCase:
         selection: AudioDeviceSelection,
         *,
         target_sample_rate: int,
-        channels: int = 1,
-        probe: bool = False,
     ) -> AudioDeviceInventory:
         devices = tuple(self._list_input_devices())
         sources = tuple(
@@ -185,14 +124,22 @@ class RefreshAudioDevicesUseCase:
             host_api=selection.microphone_host_api,
         )
         system_source = self._resolve_system_source(sources, selection)
-        if probe and microphone is not None:
-            self._probe_input_device(microphone, channels=channels)
         return AudioDeviceInventory(
             input_devices=devices,
             system_sources=sources,
             microphone=microphone,
             system_source=system_source,
         )
+
+    def probe_microphone(
+        self,
+        microphone: AudioInputDeviceSnapshot,
+        *,
+        channels: int = 1,
+    ) -> None:
+        """Validate the selected live endpoint through the injected hardware adapter."""
+
+        self._probe_input_device(microphone, channels=channels)
 
     @staticmethod
     def _resolve_system_source(
