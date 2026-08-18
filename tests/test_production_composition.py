@@ -5,14 +5,15 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from tutor_assistant.ui import app as base_app
-from tutor_assistant.ui import audio_resilient_app
-from tutor_assistant.ui import concurrent_app
-from tutor_assistant.ui import recording_finalize_app
-from tutor_assistant.ui import recording_recovery_app
-from tutor_assistant.ui import transcript_publication_app
+from tutor_assistant.ui import (
+    app as base_app,
+    audio_resilient_app,
+    concurrent_app,
+    recording_finalize_app,
+    recording_recovery_app,
+    transcript_publication_app,
+)
 
-UI_ROOT = Path("src/tutor_assistant/ui")
 COMPOSITION_MODULES = (
     concurrent_app,
     transcript_publication_app,
