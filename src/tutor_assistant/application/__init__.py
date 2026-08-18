@@ -42,6 +42,14 @@ from .recording_stop import (
     RecordingStopState,
     StopRecordingUseCase,
 )
+from .transcription_queue import (
+    TranscriptionAudioMissingError,
+    TranscriptionPumpContext,
+    TranscriptionQueueCoordinator,
+    TranscriptionQueueEntrySnapshot,
+    TranscriptionQueueSnapshot,
+    TranscriptionSubmission,
+)
 
 __all__ = [
     "AudioDeviceInventory",
@@ -73,4 +81,10 @@ __all__ = [
     "StartedRecording",
     "StartRecordingUseCase",
     "StopRecordingUseCase",
+    "TranscriptionAudioMissingError",
+    "TranscriptionPumpContext",
+    "TranscriptionQueueCoordinator",
+    "TranscriptionQueueEntrySnapshot",
+    "TranscriptionQueueSnapshot",
+    "TranscriptionSubmission",
 ]

@@ -337,7 +337,7 @@ class MainWindow(base_app.MainWindow):
         self._load_review_lesson(lesson)
 
     def _open_processing_item(self, item: QListWidgetItem) -> None:
-        job = self.transcription_queue.get(str(item.data(256)))
+        job = self.transcription_queue_coordinator.get(str(item.data(256)))
         if job is None:
             return
 
@@ -351,19 +351,7 @@ class MainWindow(base_app.MainWindow):
                 QMessageBox.Yes,
             )
             if answer == QMessageBox.Yes:
-                if not job.audio.is_file():
-                    QMessageBox.critical(self, "Ошибка", f"Аудиофайл не найден: {job.audio}")
-                    return
-                job.lesson.transition(JobStatus.RECORDED, force=True)
-                self.pipeline.save_state(
-                    job.lesson,
-                    "status",
-                    "error",
-                    force_status=True,
-                )
-                self.transcription_queue.retry(job.id)
-                self._update_transcription_queue_ui()
-                self._pump_transcription_queue()
+                self._retry_transcription_job(job.id)
             return
         if action == ProcessingAction.WAIT:
             self._set_status("Транскрипт ещё обрабатывается", "working")
