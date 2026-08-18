@@ -75,6 +75,10 @@ class TranscriptionQueueCoordinator:
         self._queue = TranscriptionQueue(storage)
         self._retry_state_writer = retry_state_writer
 
+    @property
+    def active(self) -> TranscriptionJob | None:
+        return self._queue.active
+
     def snapshot(self) -> TranscriptionQueueSnapshot:
         jobs = self._queue.jobs
         return TranscriptionQueueSnapshot(
