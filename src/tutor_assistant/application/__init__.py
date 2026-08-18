@@ -23,6 +23,14 @@ from .recording import (
     StartedRecording,
     StartRecordingUseCase,
 )
+from .recording_health import (
+    RecordingHealthAction,
+    RecordingHealthAssessment,
+    RecordingHealthMonitor,
+    RecordingHealthPolicy,
+    RecordingHealthSample,
+    RecordingHealthSeverity,
+)
 from .recording_recovery import (
     RecordingRecoveryOutcome,
     RecordingRecoveryState,
@@ -43,6 +51,12 @@ __all__ = [
     "RefreshAudioDevicesUseCase",
     "SystemAudioSourceSnapshot",
     "AudioPreflightUseCase",
+    "RecordingHealthAction",
+    "RecordingHealthAssessment",
+    "RecordingHealthMonitor",
+    "RecordingHealthPolicy",
+    "RecordingHealthSample",
+    "RecordingHealthSeverity",
     "RecordingRecoveryOutcome",
     "RecordingHealthSnapshot",
     "RecordingLevelsSnapshot",
