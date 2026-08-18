@@ -39,6 +39,8 @@ class NormalizationProcessPresentation:
     detail: str
     tone: str = "neutral"
     show_progress: bool = False
+    progress_total: int | None = None
+    progress_completed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +166,8 @@ def build_normalization_controls(
                 normalization_progress_detail(context.progress),
                 "working",
                 True,
+                context.progress.total_chunks if context.progress else None,
+                context.progress.completed_chunks if context.progress else None,
             ),
         )
 

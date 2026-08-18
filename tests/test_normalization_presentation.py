@@ -71,6 +71,8 @@ def test_running_controls_use_progress_snapshot_without_widget_reads() -> None:
     assert view.primary.kind == "danger"
     assert view.provider_enabled is False
     assert view.process.show_progress is True
+    assert view.process.progress_total == 4
+    assert view.process.progress_completed == 1
     assert view.process.detail == (
         "Блок 2 из 4 · готово 1 · восстановлено 2 · запросов 3 · попытка 2"
     )

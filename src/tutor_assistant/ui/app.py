@@ -2204,12 +2204,20 @@ class MainWindow(QMainWindow):
             presentation.primary.text,
             **primary_kwargs,
         )
-        self.transcript_workspace.set_process_state(
-            presentation.process.title,
-            presentation.process.detail,
-            tone=presentation.process.tone,
-            show_progress=presentation.process.show_progress,
-        )
+        if presentation.process.progress_total is not None:
+            self.transcript_workspace.set_progress(
+                total=presentation.process.progress_total,
+                completed=presentation.process.progress_completed or 0,
+                title=presentation.process.title,
+                detail=presentation.process.detail,
+            )
+        else:
+            self.transcript_workspace.set_process_state(
+                presentation.process.title,
+                presentation.process.detail,
+                tone=presentation.process.tone,
+                show_progress=presentation.process.show_progress,
+            )
 
     def normalize_current_transcript(
         self,
