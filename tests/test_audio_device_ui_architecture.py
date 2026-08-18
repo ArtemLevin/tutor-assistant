@@ -41,7 +41,7 @@ def test_base_ui_has_no_hardware_discovery_dependency() -> None:
     assert "list_system_audio_sources" not in source
     assert "probe_input_device" not in source
     assert "resolve_input_device" not in source
-    assert "SystemAudioSource" not in source
+    assert "from ..recording import" not in source
     assert "self.devices: list[AudioInputDeviceSnapshot] = []" in source
     assert "self.system_sources: list[SystemAudioSourceSnapshot] = []" in source
 

@@ -5,7 +5,12 @@ from typing import cast
 
 from PySide6.QtWidgets import QMessageBox
 
-from ..application import AudioPreflightResult, AudioPreflightUseCase
+from ..application import (
+    AudioDeviceSelection,
+    AudioPreflightResult,
+    AudioPreflightUseCase,
+    RefreshAudioDevicesUseCase,
+)
 from ..application.recording import (
     RecordingRuntimeRecorder,
     RecordingRuntimeState,
@@ -21,7 +26,7 @@ from ..recording import (
     list_input_devices,
     list_system_audio_sources,
 )
-from ..recording.devices import probe_input_device, resolve_input_device
+from ..recording.devices import probe_input_device
 from . import app as base_app
 from .theme import refresh_style
 from .transcript_publication_app import MainWindow as ProductionMainWindow
@@ -33,6 +38,11 @@ class MainWindow(ProductionMainWindow):
     def __init__(self, config_path):
         self.recording_workflow = RecordingWorkflowController()
         super().__init__(config_path)
+        self.audio_devices_use_case = RefreshAudioDevicesUseCase(
+            list_input_devices,
+            list_system_audio_sources,
+            probe_input_device,
+        )
         self.start_recording_use_case = StartRecordingUseCase(
             self.pipeline,
             self.content_service,
@@ -139,48 +149,32 @@ class MainWindow(ProductionMainWindow):
             self.config.recording.system_backend,
         )
         current_system = self.loopback.currentData() if hasattr(self, "loopback") else None
-        devices = list_input_devices()
-        sources = list_system_audio_sources(
-            devices,
-            self.config.recording.target_sample_rate,
-        )
-        microphone = resolve_input_device(
-            devices,
-            device_index=self.config.recording.mic_device,
-            device_name=self.config.recording.mic_device_name,
-            host_api=self.config.recording.mic_host_api,
-        )
-
-        wanted_system_id = self.config.recording.system_device_id
-        wanted_system_backend = self.config.recording.system_backend
-        if isinstance(current_system, SystemAudioSource):
-            wanted_system_id = current_system.device_id
-            wanted_system_backend = current_system.backend
-
-        system_source = next(
-            (
-                source
-                for source in sources
-                if source.device_id == wanted_system_id
-                and source.backend == wanted_system_backend
+        selection = AudioDeviceSelection(
+            microphone_index=self.config.recording.mic_device,
+            microphone_name=self.config.recording.mic_device_name,
+            microphone_host_api=self.config.recording.mic_host_api,
+            system_device_id=(
+                current_system.device_id
+                if isinstance(current_system, SystemAudioSource)
+                else self.config.recording.system_device_id
             ),
-            None,
+            system_backend=(
+                current_system.backend
+                if isinstance(current_system, SystemAudioSource)
+                else self.config.recording.system_backend
+            ),
+            legacy_loopback_index=self.config.recording.loopback_device,
         )
-        if (
-            system_source is None
-            and wanted_system_id is None
-            and self.config.recording.loopback_device is not None
-        ):
-            system_source = next(
-                (
-                    source
-                    for source in sources
-                    if source.legacy_index == self.config.recording.loopback_device
-                ),
-                None,
-            )
-        if system_source is None and wanted_system_id is None and sources:
-            system_source = sources[0]
+        inventory = self.audio_devices_use_case.refresh(
+            selection,
+            target_sample_rate=self.config.recording.target_sample_rate,
+            channels=self.config.recording.channels,
+            probe=probe,
+        )
+        devices = list(inventory.input_devices)
+        sources = list(inventory.system_sources)
+        microphone = inventory.microphone
+        system_source = cast(SystemAudioSource | None, inventory.system_source)
 
         self.devices = devices
         self.system_sources = sources
@@ -213,6 +207,8 @@ class MainWindow(ProductionMainWindow):
                 self.loopback.currentText(),
             )
 
+        self._refresh_quick_readiness()
+
         if require_ready and microphone is None:
             raise RuntimeError(
                 "Сохранённый микрофон больше не найден в Windows. "
@@ -224,8 +220,6 @@ class MainWindow(ProductionMainWindow):
                 "Сохранённый источник системного звука больше не найден. "
                 "Выберите WASAPI Loopback-устройство заново и повторите проверку аудио."
             )
-        if probe and microphone is not None:
-            probe_input_device(microphone, channels=self.config.recording.channels)
 
     def _rebuild_microphone_combo(self, selected) -> None:
         self.mic.blockSignals(True)

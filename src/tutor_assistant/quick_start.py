@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
+from .application.audio_devices import (
+    AudioInputDeviceSnapshot,
+    SystemAudioSourceSnapshot,
+    resolve_input_device_identity,
+)
 from .config import AppConfig, LaunchProfile
 from .domain import Student
-from .recording import AudioDevice, SystemAudioSource
-from .recording.devices import resolve_input_device
 
 
 @dataclass(frozen=True)
@@ -39,13 +43,13 @@ def selected_profile(config: AppConfig, profile_id: str | None = None) -> Launch
 def evaluate_readiness(
     config: AppConfig,
     students: list[Student],
-    devices: list[AudioDevice],
-    system_sources: list[SystemAudioSource],
+    devices: Sequence[AudioInputDeviceSnapshot],
+    system_sources: Sequence[SystemAudioSourceSnapshot],
     student_id: str | None,
     topic: str,
 ) -> LaunchReadiness:
     student = next((item for item in students if item.id == student_id), None)
-    microphone = resolve_input_device(
+    microphone = resolve_input_device_identity(
         devices,
         device_index=config.recording.mic_device,
         device_name=config.recording.mic_device_name,
