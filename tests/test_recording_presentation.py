@@ -138,6 +138,21 @@ def test_warning_recovery_maps_back_to_recording_status() -> None:
     assert presentation.warning_log is None
 
 
+def test_terminal_stop_suppresses_non_terminal_warning_transition() -> None:
+    assessment = monitor().assess(
+        sample(
+            microphone_silence_seconds=20,
+            stream_errors=("microphone disconnected",),
+        )
+    )
+
+    presentation = build_recording_tick_presentation(23, assessment)
+
+    assert presentation.status_message is None
+    assert presentation.status_tone is None
+    assert presentation.warning_log is None
+
+
 @pytest.mark.parametrize(
     ("phase", "text", "active"),
     [
