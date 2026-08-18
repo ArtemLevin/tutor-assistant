@@ -61,6 +61,15 @@ from .recording_stop import (
     RecordingStopState,
     StopRecordingUseCase,
 )
+from .shutdown import (
+    ShutdownCloseAction,
+    ShutdownCloseDecision,
+    ShutdownCoordinator,
+    ShutdownDrainAction,
+    ShutdownDrainPlan,
+    ShutdownPhase,
+    ShutdownRuntimeSnapshot,
+)
 from .transcription_queue import (
     TranscriptionAudioMissingError,
     TranscriptionPumpContext,
@@ -112,6 +121,13 @@ __all__ = [
     "RecordingWorkflowPhase",
     "RecordingWorkflowRejected",
     "RecoverRecordingUseCase",
+    "ShutdownCloseAction",
+    "ShutdownCloseDecision",
+    "ShutdownCoordinator",
+    "ShutdownDrainAction",
+    "ShutdownDrainPlan",
+    "ShutdownPhase",
+    "ShutdownRuntimeSnapshot",
     "StartedRecording",
     "StartRecordingUseCase",
     "StopRecordingUseCase",
