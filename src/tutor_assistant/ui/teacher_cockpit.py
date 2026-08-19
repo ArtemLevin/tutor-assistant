@@ -17,7 +17,7 @@ from .teacher_cockpit_data import (
     CockpitDataInputs,
     CockpitSnapshot,
     PipelineStage,
-    build_cockpit_snapshot as _build_cockpit_snapshot,
+    build_cockpit_snapshot,
     collect_cockpit_inputs,
     format_dashboard_timestamp,
 )
@@ -38,6 +38,8 @@ __all__ = [
     "format_dashboard_timestamp",
     "install_teacher_cockpit",
 ]
+
+_build_cockpit_snapshot = build_cockpit_snapshot
 
 
 def _legacy_workspace_snapshot(window: Any) -> WorkspaceContextSnapshot:
