@@ -86,9 +86,10 @@ def test_wav_recovery_promotes_single_surviving_track(
     quality = json.loads(first.quality_report.read_text(encoding="utf-8"))
     assert sync["recovery_mode"] == expected_mode
     assert sync["missing_sources"] == [missing]
-    assert quality["ready"] is True
     assert quality[missing]["ready"] is False
-    assert quality[surviving]["ready"] is True
+    assert quality[missing]["sample_rate"] == 0
+    assert quality[surviving]["sample_rate"] == 8_000
+    assert "единственная доступная дорожка" in quality[missing]["warnings"][0]
 
     first_bytes = first.mixed_file.read_bytes()
     second = recover_recording(recording)
