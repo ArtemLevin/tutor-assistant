@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
-from threading import Event, Thread, get_ident
+from threading import Event, Lock, Thread, get_ident
 from uuid import uuid4
 
 from ..sqlite_utils import ClosingConnection
@@ -22,6 +24,12 @@ class ActivityLeaseInfo:
     acquired_at: datetime
     heartbeat_at: datetime
     expires_at: datetime
+
+
+class LeaseState(StrEnum):
+    HEALTHY = "healthy"
+    LOST = "lost"
+    RELEASED = "released"
 
 
 class ContentBusyError(RuntimeError):
@@ -270,7 +278,9 @@ class ActivityLease:
         self.info = info
         self.ttl = ttl
         self._stop = Event()
-        self._released = False
+        self._state_lock = Lock()
+        self._state = LeaseState.HEALTHY
+        self._lost_reason: str | None = None
         self.origin_thread_id = get_ident()
         self._on_release = on_release
         interval = max(1.0, min(30.0, ttl.total_seconds() / 3))
@@ -282,19 +292,62 @@ class ActivityLease:
         )
         self._thread.start()
 
+    @property
+    def state(self) -> LeaseState:
+        with self._state_lock:
+            return self._state
+
+    @property
+    def valid(self) -> bool:
+        return self.state == LeaseState.HEALTHY
+
+    @property
+    def lost_reason(self) -> str | None:
+        with self._state_lock:
+            return self._lost_reason
+
+    def _mark_lost(self, reason: str) -> None:
+        with self._state_lock:
+            if self._state != LeaseState.HEALTHY:
+                return
+            self._state = LeaseState.LOST
+            self._lost_reason = reason
+            # Existing service code uses origin_thread_id to detect an already-owned
+            # protection scope. A lost lease must never satisfy that shortcut.
+            self.origin_thread_id = -1
+        self._stop.set()
+        logging.critical(
+            "Activity lease lost: activity=%s lesson=%s reason=%s",
+            self.info.activity,
+            self.info.lesson_id,
+            reason,
+        )
+
     def _heartbeat_loop(self, interval: float) -> None:
         while not self._stop.wait(interval):
-            if not self.store.heartbeat(self.info.lease_id, self.info.owner_id, self.ttl):
+            try:
+                renewed = self.store.heartbeat(
+                    self.info.lease_id,
+                    self.info.owner_id,
+                    self.ttl,
+                )
+            except Exception as exc:
+                self._mark_lost(f"heartbeat error: {exc}")
+                return
+            if not renewed:
+                self._mark_lost("heartbeat rejected or lease expired")
                 return
 
     def release(self) -> None:
-        if self._released:
-            return
-        self._released = True
+        with self._state_lock:
+            if self._state == LeaseState.RELEASED:
+                return
         self._stop.set()
         try:
             self.store.release(self.info.lease_id, self.info.owner_id)
         finally:
+            with self._state_lock:
+                self._state = LeaseState.RELEASED
             if self._on_release is not None:
                 self._on_release(self)
 
