@@ -52,6 +52,48 @@ def test_online_backup_restore_recovers_database_and_file_projection(tmp_path: P
     assert projection.read_text(encoding="utf-8") == "Версия из backup\n"
 
 
+def test_restore_failure_rolls_back_database_and_filesystem_projection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "data"
+    service = StudentContentService(workspace)
+    created = service.create_lesson(lesson("restore-rollback"))
+    service.save_transcript(created.lesson_id, "Старая версия из backup")
+    backup = service.create_database_backup(reason="old-state")
+
+    current = service.get_lesson(created.lesson_id)
+    changed = current.lesson.model_copy(deep=True)
+    changed.topic = "Текущее состояние"
+    service.update_lesson(changed, expected_row_version=current.row_version)
+    service.save_transcript(created.lesson_id, "Текущая версия")
+    projection = workspace / "lessons" / created.lesson_id / "transcript" / "transcript_verified.txt"
+    assert projection.read_text(encoding="utf-8") == "Текущая версия\n"
+
+    original_sync = service._synchronize_lesson_files
+    calls = 0
+
+    def fail_after_first_projection(lesson_id: str, *, project_assets: bool = True) -> int:
+        nonlocal calls
+        calls += 1
+        result = original_sync(lesson_id, project_assets=project_assets)
+        if calls == 1:
+            raise RuntimeError("fault after restored projection")
+        return result
+
+    monkeypatch.setattr(service, "_synchronize_lesson_files", fail_after_first_projection)
+
+    with pytest.raises(RuntimeError, match="fault after restored projection"):
+        service.restore_database_backup(backup.path)
+
+    content = service.get_lesson(created.lesson_id)
+    assert content.lesson.topic == "Текущее состояние"
+    assert content.transcript is not None
+    assert content.transcript.content == "Текущая версия\n"
+    assert projection.read_text(encoding="utf-8") == "Текущая версия\n"
+    assert calls >= 2
+
+
 def test_corrupted_backup_is_rejected_without_changing_live_database(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     service.create_lesson(lesson("still-live"))
