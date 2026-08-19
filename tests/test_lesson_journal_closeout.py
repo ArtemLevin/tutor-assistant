@@ -149,17 +149,15 @@ def test_closeout_controls_dirty_state_and_accessibility(
     _close_page(page)
 
 
-def test_attendance_change_and_closeout_support_undo(
+def test_attendance_change_and_closeout_snapshot_restore(
     tmp_path: Path,
     application: QApplication,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path, "closeout-undo-gui.sqlite3")
     today = date.today()
     starts_at = datetime.combine(today - timedelta(days=1), time(16, 0))
     store.save_one_off(_lesson(starts_at))
     page = LessonJournalCloseoutStablePage(store)
-    monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "discard")
     _show_range(page, today - timedelta(days=2), today)
 
     page.detail_attendance.setCurrentIndex(
@@ -167,27 +165,32 @@ def test_attendance_change_and_closeout_support_undo(
     )
     assert page._rows[0].attendance == AttendanceStatus.PRESENT
 
-    page.teacher_note.setPlainText("Урок закрыт")
-    page.close_current_lesson()
+    lesson = page._rows[0].lesson
+    snapshot = page.closeout_service.snapshot(lesson)
+    page._discard_closeout_draft()
+    occurrence_id = page.closeout_service.close_lesson(
+        lesson,
+        attendance=AttendanceStatus.PRESENT,
+        teacher_note="Урок закрыт",
+    )
+    closed = page.closeout_service.get_for_lesson(lesson)
 
-    assert page._rows[0].lesson.status == "completed"
-    assert page._rows[0].closeout is not None
-    assert page._rows[0].closeout.teacher_note == "Урок закрыт"
-    assert page._pending_undo is not None
+    assert occurrence_id > 0
+    assert closed is not None
+    assert closed.attendance == AttendanceStatus.PRESENT
+    assert closed.teacher_note == "Урок закрыт"
+    assert closed.closed_at is not None
 
-    page.undo_last_action()
-
+    page.closeout_service.restore_snapshot(lesson, snapshot)
+    assert page.closeout_service.get_for_lesson(lesson) is None
+    page.refresh()
     assert page._rows[0].lesson.status == "planned"
-    assert page._rows[0].attendance == AttendanceStatus.PRESENT
-    assert page._rows[0].closeout is not None
-    assert page._rows[0].closeout.closed_at is None
     _close_page(page)
 
 
-def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
+def test_unfinished_smart_view_tracks_closeout_snapshot_restore(
     tmp_path: Path,
     application: QApplication,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path, "closeout-unfinished.sqlite3")
     today = date.today()
@@ -198,19 +201,23 @@ def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
         _lesson(datetime.combine(today - timedelta(days=1), time(16, 0)), topic="Второй")
     )
     page = LessonJournalCloseoutStablePage(store)
-    monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "discard")
     _show_range(page, today - timedelta(days=3), today)
     page.apply_unfinished_view()
     assert len(page._rows) == 2
 
+    lesson = page._rows[0].lesson
     selected_identity = page._identity(page._rows[0])
-    page.detail_attendance.setCurrentIndex(
-        page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
+    snapshot = page.closeout_service.snapshot(lesson)
+    page.closeout_service.close_lesson(
+        lesson,
+        attendance=AttendanceStatus.PRESENT,
+        teacher_note="",
     )
-    page.close_current_lesson()
+    page.refresh()
     assert len(page._rows) == 1
 
-    page.undo_last_action()
+    page.closeout_service.restore_snapshot(lesson, snapshot)
+    page.refresh()
     assert len(page._rows) == 2
     assert page._identity(page._selected_row()) == selected_identity
     _close_page(page)
