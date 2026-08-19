@@ -102,12 +102,41 @@ jobs:
         run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
 
       - name: Full test suite
-        run: uv run pytest --junitxml=pytest-report.xml
+        shell: pwsh
+        run: |
+          if ("${{ matrix.python-version }}" -ne "3.11") {
+            uv run pytest --junitxml=pytest-report.xml
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            exit 0
+          }
+
+          # PySide6 6.11 on CPython 3.11 can retain offscreen Qt event-loop state
+          # between tests in this legacy GUI module. Run the rest of the suite
+          # normally, then execute every closeout test in a fresh Python process.
+          # Coverage is unchanged; only process isolation differs on Python 3.11.
+          uv run pytest --ignore=tests/test_lesson_journal_closeout.py `
+            --junitxml=pytest-report.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $closeoutTests = @(
+            "tests/test_lesson_journal_closeout.py::test_closeout_query_filters_attendance_and_unfinished",
+            "tests/test_lesson_journal_closeout.py::test_closeout_controls_dirty_state_and_accessibility",
+            "tests/test_lesson_journal_closeout.py::test_attendance_change_and_closeout_snapshot_restore",
+            "tests/test_lesson_journal_closeout.py::test_unfinished_smart_view_tracks_closeout_snapshot_restore",
+            "tests/test_lesson_journal_closeout.py::test_dirty_note_is_saved_when_switching_rows",
+            "tests/test_lesson_journal_closeout.py::test_attendance_filter_has_chip_and_resets_independently",
+            "tests/test_lesson_journal_closeout.py::test_closeout_shortcuts_are_registered"
+          )
+          for ($index = 0; $index -lt $closeoutTests.Count; $index++) {
+            uv run pytest $closeoutTests[$index] `
+              --junitxml="pytest-report-closeout-$index.xml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-py${{ matrix.python-version }}-pytest-report
-          path: pytest-report.xml
+          path: pytest-report*.xml
           if-no-files-found: ignore
