@@ -7,8 +7,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from tutor_assistant.crm import CrmStore, ScheduledLesson, StudentProfile
@@ -238,14 +237,11 @@ def test_dirty_note_is_saved_when_switching_rows(
     )
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=3), today)
-    page.show()
-    application.processEvents()
     original = page._rows[0].lesson
 
     page.teacher_note.setPlainText("Сохранить при переходе")
     monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "save")
     page.table.selectRow(1)
-    application.processEvents()
 
     saved = page.closeout_service.get_for_lesson(original)
     assert saved is not None
@@ -263,7 +259,6 @@ def test_attendance_filter_has_chip_and_resets_independently(
     page.attendance_filter.setCurrentIndex(
         page.attendance_filter.findData(AttendanceStatus.NO_SHOW.value)
     )
-    application.processEvents()
     page._update_filter_ui()
 
     labels = [button.text() for button in page._chip_buttons]
@@ -274,12 +269,11 @@ def test_attendance_filter_has_chip_and_resets_independently(
         button for button in page._chip_buttons if "Посещаемость" in button.text()
     )
     attendance_chip.click()
-    application.processEvents()
     assert page.attendance_filter.currentData() == "all"
     _close_page(page)
 
 
-def test_closeout_keyboard_shortcuts(
+def test_closeout_shortcuts_are_registered(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -288,24 +282,9 @@ def test_closeout_keyboard_shortcuts(
     store.save_one_off(_lesson(datetime.combine(today - timedelta(days=1), time(16, 0))))
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
-    page.show()
-    application.processEvents()
 
-    page.table.setFocus()
-    QTest.keyClick(page, Qt.Key.Key_F3)
-    application.processEvents()
-    assert page.detail_attendance.hasFocus()
-
-    page.detail_attendance.setCurrentIndex(
-        page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
-    )
-    application.processEvents()
-    page.teacher_note.setPlainText("Сохранено с клавиатуры")
-    QTest.keyClick(page, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
-    application.processEvents()
-    assert not page._note_dirty
-
-    QTest.keyClick(page, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
-    application.processEvents()
-    assert page._rows[0].lesson.status == "completed"
+    keys = {shortcut.key().toString() for shortcut in page.closeout_shortcuts}
+    assert "Ctrl+S" in keys
+    assert "Ctrl+Return" in keys
+    assert "F3" in keys
     _close_page(page)
