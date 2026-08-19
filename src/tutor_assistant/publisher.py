@@ -56,6 +56,15 @@ TRANSCRIPT_ONLY_POLICY = PublicationPolicy()
 
 
 @dataclass(frozen=True)
+class ApprovedTranscriptPayload:
+    """Immutable transcript revision approved by the teacher in SQLite."""
+
+    content: str
+    content_sha256: str
+    revision_number: int | None = None
+
+
+@dataclass(frozen=True)
 class PublicationPlan:
     lesson_id: str
     repository_full_name: str
@@ -118,6 +127,27 @@ def _run_command(
         raise GitError(f"Команда {command[0]} превысила timeout {timeout:g} секунд") from exc
 
 
+def _run_command_bytes(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=False,
+            timeout=timeout,
+            env=_noninteractive_environment(),
+        )
+    except FileNotFoundError as exc:
+        raise GitError(f"Команда не найдена: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"Команда {command[0]} превысила timeout {timeout:g} секунд") from exc
+
+
 def run_git(
     repo: Path,
     *args: str,
@@ -138,6 +168,14 @@ def _run_git_text(repo: Path, *args: str, timeout: float = GIT_TIMEOUT_SECONDS) 
     result = _run_command(["git", *args], cwd=repo, timeout=timeout)
     if result.returncode:
         raise GitError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout
+
+
+def _run_git_bytes(repo: Path, *args: str, timeout: float = GIT_TIMEOUT_SECONDS) -> bytes:
+    result = _run_command_bytes(["git", *args], cwd=repo, timeout=timeout)
+    if result.returncode:
+        details = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+        raise GitError(details)
     return result.stdout
 
 
@@ -274,7 +312,19 @@ def publication_payload_files(lesson: Lesson) -> tuple[str, ...]:
     return (publication_repository_path(lesson).as_posix(),)
 
 
-def _verified_transcript(lesson: Lesson, policy: PublicationPolicy) -> tuple[Path, str, str, int]:
+def _canonical_transcript_text(text: str) -> str:
+    if text.startswith("\ufeff"):
+        raise GitError("Подтверждённый транскрипт не должен содержать UTF-8 BOM")
+    if "\x00" in text:
+        raise GitError("Подтверждённый транскрипт содержит недопустимый NUL-символ")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _verified_transcript(
+    lesson: Lesson,
+    policy: PublicationPolicy,
+    approved: ApprovedTranscriptPayload | None = None,
+) -> tuple[Path, str, str, int]:
     if lesson.status != JobStatus.READY:
         raise GitError("Публикация разрешена только после подтверждения транскрипта")
     value = lesson.artifacts.verified_transcript
@@ -285,20 +335,39 @@ def _verified_transcript(lesson: Lesson, policy: PublicationPolicy) -> tuple[Pat
         raise GitError(f"Подтверждённый транскрипт не найден: {source}")
     raw = source.read_bytes()
     try:
-        text = raw.decode("utf-8")
+        disk_text = _canonical_transcript_text(raw.decode("utf-8"))
     except UnicodeDecodeError as exc:
         raise GitError("Подтверждённый транскрипт должен быть UTF-8 текстом") from exc
-    if text.startswith("\ufeff"):
-        raise GitError("Подтверждённый транскрипт не должен содержать UTF-8 BOM")
-    if "\x00" in text:
-        raise GitError("Подтверждённый транскрипт содержит недопустимый NUL-символ")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    payload = text.encode("utf-8")
+
+    if approved is None:
+        text = disk_text
+        payload = text.encode("utf-8")
+        content_sha256 = hashlib.sha256(payload).hexdigest()
+    else:
+        text = _canonical_transcript_text(approved.content)
+        payload = text.encode("utf-8")
+        content_sha256 = hashlib.sha256(payload).hexdigest()
+        if content_sha256 != approved.content_sha256:
+            raise GitError(
+                "SQLite revision содержит некорректный SHA-256; публикация заблокирована"
+            )
+        disk_sha256 = hashlib.sha256(disk_text.encode("utf-8")).hexdigest()
+        if disk_sha256 != approved.content_sha256:
+            revision = (
+                f" #{approved.revision_number}"
+                if approved.revision_number is not None
+                else ""
+            )
+            raise GitError(
+                "Файловая проекция транскрипта отличается от подтверждённой SQLite revision"
+                f"{revision}; откройте занятие и восстановите/подтвердите текст повторно"
+            )
+
     if len(payload) > policy.maximum_file_size_bytes:
         raise GitError(
             f"Подтверждённый транскрипт превышает {policy.maximum_file_size_bytes} байт"
         )
-    return source, text, hashlib.sha256(payload).hexdigest(), len(payload)
+    return source, text, content_sha256, len(payload)
 
 
 def _git_paths(checkout: Path, *args: str) -> tuple[str, ...]:
@@ -313,6 +382,23 @@ def _assert_transcript_only_egress(paths: tuple[str, ...], expected: str) -> Non
         raise GitError(f"Публикация заблокирована: обнаружены посторонние файлы: {details}")
     if len(paths) > 1:
         raise GitError("Публикация заблокирована: разрешён ровно один transcript.txt")
+
+
+def _git_blob_sha256(repo: Path, object_spec: str) -> str:
+    return hashlib.sha256(_run_git_bytes(repo, "show", object_spec)).hexdigest()
+
+
+def _assert_git_blob_matches(
+    repo: Path,
+    object_spec: str,
+    expected_sha256: str,
+    stage: str,
+) -> None:
+    actual = _git_blob_sha256(repo, object_spec)
+    if actual != expected_sha256:
+        raise GitError(
+            f"Публикация заблокирована: {stage} Git blob изменил подтверждённый transcript.txt"
+        )
 
 
 def _remote_head(repo: Path, remote: str, branch: str) -> str:
@@ -380,13 +466,23 @@ class LessonPublisher:
             raise GitError(str(exc)) from exc
         return descriptor
 
-    def preview(self, lesson: Lesson, lesson_dir: Path) -> PublicationPlan:
+    def preview(
+        self,
+        lesson: Lesson,
+        lesson_dir: Path,
+        *,
+        approved: ApprovedTranscriptPayload | None = None,
+    ) -> PublicationPlan:
         if not self.config.push:
             raise GitError(
                 "Публикация отключена параметром repository.push=false. "
                 "Production publish требует реальной отправки в remote."
             )
-        _source, _text, content_sha256, size = _verified_transcript(lesson, self.policy)
+        _source, _text, content_sha256, size = _verified_transcript(
+            lesson,
+            self.policy,
+            approved,
+        )
         expected_path = publication_repository_path(lesson, self.policy).as_posix()
         _assert_transcript_only_egress(publication_payload_files(lesson), expected_path)
         repo = self.config.students_repo.resolve()
@@ -457,9 +553,19 @@ class LessonPublisher:
             "Удалённая ветка main изменилась во время публикации; повторите операцию"
         )
 
-    def publish(self, lesson: Lesson, lesson_dir: Path) -> PublicationResult:
-        plan = self.preview(lesson, lesson_dir)
-        _source, text, _sha256, _size = _verified_transcript(lesson, self.policy)
+    def publish(
+        self,
+        lesson: Lesson,
+        lesson_dir: Path,
+        *,
+        approved: ApprovedTranscriptPayload | None = None,
+    ) -> PublicationResult:
+        plan = self.preview(lesson, lesson_dir, approved=approved)
+        _source, text, _sha256, _size = _verified_transcript(
+            lesson,
+            self.policy,
+            approved,
+        )
         repo = self.config.students_repo.resolve()
         store = PublicationOperationStore(_journal_path(lesson_dir))
         reconciled = self._reconcile_active(lesson, store, repo)
@@ -480,18 +586,12 @@ class LessonPublisher:
         )
 
         try:
-            existing = _run_git_text(
+            existing_sha256 = _git_blob_sha256(
                 repo,
-                "show",
                 f"{self.config.remote}/{plan.branch}:{plan.repository_path}",
             )
         except GitError:
-            existing = None
-        existing_sha256 = (
-            hashlib.sha256(existing.encode("utf-8")).hexdigest()
-            if existing is not None
-            else None
-        )
+            existing_sha256 = None
         if existing_sha256 == plan.content_sha256:
             verified = store.mark_remote_verified(
                 operation.id,
@@ -504,6 +604,8 @@ class LessonPublisher:
 
         root = repo.parent / ".tutor-assistant-worktrees"
         root.mkdir(parents=True, exist_ok=True)
+        hooks_dir = root / "empty-hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
         worktree_path = Path(tempfile.mkdtemp(prefix="transcript-", dir=root))
         worktree_path.rmdir()
         local_commit: str | None = None
@@ -518,8 +620,16 @@ class LessonPublisher:
             _assert_transcript_only_egress(staged, plan.repository_path)
             if not staged:
                 raise GitError("Git не обнаружил изменений для публикации")
+            _assert_git_blob_matches(
+                worktree_path,
+                f":{plan.repository_path}",
+                plan.content_sha256,
+                "staged",
+            )
             run_git(
                 worktree_path,
+                "-c",
+                f"core.hooksPath={hooks_dir}",
                 "commit",
                 "-m",
                 f"Publish transcript for {lesson.student.full_name} ({lesson.lesson_date})",
@@ -528,6 +638,12 @@ class LessonPublisher:
             parent = run_git(worktree_path, "rev-parse", "HEAD^")
             if parent != plan.expected_remote_sha:
                 raise GitError("Publication commit построен не от зафиксированного remote SHA")
+            _assert_git_blob_matches(
+                worktree_path,
+                f"HEAD:{plan.repository_path}",
+                plan.content_sha256,
+                "committed",
+            )
             changed = _git_paths(
                 worktree_path,
                 "diff-tree",
@@ -549,6 +665,7 @@ class LessonPublisher:
                 worktree_path,
                 "push",
                 "--porcelain",
+                f"--force-with-lease=refs/heads/{plan.branch}:{plan.expected_remote_sha}",
                 self.config.remote,
                 f"HEAD:refs/heads/{plan.branch}",
                 allow_push=True,

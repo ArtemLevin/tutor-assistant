@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import Protocol
 
+from ..application.workspace import LessonWorkspaceContext, WorkspaceContextSnapshot
 from ..crm import CrmStats, ScheduledLesson
 from ..domain import JobStatus, Lesson
 from .app_routes import AppRoute
 from .localization import subject_label
+
+
+class CockpitCrmStore(Protocol):
+    def lessons_for_week(self, week_start: date) -> list[ScheduledLesson]: ...
+
+    def stats(self, week_start: date) -> CrmStats: ...
+
+
+class CockpitLessonStore(Protocol):
+    def list(self, limit: int = 100) -> list[Lesson]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CockpitDataInputs:
+    created_at: datetime
+    workspace: WorkspaceContextSnapshot
+    scheduled_lessons: tuple[ScheduledLesson, ...]
+    stats: CrmStats
+    stored_lessons: tuple[Lesson, ...]
+    active_students: int
+    background_jobs: int
+    provider: str
+    crm_error: str | None = None
+    lesson_store_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +59,8 @@ class AttentionItem:
 class CockpitSnapshot:
     created_at: datetime
     route: AppRoute
-    lesson: Lesson | None
+    workspace: WorkspaceContextSnapshot
+    lesson: LessonWorkspaceContext | None
     next_lesson: ScheduledLesson | None
     minutes_to_next: int | None
     stats: CrmStats
@@ -87,9 +115,9 @@ def format_dashboard_timestamp(value: datetime) -> str:
     )
 
 
-def _safe_running_workers(window: object) -> int:
+def count_running_workers(workers: Iterable[object]) -> int:
     count = 0
-    for worker in getattr(window, "workers", ()):
+    for worker in workers:
         try:
             count += int(bool(worker.isRunning()))
         except (AttributeError, RuntimeError):
@@ -102,10 +130,9 @@ def _week_start(value: date) -> date:
 
 
 def _scheduled_context(
-    window: object,
+    store: CockpitCrmStore | None,
     now: datetime,
 ) -> tuple[list[ScheduledLesson], CrmStats, str | None]:
-    store = getattr(window, "crm_store", None)
     if store is None:
         return [], CrmStats(0, 0, 0), None
     monday = _week_start(now.date())
@@ -118,24 +145,19 @@ def _scheduled_context(
         return [], CrmStats(0, 0, 0), str(exc) or type(exc).__name__
 
 
-def _stored_lessons(window: object) -> tuple[list[Lesson], str | None]:
-    lessons: list[Lesson] = []
-    current = getattr(window, "lesson", None)
-    if isinstance(current, Lesson):
-        lessons.append(current)
-
-    store = getattr(getattr(window, "pipeline", None), "store", None)
-    list_lessons = getattr(store, "list", None)
-    if not callable(list_lessons):
-        return lessons, None
+def _stored_lessons(
+    store: CockpitLessonStore | None,
+) -> tuple[list[Lesson], str | None]:
+    if store is None:
+        return [], None
     try:
         try:
-            lessons.extend(list(list_lessons(limit=250)))
+            lessons = list(store.list(limit=250))
         except TypeError:
-            lessons.extend(list(list_lessons()))
+            lessons = list(store.list())
     except Exception as exc:
         logging.exception("Teacher Cockpit: lesson store unavailable")
-        return lessons, str(exc) or type(exc).__name__
+        return [], str(exc) or type(exc).__name__
 
     unique: dict[str, Lesson] = {}
     for lesson in lessons:
@@ -144,8 +166,40 @@ def _stored_lessons(window: object) -> tuple[list[Lesson], str | None]:
     return list(unique.values()), None
 
 
+def collect_cockpit_inputs(
+    *,
+    workspace: WorkspaceContextSnapshot,
+    crm_store: CockpitCrmStore | None,
+    lesson_store: CockpitLessonStore | None,
+    active_students: int,
+    workers: Iterable[object],
+    provider_value: str,
+    now: datetime | None = None,
+) -> CockpitDataInputs:
+    current_time = now or datetime.now()
+    scheduled, stats, crm_error = _scheduled_context(crm_store, current_time)
+    stored, lesson_store_error = _stored_lessons(lesson_store)
+    provider = (
+        "Yandex AI Studio"
+        if provider_value == "yandex_ai_studio"
+        else "Локальная LLM"
+    )
+    return CockpitDataInputs(
+        created_at=current_time,
+        workspace=workspace,
+        scheduled_lessons=tuple(scheduled),
+        stats=stats,
+        stored_lessons=tuple(stored),
+        active_students=max(0, int(active_students)),
+        background_jobs=count_running_workers(workers),
+        provider=provider,
+        crm_error=crm_error,
+        lesson_store_error=lesson_store_error,
+    )
+
+
 def _next_scheduled_lesson(
-    lessons: list[ScheduledLesson],
+    lessons: tuple[ScheduledLesson, ...],
     now: datetime,
 ) -> tuple[ScheduledLesson | None, int | None]:
     candidates = [
@@ -158,7 +212,9 @@ def _next_scheduled_lesson(
     return selected, minutes
 
 
-def _pipeline_for_lesson(lesson: Lesson | None) -> tuple[PipelineStage, ...]:
+def _pipeline_for_lesson(
+    lesson: LessonWorkspaceContext | None,
+) -> tuple[PipelineStage, ...]:
     if lesson is None:
         return tuple(
             PipelineStage(key, title, route, "pending", "Занятие пока не выбрано")
@@ -249,17 +305,17 @@ def _lesson_attention(lesson: Lesson) -> AttentionItem | None:
 
 
 def _attention_items(
-    window: object,
-    stored_lessons: list[Lesson],
-    scheduled_lessons: list[ScheduledLesson],
+    *,
+    active_students: int,
+    stored_lessons: tuple[Lesson, ...],
+    scheduled_lessons: tuple[ScheduledLesson, ...],
     now: datetime,
     background_jobs: int,
-    *,
     crm_error: str | None,
     lesson_store_error: str | None,
 ) -> tuple[AttentionItem, ...]:
     items: list[AttentionItem] = []
-    if not getattr(window, "students", None) and not stored_lessons:
+    if not active_students and not stored_lessons:
         items.append(
             AttentionItem(
                 "no-students",
@@ -331,46 +387,37 @@ def _attention_items(
 
 
 def build_cockpit_snapshot(
-    window: object,
+    inputs: CockpitDataInputs,
     *,
     route: AppRoute = AppRoute.TODAY,
-    now: datetime | None = None,
 ) -> CockpitSnapshot:
-    current_time = now or datetime.now()
-    scheduled, stats, crm_error = _scheduled_context(window, current_time)
-    next_lesson, minutes = _next_scheduled_lesson(scheduled, current_time)
-    stored, lesson_store_error = _stored_lessons(window)
-    lesson = getattr(window, "lesson", None)
-    if not isinstance(lesson, Lesson):
-        lesson = None
-    jobs = _safe_running_workers(window)
-    provider_value = getattr(
-        getattr(getattr(window, "config", None), "normalization", None),
-        "provider",
-        "ollama",
+    next_lesson, minutes = _next_scheduled_lesson(
+        inputs.scheduled_lessons,
+        inputs.created_at,
     )
-    provider = "Yandex AI Studio" if provider_value == "yandex_ai_studio" else "Локальная LLM"
+    focus_lesson = inputs.workspace.focus_lesson
     attention = _attention_items(
-        window,
-        stored,
-        scheduled,
-        current_time,
-        jobs,
-        crm_error=crm_error,
-        lesson_store_error=lesson_store_error,
+        active_students=inputs.active_students,
+        stored_lessons=inputs.stored_lessons,
+        scheduled_lessons=inputs.scheduled_lessons,
+        now=inputs.created_at,
+        background_jobs=inputs.background_jobs,
+        crm_error=inputs.crm_error,
+        lesson_store_error=inputs.lesson_store_error,
     )
     return CockpitSnapshot(
-        created_at=current_time,
+        created_at=inputs.created_at,
         route=route,
-        lesson=lesson,
+        workspace=inputs.workspace,
+        lesson=focus_lesson,
         next_lesson=next_lesson,
         minutes_to_next=minutes,
-        stats=stats,
-        active_students=len(getattr(window, "students", ()) or ()),
-        background_jobs=jobs,
-        provider=provider,
-        pipeline=_pipeline_for_lesson(lesson),
+        stats=inputs.stats,
+        active_students=inputs.active_students,
+        background_jobs=inputs.background_jobs,
+        provider=inputs.provider,
+        pipeline=_pipeline_for_lesson(focus_lesson),
         attention=attention,
-        crm_error=crm_error,
-        lesson_store_error=lesson_store_error,
+        crm_error=inputs.crm_error,
+        lesson_store_error=inputs.lesson_store_error,
     )

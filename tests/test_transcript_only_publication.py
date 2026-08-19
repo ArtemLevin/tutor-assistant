@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 from tutor_assistant.config import RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.publisher import (
+    ApprovedTranscriptPayload,
     GitError,
     LessonPublisher,
     PublicationPolicy,
@@ -127,6 +129,37 @@ def test_publication_rejects_non_utf8_transcript(tmp_path: Path) -> None:
 
     with pytest.raises(GitError, match="UTF-8"):
         LessonPublisher(config).publish(lesson, tmp_path)
+
+
+def test_publication_rejects_projection_changed_after_sqlite_approval(tmp_path: Path) -> None:
+    lesson = make_lesson(tmp_path)
+    approved_text = "[П] Подтверждённый текст\n"
+    approved = ApprovedTranscriptPayload(
+        content=approved_text,
+        content_sha256=hashlib.sha256(approved_text.encode("utf-8")).hexdigest(),
+        revision_number=7,
+    )
+    Path(lesson.artifacts.verified_transcript).write_text(
+        "[П] Уже другой текст\n",
+        encoding="utf-8",
+    )
+    config = RepositoryConfig(students_repo=tmp_path / "missing-repository")
+
+    with pytest.raises(GitError, match="отличается от подтверждённой SQLite revision"):
+        LessonPublisher(config).publish(lesson, tmp_path, approved=approved)
+
+
+def test_publication_rejects_corrupted_authoritative_revision_hash(tmp_path: Path) -> None:
+    lesson = make_lesson(tmp_path)
+    approved = ApprovedTranscriptPayload(
+        content="[П] Подтверждённый текст\n",
+        content_sha256="0" * 64,
+        revision_number=7,
+    )
+    config = RepositoryConfig(students_repo=tmp_path / "missing-repository")
+
+    with pytest.raises(GitError, match="некорректный SHA-256"):
+        LessonPublisher(config).publish(lesson, tmp_path, approved=approved)
 
 
 def test_production_publication_rejects_push_disabled(tmp_path: Path) -> None:

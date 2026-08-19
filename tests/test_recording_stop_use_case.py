@@ -35,23 +35,33 @@ class FakeRecorder:
         events: list[str],
         *,
         fail_stop: bool = False,
+        quiesce_on_failure: bool = False,
     ) -> None:
         self.result = result
         self.events = events
         self.fail_stop = fail_stop
+        self.quiesce_on_failure = quiesce_on_failure
         self._active = True
+        self._quiesced = False
         self.stop_calls = 0
 
     @property
     def active(self) -> bool:
         return self._active
 
+    @property
+    def quiesced(self) -> bool:
+        return self._quiesced
+
     def stop(self) -> RecordingResult:
         self.events.append("recorder.stop")
         self.stop_calls += 1
-        self._active = False
         if self.fail_stop:
+            self._quiesced = self.quiesce_on_failure
+            self._active = not self._quiesced
             raise RuntimeError("writer boom")
+        self._active = False
+        self._quiesced = True
         return self.result
 
 
@@ -137,7 +147,7 @@ def test_stop_success_finalizes_persists_and_releases_once(tmp_path: Path) -> No
     ]
 
 
-def test_recorder_stop_failure_requires_recovery_and_keeps_recording_status(tmp_path: Path) -> None:
+def test_non_quiesced_stop_failure_requires_recovery_and_retains_lease(tmp_path: Path) -> None:
     events: list[str] = []
     lesson = make_lesson()
     recorder = FakeRecorder(make_result(tmp_path), events, fail_stop=True)
@@ -154,6 +164,27 @@ def test_recorder_stop_failure_requires_recovery_and_keeps_recording_status(tmp_
     assert lesson.status == JobStatus.RECORDING
     assert lesson.source_audio_local is None
     assert pipeline.saved == []
+    assert lease.release_calls == 0
+    assert events == ["recorder.stop"]
+
+
+def test_stop_failure_after_quiescence_releases_lease(tmp_path: Path) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    recorder = FakeRecorder(
+        make_result(tmp_path),
+        events,
+        fail_stop=True,
+        quiesce_on_failure=True,
+    )
+    lease = FakeLease(events)
+
+    outcome = StopRecordingUseCase(FakePipeline(events)).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease)
+    )
+
+    assert outcome.state == RecordingStopState.RECOVERY_REQUIRED
+    assert recorder.quiesced
     assert lease.release_calls == 1
     assert events == ["recorder.stop", "lease.release"]
 

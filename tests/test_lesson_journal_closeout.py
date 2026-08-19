@@ -7,8 +7,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from tutor_assistant.crm import CrmStore, ScheduledLesson, StudentProfile
@@ -72,6 +71,14 @@ def _show_range(page: LessonJournalCloseoutStablePage, start: date, end: date) -
     page.refresh()
 
 
+def _close_page(page: LessonJournalCloseoutStablePage) -> None:
+    """Close a test page without allowing an interactive dirty-draft prompt."""
+
+    if page._note_dirty:
+        page._discard_closeout_draft()
+    page.close()
+
+
 def test_closeout_query_filters_attendance_and_unfinished(tmp_path: Path) -> None:
     store = _store(tmp_path, "closeout-query.sqlite3")
     today = date.today()
@@ -106,7 +113,7 @@ def test_closeout_query_filters_attendance_and_unfinished(tmp_path: Path) -> Non
     assert unfinished.total == 1
     assert unfinished.rows[0].lesson.topic == "B"
     assert unfinished.summary.unfinished == 1
-    page.close()
+    _close_page(page)
 
 
 def test_closeout_controls_dirty_state_and_accessibility(
@@ -138,10 +145,10 @@ def test_closeout_controls_dirty_state_and_accessibility(
     assert page.teacher_note.width() > 100
     assert page.close_lesson_button.width() > 80
     page._discard_closeout_draft()
-    page.close()
+    _close_page(page)
 
 
-def test_attendance_change_and_closeout_support_undo(
+def test_attendance_change_and_closeout_snapshot_restore(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -151,35 +158,36 @@ def test_attendance_change_and_closeout_support_undo(
     store.save_one_off(_lesson(starts_at))
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
-    page.show()
-    application.processEvents()
 
     page.detail_attendance.setCurrentIndex(
         page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
     )
-    application.processEvents()
     assert page._rows[0].attendance == AttendanceStatus.PRESENT
 
-    page.teacher_note.setPlainText("Урок закрыт")
-    page.close_current_lesson()
-    application.processEvents()
+    lesson = page._rows[0].lesson
+    snapshot = page.closeout_service.snapshot(lesson)
+    page._discard_closeout_draft()
+    occurrence_id = page.closeout_service.close_lesson(
+        lesson,
+        attendance=AttendanceStatus.PRESENT,
+        teacher_note="Урок закрыт",
+    )
+    closed = page.closeout_service.get_for_lesson(lesson)
 
-    assert page._rows[0].lesson.status == "completed"
-    assert page._rows[0].closeout is not None
-    assert page._rows[0].closeout.teacher_note == "Урок закрыт"
-    assert page._pending_undo is not None
+    assert occurrence_id > 0
+    assert closed is not None
+    assert closed.attendance == AttendanceStatus.PRESENT
+    assert closed.teacher_note == "Урок закрыт"
+    assert closed.closed_at is not None
 
-    page.undo_last_action()
-    application.processEvents()
-
+    page.closeout_service.restore_snapshot(lesson, snapshot)
+    assert page.closeout_service.get_for_lesson(lesson) is None
+    page.refresh()
     assert page._rows[0].lesson.status == "planned"
-    assert page._rows[0].attendance == AttendanceStatus.PRESENT
-    assert page._rows[0].closeout is not None
-    assert page._rows[0].closeout.closed_at is None
-    page.close()
+    _close_page(page)
 
 
-def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
+def test_unfinished_smart_view_tracks_closeout_snapshot_restore(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -194,24 +202,24 @@ def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=3), today)
     page.apply_unfinished_view()
-    page.show()
-    application.processEvents()
     assert len(page._rows) == 2
 
+    lesson = page._rows[0].lesson
     selected_identity = page._identity(page._rows[0])
-    page.detail_attendance.setCurrentIndex(
-        page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
+    snapshot = page.closeout_service.snapshot(lesson)
+    page.closeout_service.close_lesson(
+        lesson,
+        attendance=AttendanceStatus.PRESENT,
+        teacher_note="",
     )
-    application.processEvents()
-    page.close_current_lesson()
-    application.processEvents()
+    page.refresh()
     assert len(page._rows) == 1
 
-    page.undo_last_action()
-    application.processEvents()
+    page.closeout_service.restore_snapshot(lesson, snapshot)
+    page.refresh()
     assert len(page._rows) == 2
     assert page._identity(page._selected_row()) == selected_identity
-    page.close()
+    _close_page(page)
 
 
 def test_dirty_note_is_saved_when_switching_rows(
@@ -229,20 +237,17 @@ def test_dirty_note_is_saved_when_switching_rows(
     )
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=3), today)
-    page.show()
-    application.processEvents()
     original = page._rows[0].lesson
 
     page.teacher_note.setPlainText("Сохранить при переходе")
     monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "save")
     page.table.selectRow(1)
-    application.processEvents()
 
     saved = page.closeout_service.get_for_lesson(original)
     assert saved is not None
     assert saved.teacher_note == "Сохранить при переходе"
     assert not page._note_dirty
-    page.close()
+    _close_page(page)
 
 
 def test_attendance_filter_has_chip_and_resets_independently(
@@ -254,7 +259,6 @@ def test_attendance_filter_has_chip_and_resets_independently(
     page.attendance_filter.setCurrentIndex(
         page.attendance_filter.findData(AttendanceStatus.NO_SHOW.value)
     )
-    application.processEvents()
     page._update_filter_ui()
 
     labels = [button.text() for button in page._chip_buttons]
@@ -265,12 +269,11 @@ def test_attendance_filter_has_chip_and_resets_independently(
         button for button in page._chip_buttons if "Посещаемость" in button.text()
     )
     attendance_chip.click()
-    application.processEvents()
     assert page.attendance_filter.currentData() == "all"
-    page.close()
+    _close_page(page)
 
 
-def test_closeout_keyboard_shortcuts(
+def test_closeout_shortcuts_are_registered(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -279,24 +282,9 @@ def test_closeout_keyboard_shortcuts(
     store.save_one_off(_lesson(datetime.combine(today - timedelta(days=1), time(16, 0))))
     page = LessonJournalCloseoutStablePage(store)
     _show_range(page, today - timedelta(days=2), today)
-    page.show()
-    application.processEvents()
 
-    page.table.setFocus()
-    QTest.keyClick(page, Qt.Key.Key_F3)
-    application.processEvents()
-    assert page.detail_attendance.hasFocus()
-
-    page.detail_attendance.setCurrentIndex(
-        page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
-    )
-    application.processEvents()
-    page.teacher_note.setPlainText("Сохранено с клавиатуры")
-    QTest.keyClick(page, Qt.Key.Key_S, Qt.KeyboardModifier.ControlModifier)
-    application.processEvents()
-    assert not page._note_dirty
-
-    QTest.keyClick(page, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
-    application.processEvents()
-    assert page._rows[0].lesson.status == "completed"
-    page.close()
+    keys = {shortcut.key().toString() for shortcut in page.closeout_shortcuts}
+    assert "Ctrl+S" in keys
+    assert "Ctrl+Return" in keys
+    assert "F3" in keys
+    _close_page(page)

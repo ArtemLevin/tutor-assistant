@@ -4,6 +4,7 @@ from .coordination import (
     ActivityLeaseInfo,
     ContentBusyError,
     LeaseAcquireResult,
+    LeaseState,
 )
 from .importing import (
     DuplicateImportError,
@@ -52,7 +53,8 @@ from .repository import (
     StudentContentRepository,
     TranscriptEditConflictError,
 )
-from .service import ActivityAcquireResult, ContentPathError, StudentContentService
+from .safe_service import StudentContentService
+from .service import ActivityAcquireResult, ContentPathError
 
 __all__ = [
     "ActiveLessonError",
@@ -85,6 +87,7 @@ __all__ = [
     "IntegrityScanStats",
     "IntegritySeverity",
     "LeaseAcquireResult",
+    "LeaseState",
     "LessonAsset",
     "LessonContent",
     "LessonEditConflictError",
