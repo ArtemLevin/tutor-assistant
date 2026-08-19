@@ -53,7 +53,8 @@ from .repository import (
     StudentContentRepository,
     TranscriptEditConflictError,
 )
-from .service import ActivityAcquireResult, ContentPathError, StudentContentService
+from .safe_service import StudentContentService
+from .service import ActivityAcquireResult, ContentPathError
 
 __all__ = [
     "ActiveLessonError",
