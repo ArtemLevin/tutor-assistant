@@ -78,6 +78,12 @@ from .transcription_queue import (
     TranscriptionQueueSnapshot,
     TranscriptionSubmission,
 )
+from .workspace import (
+    LessonWorkspaceContext,
+    WorkspaceContextCoordinator,
+    WorkspaceContextSnapshot,
+    WorkspaceStudentContext,
+)
 
 __all__ = [
     "AudioDeviceInventory",
@@ -92,6 +98,7 @@ __all__ = [
     "LatexMonitorScanAction",
     "LatexMonitorScanDecision",
     "LatexMonitorScanTrigger",
+    "LessonWorkspaceContext",
     "NormalizationAfterWorkerAction",
     "NormalizationAutoAction",
     "NormalizationAutoContext",
@@ -137,4 +144,7 @@ __all__ = [
     "TranscriptionQueueEntrySnapshot",
     "TranscriptionQueueSnapshot",
     "TranscriptionSubmission",
+    "WorkspaceContextCoordinator",
+    "WorkspaceContextSnapshot",
+    "WorkspaceStudentContext",
 ]

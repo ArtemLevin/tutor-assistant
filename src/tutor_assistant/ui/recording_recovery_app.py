@@ -19,10 +19,11 @@ from ..recording import (
 from . import app as base_app
 from .recording_finalize_app import MainWindow as RecordingFinalizeMainWindow
 from .shutdown_app import MainWindow as ShutdownMainWindow
+from .workspace_sync import WorkspaceSyncMixin
 
 
-class MainWindow(RecordingFinalizeMainWindow, ShutdownMainWindow):
-    """Production window with recording recovery and coordinated shutdown."""
+class MainWindow(WorkspaceSyncMixin, RecordingFinalizeMainWindow, ShutdownMainWindow):
+    """Production window with synchronized workspace and recording recovery."""
 
     def __init__(self, config_path):
         super().__init__(config_path)

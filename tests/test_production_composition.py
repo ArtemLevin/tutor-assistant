@@ -12,6 +12,7 @@ import tutor_assistant.ui.recording_finalize_app as recording_finalize_app
 import tutor_assistant.ui.recording_recovery_app as recording_recovery_app
 import tutor_assistant.ui.shutdown_app as shutdown_app
 import tutor_assistant.ui.transcript_publication_app as transcript_publication_app
+from tutor_assistant.ui.workspace_sync import WorkspaceSyncMixin
 
 COMPOSITION_MODULES = (
     concurrent_app,
@@ -46,6 +47,7 @@ def test_production_mro_contains_only_responsibility_bearing_layers() -> None:
     production = recording_recovery_app.MainWindow
     expected_prefix = (
         recording_recovery_app.MainWindow,
+        WorkspaceSyncMixin,
         recording_finalize_app.MainWindow,
         audio_resilient_app.MainWindow,
         transcript_publication_app.MainWindow,
@@ -57,7 +59,8 @@ def test_production_mro_contains_only_responsibility_bearing_layers() -> None:
     assert production.__mro__[: len(expected_prefix)] == expected_prefix
 
     responsibilities = (
-        (concurrent_app.MainWindow, "_sync_parallel_review_ui"),
+        (WorkspaceSyncMixin, "_sync_parallel_review_ui"),
+        (concurrent_app.MainWindow, "_run_content_task"),
         (shutdown_app.MainWindow, "closeEvent"),
         (transcript_publication_app.MainWindow, "publish"),
         (audio_resilient_app.MainWindow, "start_recording"),
