@@ -161,18 +161,14 @@ def test_attendance_change_and_closeout_support_undo(
     page = LessonJournalCloseoutStablePage(store)
     monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "discard")
     _show_range(page, today - timedelta(days=2), today)
-    page.show()
-    application.processEvents()
 
     page.detail_attendance.setCurrentIndex(
         page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
     )
-    application.processEvents()
     assert page._rows[0].attendance == AttendanceStatus.PRESENT
 
     page.teacher_note.setPlainText("Урок закрыт")
     page.close_current_lesson()
-    application.processEvents()
 
     assert page._rows[0].lesson.status == "completed"
     assert page._rows[0].closeout is not None
@@ -180,7 +176,6 @@ def test_attendance_change_and_closeout_support_undo(
     assert page._pending_undo is not None
 
     page.undo_last_action()
-    application.processEvents()
 
     assert page._rows[0].lesson.status == "planned"
     assert page._rows[0].attendance == AttendanceStatus.PRESENT
@@ -192,6 +187,7 @@ def test_attendance_change_and_closeout_support_undo(
 def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
     tmp_path: Path,
     application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path, "closeout-unfinished.sqlite3")
     today = date.today()
@@ -202,23 +198,19 @@ def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
         _lesson(datetime.combine(today - timedelta(days=1), time(16, 0)), topic="Второй")
     )
     page = LessonJournalCloseoutStablePage(store)
+    monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "discard")
     _show_range(page, today - timedelta(days=3), today)
     page.apply_unfinished_view()
-    page.show()
-    application.processEvents()
     assert len(page._rows) == 2
 
     selected_identity = page._identity(page._rows[0])
     page.detail_attendance.setCurrentIndex(
         page.detail_attendance.findData(AttendanceStatus.PRESENT.value)
     )
-    application.processEvents()
     page.close_current_lesson()
-    application.processEvents()
     assert len(page._rows) == 1
 
     page.undo_last_action()
-    application.processEvents()
     assert len(page._rows) == 2
     assert page._identity(page._selected_row()) == selected_identity
     _close_page(page)
