@@ -4,6 +4,7 @@ from .coordination import (
     ActivityLeaseInfo,
     ContentBusyError,
     LeaseAcquireResult,
+    LeaseState,
 )
 from .importing import (
     DuplicateImportError,
@@ -85,6 +86,7 @@ __all__ = [
     "IntegrityScanStats",
     "IntegritySeverity",
     "LeaseAcquireResult",
+    "LeaseState",
     "LessonAsset",
     "LessonContent",
     "LessonEditConflictError",
