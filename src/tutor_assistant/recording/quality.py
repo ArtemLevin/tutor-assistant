@@ -99,14 +99,36 @@ def analyze_track(path: Path, silence_threshold: float = 0.002) -> TrackQuality:
     )
 
 
+def _missing_track(path: Path, label: str) -> TrackQuality:
+    return TrackQuality(
+        path=str(path.resolve()),
+        sample_rate=0,
+        channels=0,
+        duration_seconds=0.0,
+        peak=0.0,
+        rms=0.0,
+        silence_ratio=1.0,
+        clipped_ratio=0.0,
+        dc_offset=0.0,
+        ready=False,
+        warnings=(f"{label} отсутствует; используется единственная доступная дорожка",),
+    )
+
+
 def create_quality_report(microphone: Path, system: Path, output: Path) -> AudioQualityReport:
-    mic = analyze_track(microphone)
-    sys = analyze_track(system)
+    microphone_exists = microphone.is_file()
+    system_exists = system.is_file()
+    if not microphone_exists and not system_exists:
+        raise RuntimeError("Невозможно оценить качество: обе аудиодорожки отсутствуют")
+
+    mic = analyze_track(microphone) if microphone_exists else _missing_track(microphone, "дорожка микрофона")
+    sys = analyze_track(system) if system_exists else _missing_track(system, "дорожка системного звука")
     warnings = tuple(
         [f"Микрофон: {message}" for message in mic.warnings]
         + [f"Системный звук: {message}" for message in sys.warnings]
     )
-    report = AudioQualityReport(mic.ready and sys.ready, mic, sys, warnings)
+    available = [track for track, exists in ((mic, microphone_exists), (sys, system_exists)) if exists]
+    report = AudioQualityReport(bool(available) and all(track.ready for track in available), mic, sys, warnings)
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(output)
