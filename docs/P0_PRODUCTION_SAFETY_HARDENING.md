@@ -1,7 +1,7 @@
 # P0 Production Safety Hardening
 
-**Дата:** 19 августа 2026 года  
-**База:** `e7438eb3683adf51afbe5bf112ce1afef041bb49` (head PR #101)  
+**Дата:** 19 августа 2026 года
+**База:** `e7438eb3683adf51afbe5bf112ce1afef041bb49` (head PR #101)
 **Рабочая ветка:** `agent/p0-production-safety-hardening`
 
 ## Цель
@@ -16,15 +16,16 @@
 
 ### Решение
 
-- создать filesystem safety snapshot только для managed mutable roots (`lessons`, `.trash`) перед первым filesystem side effect;
-- выполнять database restore, migrations и projection в staging/guarded restore scope;
-- при любой ошибке восстановить **и SQLite, и managed filesystem roots**;
-- generation increment выполнять только после полного успешного commit;
-- не включать `backups/` и operations DB в filesystem snapshot, чтобы rollback не уничтожил safety-backup и lease state.
+- перед restore создать SQLite safety backup;
+- восстановить target DB, применить migrations и только затем перепроецировать managed filesystem state;
+- при любой ошибке вернуть safety DB и повторно построить управляемую файловую проекцию именно из safety DB;
+- trash layout восстанавливать через существующий durable trash operation/recovery contract, а `lesson.json` и transcript projections — из SQLite source of truth;
+- не копировать гигабайтные audio assets только ради rollback: физические audio bytes не перезаписываются projection layer;
+- generation increment выполнять только после полного успешного commit.
 
 ### Regression criteria
 
-Fault injection после database replacement, migrations, trash recovery и после первого lesson projection должна оставлять DB и managed files byte-for-byte в исходном состоянии.
+Fault injection после первого lesson projection должна вернуть и SQLite, и управляемые metadata/transcript projections в исходное pre-restore состояние. Если safety rollback сам не завершается, операция обязана fail closed с явным требованием ручной проверки.
 
 ## P0-2. Audio-first single-channel recovery
 
@@ -74,12 +75,12 @@ Heartbeat thread может прекратиться после `heartbeat()==Fa
 - lease state: `HEALTHY / LOST / RELEASED`;
 - heartbeat exception не должен бесшумно завершать protection;
 - `_current_thread_lease_protects()` учитывает только healthy lease;
-- write path fail-closed при owned lost lease;
+- следующий coordinated write после lease loss обязан reacquire protection вместо использования same-thread shortcut;
 - expose `lease.valid` / `lease.lost_reason` для application/UI diagnostics.
 
 ### Regression criteria
 
-Simulated heartbeat rejection/exception должен переводить lease в LOST и запрещать protected write path без reacquire.
+Simulated heartbeat rejection/exception должен переводить lease в LOST и запрещать использовать этот lease как локальное доказательство защиты.
 
 ## P0-5. Approved transcript revision as publication authority
 
@@ -91,7 +92,7 @@ Simulated heartbeat rejection/exception должен переводить lease 
 
 - перед publication получать authoritative current `TranscriptRevision` из SQLite;
 - expected approved SHA должен совпадать с disk projection;
-- предпочтительно передавать в publisher immutable approved payload (`content`, `sha256`, revision number), а не перечитывать произвольный path;
+- передавать в publisher immutable approved payload (`content`, `sha256`, revision number), а не считать mutable path источником истины;
 - любое расхождение → fail closed и возврат в review/repair flow, без push.
 
 ### Regression criteria
@@ -108,12 +109,12 @@ Path-only egress guard не гарантирует, что staged/committed blob
 
 - после `git add` вычислить SHA-256 содержимого `git show :<path>` и сравнить с approved payload;
 - после commit повторить проверку `HEAD:<path>`;
-- publication commit выполнять с controlled hooks policy (`core.hooksPath` на пустой managed каталог либо `-c core.hooksPath=...`);
-- remote compare-and-swap использовать exact expected SHA.
+- publication commit выполнять с controlled hooks policy (`core.hooksPath` на пустой managed каталог);
+- remote compare-and-swap использовать exact expected SHA через `--force-with-lease=<ref>:<sha>`.
 
 ### Regression criteria
 
-Repository с `.gitattributes` clean filter / commit hook не может silently изменить approved payload.
+Любое изменение staged/committed blob относительно approved payload должно блокировать publication до push.
 
 ## P1-1. Transcription persistence reconciliation
 
@@ -123,9 +124,9 @@ ASR и artifact write могут завершиться, но финальная
 
 ### Решение
 
-- добавить durable intermediate/reconciliation marker либо проверяемый transcription manifest;
-- retry сначала проверяет существующие валидные artifacts/manifest и завершает state transition без повторного ASR;
-- artifact write должен быть atomic относительно manifest publication.
+- использовать durable transcription manifest и обязательный набор artifacts как reconciliation proof;
+- retry при persisted `TRANSCRIBING` сначала проверяет существующие валидные artifacts/manifest и завершает state transition без повторного ASR;
+- artifact paths повторно строятся из доказанного durable результата.
 
 ### Regression criteria
 
@@ -138,8 +139,7 @@ Fault injection после artifact generation, но до final state save, пр
 - legacy publication path collision;
 - transcript relative path invariant `lessons/<lesson_id>/...`;
 - recursive LaTeX dependency validation;
-- exact remote ref CAS/force-with-lease semantics;
-- architecture gates, запрещающие обход новых safety boundaries.
+- дополнительные architecture gates, запрещающие обход новых safety boundaries.
 
 ## Порядок реализации
 
@@ -154,9 +154,10 @@ Fault injection после artifact generation, но до final state save, пр
 ## Definition of Done
 
 - ни один recorder failure path не удаляет последнюю физически пригодную копию аудио;
-- exclusive/destructive operation не может стартовать при реально живом recorder;
-- restore либо полностью применяет DB+managed filesystem state, либо полностью возвращает исходное состояние;
+- recording lease не освобождается, пока recorder не подтвердил quiescence;
+- restore либо применяет DB+managed projection, либо возвращает pre-restore authoritative state;
 - published transcript byte-for-byte соответствует approved SQLite revision;
+- staged/committed Git blob byte-for-byte соответствует approved payload;
 - ASR не повторяется после доказуемого успешного artifact stage;
 - новые failure modes покрыты fault-injection tests;
 - existing state-machine, privacy, publication egress и production MRO contracts сохранены.
