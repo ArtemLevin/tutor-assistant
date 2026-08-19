@@ -152,12 +152,14 @@ def test_closeout_controls_dirty_state_and_accessibility(
 def test_attendance_change_and_closeout_support_undo(
     tmp_path: Path,
     application: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path, "closeout-undo-gui.sqlite3")
     today = date.today()
     starts_at = datetime.combine(today - timedelta(days=1), time(16, 0))
     store.save_one_off(_lesson(starts_at))
     page = LessonJournalCloseoutStablePage(store)
+    monkeypatch.setattr(page, "_confirm_dirty_transition", lambda: "discard")
     _show_range(page, today - timedelta(days=2), today)
     page.show()
     application.processEvents()
