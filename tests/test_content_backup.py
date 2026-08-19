@@ -52,6 +52,28 @@ def test_online_backup_restore_recovers_database_and_file_projection(tmp_path: P
     assert projection.read_text(encoding="utf-8") == "Версия из backup\n"
 
 
+def test_successful_restore_quarantines_lessons_created_after_backup(tmp_path: Path) -> None:
+    workspace = tmp_path / "data"
+    service = StudentContentService(workspace)
+    service.create_lesson(lesson("before-backup"))
+    backup = service.create_database_backup(reason="before-new-lesson")
+    service.create_lesson(lesson("after-backup"))
+    post_backup_directory = workspace / "lessons" / "after-backup"
+    assert post_backup_directory.is_dir()
+
+    service.restore_database_backup(backup.path)
+
+    assert service.repository.get_lesson("after-backup", include_deleted=True) is None
+    assert not post_backup_directory.exists()
+    manifests = list((workspace / ".restore-quarantine").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert [item["lesson_id"] for item in manifest["lessons"]] == ["after-backup"]
+    quarantined = manifests[0].parent / "lessons" / "after-backup"
+    assert quarantined.is_dir()
+    assert (quarantined / "lesson.json").is_file()
+
+
 def test_restore_failure_rolls_back_database_and_filesystem_projection(
     tmp_path: Path,
     monkeypatch,
@@ -67,8 +89,11 @@ def test_restore_failure_rolls_back_database_and_filesystem_projection(
     changed.topic = "Текущее состояние"
     service.update_lesson(changed, expected_row_version=current.row_version)
     service.save_transcript(created.lesson_id, "Текущая версия")
+    post_backup = service.create_lesson(lesson("rollback-post-backup"))
+    post_backup_directory = workspace / "lessons" / post_backup.lesson_id
     projection = workspace / "lessons" / created.lesson_id / "transcript" / "transcript_verified.txt"
     assert projection.read_text(encoding="utf-8") == "Текущая версия\n"
+    assert post_backup_directory.is_dir()
 
     original_sync = service._synchronize_lesson_files
     calls = 0
@@ -91,6 +116,9 @@ def test_restore_failure_rolls_back_database_and_filesystem_projection(
     assert content.transcript is not None
     assert content.transcript.content == "Текущая версия\n"
     assert projection.read_text(encoding="utf-8") == "Текущая версия\n"
+    assert service.get_lesson(post_backup.lesson_id).lesson.lesson_id == post_backup.lesson_id
+    assert post_backup_directory.is_dir()
+    assert not list((workspace / ".restore-quarantine").glob("*/manifest.json"))
     assert calls >= 2
 
 
