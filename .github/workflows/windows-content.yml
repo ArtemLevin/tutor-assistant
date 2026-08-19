@@ -110,13 +110,20 @@ jobs:
             exit 0
           }
 
-          # PySide6 6.11 on CPython 3.11 can retain offscreen Qt event-loop state
-          # between tests in this legacy GUI module. Run the rest of the suite
-          # normally, then execute every closeout test in a fresh Python process.
-          # Coverage is unchanged; only process isolation differs on Python 3.11.
-          uv run pytest --ignore=tests/test_lesson_journal_closeout.py `
-            --junitxml=pytest-report.xml
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # PySide6 6.11 on CPython 3.11 can retain process-global offscreen Qt
+          # state between legacy GUI test modules. Execute every ordinary test
+          # module in a fresh Python process. The closeout module is split one
+          # step further by test case because it also had intra-module leakage.
+          # No tests are skipped; only process isolation differs on Python 3.11.
+          $reportIndex = 0
+          $testFiles = Get-ChildItem tests -Filter "test_*.py" | Sort-Object FullName
+          foreach ($file in $testFiles) {
+            if ($file.Name -eq "test_lesson_journal_closeout.py") { continue }
+            uv run pytest $file.FullName `
+              --junitxml="pytest-report-$reportIndex.xml"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $reportIndex++
+          }
 
           $closeoutTests = @(
             "tests/test_lesson_journal_closeout.py::test_closeout_query_filters_attendance_and_unfinished",
@@ -127,10 +134,11 @@ jobs:
             "tests/test_lesson_journal_closeout.py::test_attendance_filter_has_chip_and_resets_independently",
             "tests/test_lesson_journal_closeout.py::test_closeout_shortcuts_are_registered"
           )
-          for ($index = 0; $index -lt $closeoutTests.Count; $index++) {
-            uv run pytest $closeoutTests[$index] `
-              --junitxml="pytest-report-closeout-$index.xml"
+          foreach ($node in $closeoutTests) {
+            uv run pytest $node `
+              --junitxml="pytest-report-$reportIndex.xml"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $reportIndex++
           }
 
       - name: Upload test report
