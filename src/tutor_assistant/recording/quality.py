@@ -121,15 +121,35 @@ def create_quality_report(microphone: Path, system: Path, output: Path) -> Audio
     if not microphone_exists and not system_exists:
         raise RuntimeError("Невозможно оценить качество: обе аудиодорожки отсутствуют")
 
-    mic = analyze_track(microphone) if microphone_exists else _missing_track(microphone, "дорожка микрофона")
-    sys = analyze_track(system) if system_exists else _missing_track(system, "дорожка системного звука")
+    mic = (
+        analyze_track(microphone)
+        if microphone_exists
+        else _missing_track(microphone, "дорожка микрофона")
+    )
+    sys = (
+        analyze_track(system)
+        if system_exists
+        else _missing_track(system, "дорожка системного звука")
+    )
     warnings = tuple(
         [f"Микрофон: {message}" for message in mic.warnings]
         + [f"Системный звук: {message}" for message in sys.warnings]
     )
-    available = [track for track, exists in ((mic, microphone_exists), (sys, system_exists)) if exists]
-    report = AudioQualityReport(bool(available) and all(track.ready for track in available), mic, sys, warnings)
+    available = [
+        track
+        for track, exists in ((mic, microphone_exists), (sys, system_exists))
+        if exists
+    ]
+    report = AudioQualityReport(
+        bool(available) and all(track.ready for track in available),
+        mic,
+        sys,
+        warnings,
+    )
     temporary = output.with_suffix(output.suffix + ".tmp")
-    temporary.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(
+        json.dumps(report.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     temporary.replace(output)
     return report
