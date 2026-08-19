@@ -12,7 +12,7 @@ from tutor_assistant.config import AppConfig
 from tutor_assistant.content import LessonEditConflictError, StudentContentService
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.pipeline import LessonPipeline
-from tutor_assistant.publisher import PublicationResult
+from tutor_assistant.publisher import ApprovedTranscriptPayload, PublicationResult
 
 
 def make_lesson(lesson_id: str = "write-consistency") -> Lesson:
@@ -23,6 +23,20 @@ def make_lesson(lesson_id: str = "write-consistency") -> Lesson:
         lesson_date=date(2026, 7, 18),
         topic="Исходная тема",
     )
+
+
+def _prepare_approved_publication(pipeline: LessonPipeline, lesson_id: str) -> Lesson:
+    current = pipeline.content_service.get_lesson(lesson_id).lesson
+    transcript = pipeline.lesson_dir(current) / "transcript" / "transcript_verified.txt"
+    pipeline.content_service.save_transcript(
+        lesson_id,
+        "Подтверждённый текст",
+        path=transcript,
+        created_by="test-publication",
+    )
+    current = pipeline.content_service.get_lesson(lesson_id).lesson
+    current.transition(JobStatus.READY, force=True)
+    return pipeline.save_state(current, "status", "error", force_status=True)
 
 
 def test_atomic_write_retries_windows_lock_and_cleans_unique_temp(
@@ -150,9 +164,17 @@ def test_publication_uses_fresh_metadata_and_does_not_restore_stale_payload(
         topic="Свежая тема публикации",
         expected_updated_at=stale.updated_at,
     )
+    _prepare_approved_publication(pipeline, stale.lesson_id)
     published_topics: list[str] = []
 
-    def fake_publish(_publisher, lesson: Lesson, _directory: Path) -> PublicationResult:
+    def fake_publish(
+        _publisher,
+        lesson: Lesson,
+        _directory: Path,
+        *,
+        approved: ApprovedTranscriptPayload | None = None,
+    ) -> PublicationResult:
+        assert approved is not None
         published_topics.append(lesson.topic)
         return PublicationResult(
             branch="lesson/publication",
@@ -197,8 +219,16 @@ def test_publication_rejects_metadata_changed_during_external_operation(
     pipeline = LessonPipeline(AppConfig(workspace=tmp_path / "data"))
     lesson = make_lesson("publication-cas")
     pipeline.create(lesson)
+    _prepare_approved_publication(pipeline, lesson.lesson_id)
 
-    def concurrent_publish(_publisher, current: Lesson, _directory: Path) -> PublicationResult:
+    def concurrent_publish(
+        _publisher,
+        current: Lesson,
+        _directory: Path,
+        *,
+        approved: ApprovedTranscriptPayload | None = None,
+    ) -> PublicationResult:
+        assert approved is not None
         pipeline.content_service.update_lesson_metadata(
             current.lesson_id,
             student=current.student,
