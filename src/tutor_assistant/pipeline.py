@@ -17,9 +17,9 @@ from .latex.remote import (
     RemoteLatexService,
     RemoteTexProbe,
 )
-from .publisher import LessonPublisher, PublicationResult
+from .publisher import ApprovedTranscriptPayload, LessonPublisher, PublicationResult
 from .store import LessonStore
-from .transcription import WhisperTranscriber
+from .transcription import TranscriptionResult, WhisperTranscriber
 
 
 class LessonPipeline:
@@ -272,11 +272,122 @@ class LessonPipeline:
         with self.content_service.activity("transcription", lesson_id=lesson.lesson_id):
             return self._transcribe(lesson, audio)
 
+    @staticmethod
+    def _manifest_sources_match(manifest: dict, expected: set[Path]) -> bool:
+        sources = manifest.get("sources")
+        if not isinstance(sources, list):
+            return False
+        actual: set[Path] = set()
+        for item in sources:
+            if not isinstance(item, dict) or not item.get("source_audio"):
+                return False
+            actual.add(Path(str(item["source_audio"])).resolve())
+        return actual == expected
+
+    def _existing_transcription_result(
+        self,
+        audio: Path,
+        output_dir: Path,
+    ) -> TranscriptionResult | None:
+        manifest = output_dir / "manifest.json"
+        timestamped = output_dir / "00_raw_timestamped.txt"
+        cleaned = output_dir / "03_content_only_medium.txt"
+        segments = output_dir / "00_raw_segments.json"
+        signals = output_dir / "important_student_signals.json"
+        required = (manifest, timestamped, cleaned, segments, signals)
+        if not all(path.is_file() and path.stat().st_size > 0 for path in required):
+            return None
+        raw_candidates = sorted(
+            path
+            for path in output_dir.glob("00_raw_*.txt")
+            if path.name != "00_raw_timestamped.txt" and path.stat().st_size > 0
+        )
+        if not raw_candidates:
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict) or not payload.get("provider") or not payload.get("model"):
+            return None
+
+        recording_dir = audio.parent
+        microphone = recording_dir / "microphone.wav"
+        system = recording_dir / "system.wav"
+        if self.config.recording.dual_channel_transcription and microphone.is_file() and system.is_file():
+            expected_sources = {microphone.resolve(), system.resolve()}
+        else:
+            expected_sources = {audio.resolve()}
+        if not self._manifest_sources_match(payload, expected_sources):
+            return None
+
+        teacher = output_dir / "teacher_transcript.txt"
+        student = output_dir / "student_transcript.txt"
+        return TranscriptionResult(
+            output_dir=output_dir,
+            raw=raw_candidates[0],
+            timestamped=timestamped,
+            cleaned=cleaned,
+            segments=segments,
+            signals=signals,
+            manifest=manifest,
+            teacher_transcript=teacher if teacher.is_file() else None,
+            student_transcript=student if student.is_file() else None,
+        )
+
+    @staticmethod
+    def _apply_transcription_result(
+        lesson: Lesson,
+        audio: Path,
+        directory: Path,
+        result: TranscriptionResult,
+    ) -> None:
+        verified = directory / "transcript" / "transcript_verified.txt"
+        atomic_write_text(
+            verified,
+            result.cleaned.read_text(encoding="utf-8"),
+        )
+        lesson.source_audio_local = str(audio.resolve())
+        lesson.artifacts = ArtifactPaths(
+            raw_transcript=str(result.raw.resolve()),
+            timestamped_transcript=str(result.timestamped.resolve()),
+            cleaned_transcript=str(result.cleaned.resolve()),
+            verified_transcript=str(verified.resolve()),
+            segments_json=str(result.segments.resolve()),
+            student_signals=str(result.signals.resolve()),
+            transcription_manifest=str(result.manifest.resolve()),
+            teacher_transcript=str(result.teacher_transcript.resolve())
+            if result.teacher_transcript
+            else None,
+            student_transcript=str(result.student_transcript.resolve())
+            if result.student_transcript
+            else None,
+        )
+
     def _transcribe(self, lesson: Lesson, audio: Path) -> Lesson:
         directory = self.lesson_dir(lesson)
+        output_dir = directory / "transcript"
+        if lesson.status == JobStatus.TRANSCRIBING:
+            existing = self._existing_transcription_result(audio, output_dir)
+            if existing is not None:
+                logging.warning(
+                    "Reconciling durable transcription artifacts without rerunning ASR: lesson=%s",
+                    lesson.lesson_id,
+                )
+                self._apply_transcription_result(lesson, audio, directory, existing)
+                lesson.transition(JobStatus.REVIEW_REQUIRED)
+                return self.save_state(
+                    lesson,
+                    "source_audio_local",
+                    "artifacts",
+                    "status",
+                    "error",
+                )
+
         try:
-            lesson.transition(JobStatus.TRANSCRIBING)
-            lesson = self.save_state(lesson, "status", "error")
+            if lesson.status != JobStatus.TRANSCRIBING:
+                lesson.transition(JobStatus.TRANSCRIBING)
+                lesson = self.save_state(lesson, "status", "error")
             transcriber = self.transcriber()
             recording_dir = audio.parent
             microphone = recording_dir / "microphone.wav"
@@ -287,34 +398,13 @@ class LessonPipeline:
                 result = transcriber.transcribe_dual(
                     microphone,
                     system,
-                    directory / "transcript",
+                    output_dir,
                     microphone_offset_seconds=float(sync.get("microphone_delay_ms", 0)) / 1000,
                     system_offset_seconds=float(sync.get("system_delay_ms", 0)) / 1000,
                 )
             else:
-                result = transcriber.transcribe(audio, directory / "transcript")
-            verified = directory / "transcript" / "transcript_verified.txt"
-            atomic_write_text(
-                verified,
-                result.cleaned.read_text(encoding="utf-8"),
-            )
-            lesson.source_audio_local = str(audio.resolve())
-            lesson.artifacts = ArtifactPaths(
-                raw_transcript=str(result.raw.resolve()),
-                timestamped_transcript=str(result.timestamped.resolve()),
-                cleaned_transcript=str(result.cleaned.resolve()),
-                verified_transcript=str(verified.resolve()),
-                segments_json=str(result.segments.resolve()),
-                student_signals=str(result.signals.resolve()),
-                transcription_manifest=str(result.manifest.resolve()),
-                teacher_transcript=str(result.teacher_transcript.resolve())
-                if result.teacher_transcript
-                else None,
-                student_transcript=str(result.student_transcript.resolve())
-                if result.student_transcript
-                else None,
-            )
-            lesson.transition(JobStatus.REVIEW_REQUIRED)
+                result = transcriber.transcribe(audio, output_dir)
+            self._apply_transcription_result(lesson, audio, directory, result)
         except Exception as exc:
             lesson.transition(JobStatus.FAILED, str(exc))
             try:
@@ -322,7 +412,9 @@ class LessonPipeline:
             except Exception:
                 logging.exception("Не удалось сохранить состояние ошибки транскрибации")
             raise
-        else:
+
+        lesson.transition(JobStatus.REVIEW_REQUIRED)
+        try:
             lesson = self.save_state(
                 lesson,
                 "source_audio_local",
@@ -330,6 +422,12 @@ class LessonPipeline:
                 "status",
                 "error",
             )
+        except Exception:
+            logging.exception(
+                "Artifacts транскрибации сохранены, но финальный SQLite transition не записан; "
+                "retry выполнит reconciliation без повторного ASR"
+            )
+            raise
         return lesson
 
     def approve_transcript(self, lesson: Lesson, text: str) -> None:
@@ -356,9 +454,20 @@ class LessonPipeline:
     def _publish(self, lesson: Lesson) -> PublicationResult:
         content = self.content_service.get_lesson(lesson.lesson_id)
         current = content.lesson
+        revision = content.transcript
+        if revision is None:
+            raise RuntimeError(
+                "Публикация заблокирована: в SQLite отсутствует подтверждённая revision транскрипта"
+            )
+        approved = ApprovedTranscriptPayload(
+            content=revision.content,
+            content_sha256=revision.content_sha256,
+            revision_number=revision.revision_number,
+        )
         target = LessonPublisher(self.config.repository).publish(
             current,
             self.lesson_dir(current),
+            approved=approved,
         )
         current.publication = PublicationInfo(
             branch=target.branch,
