@@ -26,6 +26,9 @@ class RecordingFinalizingRecorder(Protocol):
     @property
     def active(self) -> bool: ...
 
+    @property
+    def quiesced(self) -> bool: ...
+
     def stop(self) -> RecordingResult: ...
 
 
@@ -110,10 +113,11 @@ class StopRecordingUseCase:
     audio marks the lesson ``FAILED`` instead: audio exists, but lesson finalization
     did not complete successfully.
 
-    The recording activity lease is owned by this use case for the stop boundary
-    and is released exactly once on every operational outcome. A missing lease is
-    tolerated so capture can still be stopped safely if presentation state was
-    partially lost.
+    The recording activity lease is released only after the recorder confirms that
+    all capture and writer resources are quiesced. This is deliberately stronger
+    than checking ``active``: a failed stop must not make destructive/exclusive
+    workspace operations possible while a WASAPI or writer thread can still touch
+    the recording directory.
     """
 
     def __init__(
@@ -130,6 +134,10 @@ class StopRecordingUseCase:
         try:
             try:
                 result = session.recorder.stop()
+                if not self._recorder_quiesced(session.recorder):
+                    raise RuntimeError(
+                        "Recorder вернул результат до полного завершения capture/writer ресурсов"
+                    )
             except Exception:
                 details = traceback.format_exc()
                 logging.error(
@@ -164,7 +172,20 @@ class StopRecordingUseCase:
                     error=details,
                 )
         finally:
-            self._release_lease(session.lease, session.lesson.lesson_id)
+            if self._recorder_quiesced(session.recorder):
+                self._release_lease(session.lease, session.lesson.lesson_id)
+            elif session.lease is not None:
+                logging.critical(
+                    "Recording lease retained because recorder is not quiesced: lesson=%s",
+                    session.lesson.lesson_id,
+                )
+
+    @staticmethod
+    def _recorder_quiesced(recorder: RecordingFinalizingRecorder) -> bool:
+        explicit = getattr(recorder, "quiesced", None)
+        if isinstance(explicit, bool):
+            return explicit
+        return not bool(getattr(recorder, "active", True))
 
     def _mark_failed(self, lesson: Lesson, details: str) -> None:
         try:

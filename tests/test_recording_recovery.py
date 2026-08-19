@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import numpy as np
 import pytest
@@ -59,6 +60,49 @@ def test_wav_recovery_is_idempotent(tmp_path) -> None:
     assert second.system_file.read_bytes() == first_bytes["system"]
     assert second.mixed_file.read_bytes() == first_bytes["mixed"]
     assert json.loads(second.sync_report.read_text(encoding="utf-8")) == first_sync
+
+
+@pytest.mark.parametrize(
+    ("missing", "expected_mode", "surviving"),
+    [
+        ("system", "microphone_only", "microphone"),
+        ("microphone", "system_only", "system"),
+    ],
+)
+def test_wav_recovery_promotes_single_surviving_track(
+    tmp_path,
+    missing: str,
+    expected_mode: str,
+    surviving: str,
+) -> None:
+    recording = _create_recording(tmp_path)
+    shutil.rmtree(recording / "chunks" / missing)
+
+    first = recover_recording(recording)
+
+    assert first.mixed_file.is_file()
+    assert sf.info(first.mixed_file).frames == 1600
+    sync = json.loads(first.sync_report.read_text(encoding="utf-8"))
+    quality = json.loads(first.quality_report.read_text(encoding="utf-8"))
+    assert sync["recovery_mode"] == expected_mode
+    assert sync["missing_sources"] == [missing]
+    assert quality[missing]["ready"] is False
+    assert quality[missing]["sample_rate"] == 0
+    assert quality[surviving]["sample_rate"] == 8_000
+    assert "единственная доступная дорожка" in quality[missing]["warnings"][0]
+
+    first_bytes = first.mixed_file.read_bytes()
+    second = recover_recording(recording)
+    assert second.mixed_file.read_bytes() == first_bytes
+    assert not getattr(second, f"{missing}_file").exists()
+
+
+def test_wav_recovery_rejects_when_both_tracks_are_missing(tmp_path) -> None:
+    recording = _create_recording(tmp_path)
+    shutil.rmtree(recording / "chunks")
+
+    with pytest.raises(RuntimeError, match="обеих дорожек"):
+        recover_recording(recording)
 
 
 def test_output_recovery_is_idempotent_and_canonicalizes_status(tmp_path) -> None:
