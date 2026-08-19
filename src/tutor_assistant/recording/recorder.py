@@ -196,7 +196,11 @@ class QueuedChunkWriter:
         self.frames_in_chunk = 0
         path = self.directory / f"{self.prefix}_{self.index:05d}.wav"
         return sf.SoundFile(
-            path, mode="w", samplerate=self.sample_rate, channels=self.channels, subtype="PCM_16"
+            path,
+            mode="w",
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            subtype="PCM_16",
         )
 
 
@@ -222,6 +226,10 @@ class SoundCardLoopbackStream:
         self.error: BaseException | None = None
         self.reconnect_attempts = 0
         self.last_error: str | None = None
+
+    @property
+    def quiesced(self) -> bool:
+        return self._thread is None or not self._thread.is_alive()
 
     @staticmethod
     def normalize_channels(data: np.ndarray, channels: int) -> np.ndarray:
@@ -320,6 +328,7 @@ class DualRecorder:
         self._session_lock = threading.Lock()
         self._levels = AudioLevels()
         self._active = False
+        self._quiesced = True
         self._output_dir: Path | None = None
         self._session_file: Path | None = None
         self._session: dict = {}
@@ -327,6 +336,10 @@ class DualRecorder:
     @property
     def active(self) -> bool:
         return self._active
+
+    @property
+    def quiesced(self) -> bool:
+        return self._quiesced
 
     @property
     def levels(self) -> AudioLevels:
@@ -351,7 +364,9 @@ class DualRecorder:
             return max(0.0, now - writer.last_callback_monotonic)
 
         stream_errors = tuple(
-            str(error) for stream in self._streams if (error := getattr(stream, "error", None)) is not None
+            str(error)
+            for stream in self._streams
+            if (error := getattr(stream, "error", None)) is not None
         )
         return RecorderHealth(
             mic.queue_percent if mic else 0,
@@ -396,9 +411,50 @@ class DualRecorder:
                 self._session[f"{source}_frames"] = writer.total_frames
             _atomic_json(self._session_file, self._session)
 
+    @staticmethod
+    def _stream_quiesced(stream: object) -> bool:
+        explicit = getattr(stream, "quiesced", None)
+        if isinstance(explicit, bool):
+            return explicit
+        thread = getattr(stream, "_thread", None)
+        if thread is not None and hasattr(thread, "is_alive") and thread.is_alive():
+            return False
+        active = getattr(stream, "active", None)
+        if isinstance(active, bool):
+            return not active
+        return True
+
+    def _resources_quiesced(self) -> bool:
+        streams_stopped = all(self._stream_quiesced(stream) for stream in self._streams)
+        writers_stopped = all(not writer.thread.is_alive() for writer in self._writers.values())
+        return streams_stopped and writers_stopped
+
+    def _stop_resources(self) -> list[Exception]:
+        errors: list[Exception] = []
+        for stream in reversed(self._streams):
+            try:
+                stream.stop()
+            except Exception as exc:
+                errors.append(exc)
+                logging.exception("Ошибка остановки аудиопотока")
+            try:
+                stream.close()
+            except Exception as exc:
+                errors.append(exc)
+                logging.exception("Ошибка закрытия аудиопотока")
+        for writer in self._writers.values():
+            try:
+                writer.stop()
+            except Exception as exc:
+                errors.append(exc)
+                logging.exception("Ошибка остановки writer-потока")
+        self._quiesced = self._resources_quiesced()
+        self._active = not self._quiesced
+        return errors
+
     def start(self, output_dir: Path, mic_device: int, system_source: SystemAudioSource | int) -> None:
-        if self._active:
-            raise RuntimeError("Запись уже запущена")
+        if self._active or not self._quiesced:
+            raise RuntimeError("Предыдущая запись ещё не остановлена полностью")
         try:
             import sounddevice as sd
         except ImportError as exc:
@@ -437,6 +493,7 @@ class DualRecorder:
             "loopback_device_name": system_source.name,
         }
         self._write_session()
+        self._streams = []
         self._writers = {
             "microphone": QueuedChunkWriter(
                 output_dir / "chunks" / "microphone",
@@ -459,6 +516,7 @@ class DualRecorder:
                 lambda value: self._set_level("system", value),
             ),
         }
+        self._quiesced = False
 
         def callback(source: str):
             def enqueue(indata, frames, time_info, status):
@@ -468,7 +526,6 @@ class DualRecorder:
 
             return enqueue
 
-        streams: list[object] = []
         try:
             mic_stream = sd.InputStream(
                 device=mic_device,
@@ -478,7 +535,7 @@ class DualRecorder:
                 callback=callback("microphone"),
             )
             mic_stream.start()
-            streams.append(mic_stream)
+            self._streams.append(mic_stream)
             if system_source.backend == "soundcard":
                 system_stream = SoundCardLoopbackStream(
                     system_source.device_id,
@@ -495,52 +552,40 @@ class DualRecorder:
                     callback=callback("system"),
                 )
             else:
-                raise RuntimeError(f"Неподдерживаемый источник системного звука: {system_source.backend}")
+                raise RuntimeError(
+                    f"Неподдерживаемый источник системного звука: {system_source.backend}"
+                )
             system_stream.start()
-            streams.append(system_stream)
-        except Exception:
-            for stream in reversed(streams):
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    logging.exception("Ошибка остановки аудиопотока после неудачного запуска")
-            for writer in self._writers.values():
-                writer.stop()
+            self._streams.append(system_stream)
+        except Exception as primary:
+            cleanup_errors = self._stop_resources()
             self._session["status"] = "failed_to_start"
+            self._session["errors"] = [str(primary), *(str(error) for error in cleanup_errors)]
             self._write_session()
+            if cleanup_errors:
+                raise ExceptionGroup(
+                    "Ошибка запуска записи и последующей очистки ресурсов",
+                    [primary, *cleanup_errors],
+                ) from primary
             raise
-        self._streams = streams
         self._active = True
+        self._quiesced = False
 
     def stop(self) -> RecordingResult:
-        if not self._active or self._output_dir is None or self._session_file is None:
+        if (
+            (not self._active and self._quiesced)
+            or self._output_dir is None
+            or self._session_file is None
+        ):
             raise RuntimeError("Активная запись отсутствует")
-        errors: list[str] = []
-        for stream in self._streams:
-            try:
-                stream.stop()
-            except Exception as exc:
-                errors.append(str(exc))
-                logging.exception("Ошибка остановки аудиопотока")
-            finally:
-                try:
-                    stream.close()
-                except Exception as exc:
-                    errors.append(str(exc))
-                    logging.exception("Ошибка закрытия аудиопотока")
-        for writer in self._writers.values():
-            try:
-                writer.stop()
-            except Exception as exc:
-                errors.append(str(exc))
-                logging.exception("Ошибка остановки writer-потока")
-        self._active = False
+        errors = self._stop_resources()
+        if not self._quiesced:
+            errors.append(RuntimeError("Не все capture/writer ресурсы завершились"))
         if errors:
             self._session["status"] = "failed_to_stop"
-            self._session["errors"] = errors
+            self._session["errors"] = [str(error) for error in errors]
             self._write_session()
-            raise RuntimeError("; ".join(errors))
+            raise ExceptionGroup("Не удалось полностью остановить запись", errors)
         self._session["status"] = "recorded"
         self._session["completed_at"] = datetime.now(UTC).isoformat()
         health = self.health
@@ -570,7 +615,13 @@ def concatenate_chunks(chunks: list[Path], output: Path, sample_rate: int, chann
 
     if not chunks:
         raise RuntimeError(f"Пригодные аудиочанки отсутствуют для {output.name}")
-    with sf.SoundFile(output, "w", samplerate=sample_rate, channels=channels, subtype="PCM_16") as target:
+    with sf.SoundFile(
+        output,
+        "w",
+        samplerate=sample_rate,
+        channels=channels,
+        subtype="PCM_16",
+    ) as target:
         for path in chunks:
             data, rate = sf.read(path, dtype="float32", always_2d=True)
             if rate != sample_rate:
@@ -783,6 +834,52 @@ def mix_tracks(
     )
 
 
+def _promote_single_track(source: Path, output: Path, source_rate: int, target_rate: int) -> None:
+    import soundfile as sf
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        suffix=".single.wav",
+        delete=False,
+    )
+    temporary = Path(handle.name)
+    handle.close()
+    try:
+        if source_rate == target_rate:
+            shutil.copyfile(source, temporary)
+        else:
+            with sf.SoundFile(source) as source_file:
+                output_frames = _resampled_frame_count(
+                    source_file.frames,
+                    source_rate,
+                    target_rate,
+                    1.0,
+                )
+                with sf.SoundFile(
+                    temporary,
+                    "w",
+                    samplerate=target_rate,
+                    channels=source_file.channels,
+                    subtype="PCM_16",
+                ) as target:
+                    for block_start in range(0, output_frames, _MIX_BLOCK_FRAMES):
+                        block_frames = min(_MIX_BLOCK_FRAMES, output_frames - block_start)
+                        block = _read_resampled_block(
+                            source_file,
+                            block_start,
+                            block_frames,
+                            source_rate=source_rate,
+                            target_rate=target_rate,
+                            tempo=1.0,
+                        )
+                        target.write(block)
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def recover_wav_recording(output_dir: Path) -> RecordingResult:
     import soundfile as sf
 
@@ -796,62 +893,97 @@ def recover_wav_recording(output_dir: Path) -> RecordingResult:
         session = {}
     mic_chunks = _valid_chunks(output_dir / "chunks" / "microphone")
     sys_chunks = _valid_chunks(output_dir / "chunks" / "system")
+    if not mic_chunks and not sys_chunks:
+        raise RuntimeError("Пригодные аудиочанки отсутствуют для обеих дорожек")
+
     mic_info = sf.info(mic_chunks[0]) if mic_chunks else None
     sys_info = sf.info(sys_chunks[0]) if sys_chunks else None
-    channels = int(session.get("channels") or (mic_info.channels if mic_info else 1))
-    legacy_rate = int(session.get("sample_rate") or (mic_info.samplerate if mic_info else 48_000))
+    fallback_info = mic_info or sys_info
+    channels = int(session.get("channels") or (fallback_info.channels if fallback_info else 1))
+    legacy_rate = int(
+        session.get("sample_rate") or (fallback_info.samplerate if fallback_info else 48_000)
+    )
     mic_rate = int(
         session.get("microphone_sample_rate")
         or (mic_info.samplerate if mic_info else legacy_rate)
     )
-    sys_rate = int(session.get("system_sample_rate") or (sys_info.samplerate if sys_info else legacy_rate))
+    sys_rate = int(
+        session.get("system_sample_rate")
+        or (sys_info.samplerate if sys_info else legacy_rate)
+    )
     target_rate = int(session.get("target_sample_rate", legacy_rate))
     microphone_file = output_dir / "microphone.wav"
     system_file = output_dir / "system.wav"
     mixed_file = output_dir / "lesson.wav"
     sync_report = output_dir / "sync_report.json"
     quality_report = output_dir / "audio_quality_report.json"
-    concatenate_chunks(mic_chunks, microphone_file, mic_rate, channels)
-    concatenate_chunks(sys_chunks, system_file, sys_rate, channels)
-    mic_start = session.get("microphone_first_callback")
-    sys_start = session.get("system_first_callback")
-    if mic_start is None or sys_start is None:
-        mic_start = sys_start = 0.0
-    baseline = min(float(mic_start), float(sys_start))
-    mic_delay_ms = max(0, round((float(mic_start) - baseline) * 1000))
-    sys_delay_ms = max(0, round((float(sys_start) - baseline) * 1000))
-    mic_duration = sf.info(microphone_file).duration
-    sys_duration = sf.info(system_file).duration
-    mic_end_ms = mic_delay_ms + mic_duration * 1000
-    sys_end_ms = sys_delay_ms + sys_duration * 1000
-    drift_ms = abs(mic_end_ms - sys_end_ms)
+
+    if mic_chunks:
+        concatenate_chunks(mic_chunks, microphone_file, mic_rate, channels)
+    else:
+        microphone_file.unlink(missing_ok=True)
+    if sys_chunks:
+        concatenate_chunks(sys_chunks, system_file, sys_rate, channels)
+    else:
+        system_file.unlink(missing_ok=True)
+
+    recovery_mode = "dual"
+    missing_sources: list[str] = []
+    mic_delay_ms = 0
+    sys_delay_ms = 0
+    mic_duration = sf.info(microphone_file).duration if mic_chunks else 0.0
+    sys_duration = sf.info(system_file).duration if sys_chunks else 0.0
+    drift_ms = 0.0
     mic_tempo = sys_tempo = 1.0
     drift_correction = False
-    if 5 <= drift_ms <= 2000:
-        common_end_ms = max(mic_end_ms, sys_end_ms)
-        if mic_end_ms < common_end_ms and common_end_ms > mic_delay_ms:
-            desired = (common_end_ms - mic_delay_ms) / 1000
-            mic_tempo = max(0.5, min(2.0, mic_duration / desired))
-            drift_correction = True
-        elif sys_end_ms < common_end_ms and common_end_ms > sys_delay_ms:
-            desired = (common_end_ms - sys_delay_ms) / 1000
-            sys_tempo = max(0.5, min(2.0, sys_duration / desired))
-            drift_correction = True
-    mix_tracks(
-        microphone_file,
-        system_file,
-        mixed_file,
-        mic_rate,
-        sys_rate,
-        target_rate,
-        mic_delay_ms,
-        sys_delay_ms,
-        mic_tempo,
-        sys_tempo,
-    )
+
+    if mic_chunks and sys_chunks:
+        mic_start = session.get("microphone_first_callback")
+        sys_start = session.get("system_first_callback")
+        if mic_start is None or sys_start is None:
+            mic_start = sys_start = 0.0
+        baseline = min(float(mic_start), float(sys_start))
+        mic_delay_ms = max(0, round((float(mic_start) - baseline) * 1000))
+        sys_delay_ms = max(0, round((float(sys_start) - baseline) * 1000))
+        mic_end_ms = mic_delay_ms + mic_duration * 1000
+        sys_end_ms = sys_delay_ms + sys_duration * 1000
+        drift_ms = abs(mic_end_ms - sys_end_ms)
+        if 5 <= drift_ms <= 2000:
+            common_end_ms = max(mic_end_ms, sys_end_ms)
+            if mic_end_ms < common_end_ms and common_end_ms > mic_delay_ms:
+                desired = (common_end_ms - mic_delay_ms) / 1000
+                mic_tempo = max(0.5, min(2.0, mic_duration / desired))
+                drift_correction = True
+            elif sys_end_ms < common_end_ms and common_end_ms > sys_delay_ms:
+                desired = (common_end_ms - sys_delay_ms) / 1000
+                sys_tempo = max(0.5, min(2.0, sys_duration / desired))
+                drift_correction = True
+        mix_tracks(
+            microphone_file,
+            system_file,
+            mixed_file,
+            mic_rate,
+            sys_rate,
+            target_rate,
+            mic_delay_ms,
+            sys_delay_ms,
+            mic_tempo,
+            sys_tempo,
+        )
+    elif mic_chunks:
+        recovery_mode = "microphone_only"
+        missing_sources.append("system")
+        _promote_single_track(microphone_file, mixed_file, mic_rate, target_rate)
+    else:
+        recovery_mode = "system_only"
+        missing_sources.append("microphone")
+        _promote_single_track(system_file, mixed_file, sys_rate, target_rate)
+
     report = {
-        "microphone_sample_rate": mic_rate,
-        "system_sample_rate": sys_rate,
+        "recovery_mode": recovery_mode,
+        "missing_sources": missing_sources,
+        "microphone_sample_rate": mic_rate if mic_chunks else None,
+        "system_sample_rate": sys_rate if sys_chunks else None,
         "target_sample_rate": target_rate,
         "microphone_duration_seconds": round(mic_duration, 4),
         "system_duration_seconds": round(sys_duration, 4),
@@ -861,7 +993,13 @@ def recover_wav_recording(output_dir: Path) -> RecordingResult:
         "drift_correction_applied": drift_correction,
         "microphone_tempo": round(mic_tempo, 8),
         "system_tempo": round(sys_tempo, 8),
-        "correction_applied": bool(mic_delay_ms or sys_delay_ms or mic_rate != sys_rate),
+        "correction_applied": bool(
+            drift_correction
+            or mic_delay_ms
+            or sys_delay_ms
+            or (mic_chunks and mic_rate != target_rate)
+            or (sys_chunks and sys_rate != target_rate)
+        ),
         "microphone_dropped_blocks": session.get("microphone_dropped_blocks", 0),
         "system_dropped_blocks": session.get("system_dropped_blocks", 0),
     }
@@ -898,9 +1036,7 @@ def find_recoverable_recordings(workspace: Path) -> list[Path]:
             "failed_to_start",
             "failed_to_stop",
             "encoding_failed",
-        } and any(
-            (manifest.parent / "chunks").rglob("*.wav")
-        ):
+        } and any((manifest.parent / "chunks").rglob("*.wav")):
             sessions.append(manifest.parent)
     return sorted(sessions)
 
