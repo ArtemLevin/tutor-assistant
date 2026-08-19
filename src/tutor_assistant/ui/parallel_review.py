@@ -44,11 +44,11 @@ class ParallelReviewPolicy:
 
 
 def processing_action(status: str) -> ProcessingAction:
+    if status == "ready":
+        return ProcessingAction.OPEN
     if status == "failed":
         return ProcessingAction.RETRY
-    if status in {"waiting", "running"}:
-        return ProcessingAction.WAIT
-    return ProcessingAction.OPEN
+    return ProcessingAction.WAIT
 
 
 def format_elapsed(seconds: int) -> str:
@@ -84,10 +84,9 @@ def parallel_context_text(
 
     parts: list[str] = []
     if recording_student:
-        recording = f"Запись: {recording_student}"
+        recording = f"● {format_elapsed(elapsed_seconds)} · Запись: {recording_student}"
         if recording_topic:
             recording += f" — {recording_topic}"
-        recording += f" · {format_elapsed(elapsed_seconds)}"
         parts.append(recording)
     if review_student:
         review = f"Проверка: {review_student}"
