@@ -72,6 +72,14 @@ def _show_range(page: LessonJournalCloseoutStablePage, start: date, end: date) -
     page.refresh()
 
 
+def _close_page(page: LessonJournalCloseoutStablePage) -> None:
+    """Close a test page without allowing an interactive dirty-draft prompt."""
+
+    if page._note_dirty:
+        page._discard_closeout_draft()
+    page.close()
+
+
 def test_closeout_query_filters_attendance_and_unfinished(tmp_path: Path) -> None:
     store = _store(tmp_path, "closeout-query.sqlite3")
     today = date.today()
@@ -106,7 +114,7 @@ def test_closeout_query_filters_attendance_and_unfinished(tmp_path: Path) -> Non
     assert unfinished.total == 1
     assert unfinished.rows[0].lesson.topic == "B"
     assert unfinished.summary.unfinished == 1
-    page.close()
+    _close_page(page)
 
 
 def test_closeout_controls_dirty_state_and_accessibility(
@@ -138,7 +146,7 @@ def test_closeout_controls_dirty_state_and_accessibility(
     assert page.teacher_note.width() > 100
     assert page.close_lesson_button.width() > 80
     page._discard_closeout_draft()
-    page.close()
+    _close_page(page)
 
 
 def test_attendance_change_and_closeout_support_undo(
@@ -176,7 +184,7 @@ def test_attendance_change_and_closeout_support_undo(
     assert page._rows[0].attendance == AttendanceStatus.PRESENT
     assert page._rows[0].closeout is not None
     assert page._rows[0].closeout.closed_at is None
-    page.close()
+    _close_page(page)
 
 
 def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
@@ -211,7 +219,7 @@ def test_unfinished_smart_view_removes_closed_row_and_restores_on_undo(
     application.processEvents()
     assert len(page._rows) == 2
     assert page._identity(page._selected_row()) == selected_identity
-    page.close()
+    _close_page(page)
 
 
 def test_dirty_note_is_saved_when_switching_rows(
@@ -242,7 +250,7 @@ def test_dirty_note_is_saved_when_switching_rows(
     assert saved is not None
     assert saved.teacher_note == "Сохранить при переходе"
     assert not page._note_dirty
-    page.close()
+    _close_page(page)
 
 
 def test_attendance_filter_has_chip_and_resets_independently(
@@ -267,7 +275,7 @@ def test_attendance_filter_has_chip_and_resets_independently(
     attendance_chip.click()
     application.processEvents()
     assert page.attendance_filter.currentData() == "all"
-    page.close()
+    _close_page(page)
 
 
 def test_closeout_keyboard_shortcuts(
@@ -299,4 +307,4 @@ def test_closeout_keyboard_shortcuts(
     QTest.keyClick(page, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
     application.processEvents()
     assert page._rows[0].lesson.status == "completed"
-    page.close()
+    _close_page(page)
