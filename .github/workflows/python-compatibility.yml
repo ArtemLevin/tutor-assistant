@@ -1,0 +1,37 @@
+name: Python compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Compatibility Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.13', '3.14']
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --check
+      - run: uv sync --locked --extra desktop --group dev
+      - run: uv run pytest -q --junitxml=compatibility.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-py${{ matrix.python-version }}
+          path: compatibility.xml
+          if-no-files-found: ignore

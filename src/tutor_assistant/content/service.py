@@ -268,9 +268,14 @@ class StudentContentService:
     def verify_database_backup(self, path: Path) -> DatabaseBackupVerification:
         return self.backups.verify(path)
 
-    def prune_database_backups(self, keep: int) -> DatabaseBackupRetentionResult:
+    def prune_database_backups(
+        self,
+        keep: int,
+        *,
+        reasons: frozenset[str] | None = None,
+    ) -> DatabaseBackupRetentionResult:
         with self.activity("backup-retention", exclusive=True):
-            return self.backups.prune(keep)
+            return self.backups.prune(keep, reasons=reasons)
 
     def restore_database_backup(self, path: Path) -> DatabaseRestoreResult:
         with self.activity("database-restore", exclusive=True, ttl=timedelta(minutes=5)):
@@ -1011,15 +1016,29 @@ class StudentContentService:
 
             if backup_enabled:
                 try:
-                    backups = self.backups.list()
+                    backups = [
+                        backup
+                        for backup in self.backups.list()
+                        if backup.manifest.reason in {"scheduled", "scheduled-maintenance"}
+                    ]
                     due = not backups or (started_at - backups[0].manifest.created_at >= backup_interval)
                     if due:
                         with self.activity("database-backup"):
-                            result.backup = self.backups.create(reason="scheduled-maintenance")
-                    result.backup_retention = self.backups.prune(backup_retention_count)
-                    result.errors.extend(
-                        f"backup retention: {details}" for details in result.backup_retention.errors
-                    )
+                            result.backup = self.backups.create(reason="scheduled")
+                            verification = self.backups.verify(result.backup.path)
+                            if not verification.valid:
+                                raise DatabaseBackupError(
+                                    "Scheduled backup verification failed: "
+                                    + "; ".join(verification.errors)
+                                )
+                            result.backup_retention = self.backups.prune(
+                                backup_retention_count,
+                                reasons=frozenset({"scheduled", "scheduled-maintenance"}),
+                            )
+                            result.errors.extend(
+                                f"backup retention: {details}"
+                                for details in result.backup_retention.errors
+                            )
                 except Exception as exc:
                     result.errors.append(f"backup: {exc}")
                     logging.exception("Не удалось создать резервную копию перед обслуживанием")

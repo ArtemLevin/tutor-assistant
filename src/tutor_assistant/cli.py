@@ -10,13 +10,17 @@ from pathlib import Path
 from .config import AppConfig, load_students
 from .domain import Lesson
 from .logging_config import configure_logging, install_exception_hook
+from .paths import default_config_path
 from .pipeline import LessonPipeline
 from .recording import list_input_devices, list_system_audio_sources
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="tutor-assistant")
-    root.add_argument("--config", type=Path, default=Path("config/app.yaml"))
+    from . import __version__
+
+    root.add_argument("--version", action="version", version=__version__)
+    root.add_argument("--config", type=Path, default=default_config_path())
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("devices", help="Показать входные аудиоустройства")
     support = commands.add_parser("support-bundle", help="Собрать безопасный ZIP диагностики")
@@ -24,6 +28,22 @@ def parser() -> argparse.ArgumentParser:
     doctor = commands.add_parser("doctor", help="Проверить всё окружение приложения")
     doctor.add_argument("--json", action="store_true", help="Вывести машиночитаемый JSON")
     doctor.add_argument("--strict", action="store_true", help="Вернуть код 1 при обязательных ошибках")
+    recovery_drill = commands.add_parser(
+        "recovery-drill",
+        help="Проверить восстановление в изолированной песочнице без изменения рабочего каталога",
+    )
+    recovery_drill.add_argument("--output", type=Path, help="Сохранить JSON-отчёт вне рабочего каталога")
+    hardware_soak = commands.add_parser(
+        "hardware-soak",
+        help="Собрать privacy-safe отчёт и оценить физические сценарии проверки записи",
+    )
+    hardware_soak.add_argument("--output", type=Path)
+    hardware_soak.add_argument(
+        "--evidence",
+        type=Path,
+        help="JSON-файл ранее собранных аппаратных наблюдений",
+    )
+    hardware_soak.add_argument("--strict", action="store_true")
     commands.add_parser(
         "content-index",
         help="Проиндексировать существующие локальные занятия, аудио и транскрипты",
@@ -51,6 +71,12 @@ def parser() -> argparse.ArgumentParser:
     backup_action.add_argument("--verify", type=Path)
     backup_action.add_argument("--restore", type=Path)
     backup_action.add_argument("--prune", action="store_true")
+    content_backup.add_argument(
+        "--reason",
+        choices=("manual", "pre-upgrade"),
+        default="manual",
+        help="Класс создаваемой резервной копии; pre-upgrade сохраняется вне scheduled retention",
+    )
     content_backup.add_argument(
         "--yes",
         action="store_true",
@@ -147,8 +173,9 @@ def parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = parser().parse_args()
     config = AppConfig.load(args.config)
-    configure_logging(config.workspace)
-    install_exception_hook()
+    if args.command != "recovery-drill":
+        configure_logging(config.workspace)
+        install_exception_hook(config.workspace)
     if args.command == "devices":
         inputs = list_input_devices()
         system_sources = list_system_audio_sources(inputs, config.recording.target_sample_rate)
@@ -174,6 +201,35 @@ def main() -> None:
         report = run_diagnostics(config, args.config)
         print(report_json(report) if args.json else format_diagnostics(report))
         if args.strict and not report.ready:
+            raise SystemExit(1)
+        return
+    if args.command == "recovery-drill":
+        from .recovery_drill import run_recovery_drill, write_recovery_drill_report
+
+        report = run_recovery_drill(config.workspace)
+        if args.output:
+            write_recovery_drill_report(report, args.output, live_workspace=config.workspace)
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        if not report.passed:
+            raise SystemExit(1)
+        return
+    if args.command == "hardware-soak":
+        from .hardware_soak import (
+            collect_hardware_observations,
+            evaluate_hardware_soak,
+            write_hardware_soak_report,
+        )
+
+        observations = (
+            json.loads(args.evidence.read_text(encoding="utf-8"))
+            if args.evidence
+            else collect_hardware_observations(config.workspace)
+        )
+        report = evaluate_hardware_soak(observations)
+        if args.output:
+            write_hardware_soak_report(report, args.output)
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        if args.strict and not report.passed:
             raise SystemExit(1)
         return
     if args.command == "privacy-doctor":
@@ -349,7 +405,7 @@ def main() -> None:
             print(payload.model_dump_json(indent=2))
             return
         if args.create:
-            payload: object = service.create_database_backup(reason="manual-cli")
+            payload: object = service.create_database_backup(reason=args.reason)
         elif args.verify:
             payload = service.verify_database_backup(args.verify)
         elif args.restore:

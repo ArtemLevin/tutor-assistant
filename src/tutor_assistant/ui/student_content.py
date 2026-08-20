@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import TypeAlias
 
 from PySide6.QtCore import QDate, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QCloseEvent, QColor, QHideEvent, QKeySequence, QShortcut, QShowEvent
@@ -74,7 +73,7 @@ from .localization import subject_label
 from .playback import PlaybackPanel, QtPlaybackBackend
 from .theme import set_button_kind
 
-BackgroundRunner: TypeAlias = Callable[
+type BackgroundRunner = Callable[
     [Callable[[], object], Callable[[object], None], Callable[[str], None]], None
 ]
 

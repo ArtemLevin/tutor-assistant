@@ -12,6 +12,12 @@ from .audio_devices import (
     SystemAudioSourceSnapshot,
 )
 from .audio_preflight import AudioPreflightResult, AudioPreflightUseCase
+from .backup_maintenance import (
+    BackupAction,
+    BackupDecision,
+    BackupMaintenanceCoordinator,
+    BackupMaintenanceSnapshot,
+)
 from .latex_monitor import (
     LatexMonitorCoordinator,
     LatexMonitorLifecycleState,
@@ -93,6 +99,10 @@ __all__ = [
     "RefreshAudioDevicesUseCase",
     "SystemAudioSourceSnapshot",
     "AudioPreflightUseCase",
+    "BackupAction",
+    "BackupDecision",
+    "BackupMaintenanceCoordinator",
+    "BackupMaintenanceSnapshot",
     "LatexMonitorCoordinator",
     "LatexMonitorLifecycleState",
     "LatexMonitorScanAction",

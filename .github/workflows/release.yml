@@ -1,0 +1,144 @@
+name: Windows release
+
+on:
+  push:
+    tags: ['v1.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v1.0.0-rc.1
+        required: true
+        type: string
+      allow_unsigned_stable:
+        description: Explicit exceptional approval for an unsigned stable release
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  QT_QPA_PLATFORM: offscreen
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  production_gate:
+    name: Release production verification
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --check
+      - run: uv sync --locked --extra desktop --group dev
+      - run: uv run ruff check .
+      - run: uv run python -m compileall -q src tests scripts
+      - run: uv run python scripts/build_windows.py --validate-only --tag "$env:RELEASE_TAG"
+      - run: uv run pytest -q
+
+  windows_artifacts:
+    name: Portable application and installer
+    needs: production_gate
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Bind build identity to the checked-out release commit
+        shell: pwsh
+        run: '"TUTOR_ASSISTANT_BUILD_COMMIT=$(git rev-parse HEAD)" >> $env:GITHUB_ENV'
+      - run: uv sync --locked --extra desktop --extra transcription --extra packaging --group dev
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build portable onedir executable
+        run: uv run python scripts/build_windows.py --build
+      - name: Sign and verify executable when a certificate is configured
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: |
+          $allowUnsigned = $env:RELEASE_TAG -match 'rc' -or "${{ inputs.allow_unsigned_stable }}" -eq "true"
+          if ($env:WINDOWS_SIGNING_CERTIFICATE) {
+            uv run python scripts/sign_windows.py dist/TutorAssistant/TutorAssistant.exe
+            "signed=true" >> $env:GITHUB_OUTPUT
+          } elseif ($allowUnsigned) {
+            Write-Warning "Unsigned release artifact: an explicit RC/stable exception is recorded"
+            "signed=false" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "A stable release requires code signing or explicit allow_unsigned_stable approval"
+          }
+      - name: Build installer from the signed executable
+        run: uv run python scripts/build_windows.py --installer
+      - name: Sign and verify installer
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          WINDOWS_SIGNING_CERTIFICATE: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist -Filter '*-win64-setup.exe' | Select-Object -First 1
+          uv run python scripts/sign_windows.py $installer.FullName
+      - name: Repack portable distribution after executable signing
+        run: uv run python scripts/build_windows.py --repack
+      - name: Frozen executable smoke
+        run: uv run python scripts/build_windows.py --smoke dist/TutorAssistant/TutorAssistant.exe
+      - name: Installation, reinstall and uninstall preservation smoke
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist -Filter '*-win64-setup.exe' | Select-Object -First 1
+          uv run python scripts/build_windows.py --installer-smoke $installer.FullName
+      - name: Build source-installation wheel
+        run: uv build --wheel
+      - name: Scan release artifacts for private user data
+        run: uv run python scripts/build_windows.py --scan dist
+      - name: Build manifest and SHA-256 checksums
+        shell: pwsh
+        run: |
+          $arguments = @('--manifest', 'dist/build-manifest.json', '--tag', $env:RELEASE_TAG)
+          if ("${{ steps.signing.outputs.signed }}" -eq "true") { $arguments += '--signed' }
+          uv run python scripts/build_windows.py @arguments
+          uv run python scripts/build_windows.py --checksums dist/SHA256SUMS.txt
+      - name: Refuse to replace an existing immutable release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: process.env.RELEASE_TAG
+              });
+              core.setFailed(`Release ${process.env.RELEASE_TAG} already exists; publish a new version instead.`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+      - name: Publish immutable release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          prerelease: ${{ contains(env.RELEASE_TAG, 'rc') }}
+          fail_on_unmatched_files: true
+          overwrite_files: false
+          files: |
+            dist/*-win64-setup.exe
+            dist/*-win64-portable.zip
+            dist/*.whl
+            dist/SHA256SUMS.txt
+            dist/build-manifest.json

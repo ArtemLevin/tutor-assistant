@@ -34,6 +34,10 @@ class MainWindow(ConcurrentMainWindow):
         )
 
     def _begin_background_shutdown(self) -> None:
+        if hasattr(self, "backup_coordinator"):
+            self.backup_coordinator.request_shutdown()
+        if hasattr(self, "backup_maintenance_timer"):
+            self.backup_maintenance_timer.stop()
         if hasattr(self, "background_tasks"):
             self.background_tasks.begin_shutdown()
 

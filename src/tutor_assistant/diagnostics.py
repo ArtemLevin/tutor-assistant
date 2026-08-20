@@ -5,11 +5,11 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .config import AppConfig
+from .runtime import inspect_runtime
 
 
 @dataclass(frozen=True)
@@ -93,14 +93,29 @@ def _run(command: list[str], timeout: int = 10) -> subprocess.CompletedProcess[s
 def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml")) -> DiagnosticReport:
     checks: list[DiagnosticCheck] = []
 
-    version = sys.version_info
-    supported_python = (3, 11) <= version[:2] < (3, 15)
+    runtime = inspect_runtime()
     checks.append(
         _check(
             "Python",
-            supported_python,
-            f"{version.major}.{version.minor}.{version.micro}",
-            f"{version.major}.{version.minor}.{version.micro}; требуется Python 3.11–3.14",
+            runtime.supported,
+            runtime.version,
+            f"{runtime.version}; требуется Python 3.12–3.14",
+        )
+    )
+    checks.append(
+        DiagnosticCheck(
+            "Production runtime",
+            "ok" if runtime.production else "warning",
+            "YES (Python 3.12)" if runtime.production else "NO; packaged releases require Python 3.12",
+            required=False,
+        )
+    )
+    checks.append(
+        DiagnosticCheck(
+            "Compatibility runtime",
+            "ok" if runtime.supported else "error",
+            "YES" if runtime.compatibility else "NO" if runtime.production else "UNSUPPORTED",
+            required=not runtime.supported,
         )
     )
     checks.append(_command_check("uv", "uv"))
@@ -176,7 +191,7 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
         )
     )
 
-    gh_required = config.repository.push and config.repository.auto_create_pr
+    gh_required = False
     gh_path = shutil.which("gh")
     checks.append(
         _check(
@@ -335,6 +350,39 @@ def run_diagnostics(config: AppConfig, config_path: Path = Path("config/app.yaml
                 required=False,
             )
         )
+
+    if config.content.backup_enabled:
+        status_path = config.workspace / "maintenance" / "backup-status.json"
+        try:
+            backup_status = json.loads(status_path.read_text(encoding="utf-8"))
+            verified = bool(backup_status.get("verified"))
+            last_error = backup_status.get("last_error")
+            message = (
+                f"последняя: {backup_status.get('last_successful_at') or '—'}; "
+                f"следующая: {backup_status.get('next_due_at') or '—'}; "
+                f"copies: {backup_status.get('scheduled_copy_count', 0)}"
+            )
+            if last_error:
+                message += f"; ошибка: {last_error}"
+            checks.append(
+                DiagnosticCheck(
+                    "Automatic backup",
+                    "ok" if verified and not last_error else "warning",
+                    message,
+                    required=False,
+                )
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            checks.append(
+                DiagnosticCheck(
+                    "Automatic backup",
+                    "warning",
+                    "Проверенная плановая резервная копия пока не создана",
+                    required=False,
+                )
+            )
+    else:
+        checks.append(DiagnosticCheck("Automatic backup", "ok", "Отключено пользователем", required=False))
 
     ready = not any(check.required and check.status == "error" for check in checks)
     return DiagnosticReport(ready=ready, checks=tuple(checks))

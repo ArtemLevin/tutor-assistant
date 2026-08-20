@@ -1,0 +1,144 @@
+name: Release 1.0 production gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  production_py312:
+    name: Production Python 3.12
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --check
+      - run: uv sync --locked --extra desktop --group dev
+      - run: uv run ruff check . --output-format=concise
+      - run: uv run python -m compileall -q src tests scripts
+      - run: uv run pytest -q --junitxml=production-py312.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-py312-test-report
+          path: production-py312.xml
+          if-no-files-found: ignore
+
+  privacy:
+    name: Privacy and secret contracts
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra desktop --group dev
+      - name: Privacy import smoke
+        run: >-
+          uv run python -c "from tutor_assistant.security import CloudConsentSession, credential_status, redact_text; assert redact_text('Authorization: Api-Key demo-secret-value') == 'Authorization: Api-Key [REDACTED]'; assert CloudConsentSession(); assert callable(credential_status)"
+      - name: Scan secrets introduced by pull request
+        if: github.event_name == 'pull_request'
+        run: uv run python scripts/scan_added_secrets.py ${{ github.event.pull_request.base.sha }}
+      - name: Privacy regression contracts
+        run: >-
+          uv run pytest -q
+          tests/test_sensitive_data_redaction.py tests/test_privacy_support_bundle.py
+          tests/test_privacy_doctor.py tests/test_cloud_consent.py
+          tests/test_cloud_consent_cli.py tests/test_cloud_service_consent.py
+          tests/test_cloud_request_envelope.py tests/test_release_observability.py
+
+  architecture:
+    name: Application architecture contracts
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra desktop --group dev
+      - name: Qt-free orchestration and production composition
+        run: >-
+          uv run pytest -q
+          tests/test_recording_ui_architecture.py tests/test_recording_runtime_port_architecture.py
+          tests/test_audio_device_ui_architecture.py tests/test_audio_preflight_ui_architecture.py
+          tests/test_recording_health_ui_architecture.py tests/test_normalization_ui_architecture.py
+          tests/test_latex_monitor_ui_architecture.py tests/test_shutdown_ui_architecture.py
+          tests/test_workspace_ui_architecture.py tests/test_production_composition.py
+          tests/test_backup_maintenance.py
+
+  accessibility:
+    name: Accessibility / scaling (${{ matrix.scale }})
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: ['1', '1.25', '1.5', '2']
+    env:
+      QT_ENABLE_HIGHDPI_SCALING: '1'
+      QT_SCALE_FACTOR: ${{ matrix.scale }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra desktop --group dev
+      - run: >-
+          uv run pytest -q tests/test_ux4_accessibility_gui.py tests/test_ux4_scaling_gui.py
+          tests/test_lesson_journal_layout_recursion.py tests/test_ux6_teacher_cockpit_gui.py
+
+  package_smoke:
+    name: Packaging and disaster-recovery smoke
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked --extra desktop --group dev
+      - run: uv run pytest -q tests/test_packaging_contract.py tests/test_recovery_drill.py tests/test_hardware_soak.py
+      - run: uv build --wheel
+      - run: uv run python scripts/build_windows.py --validate-only --scan dist
+
+  release_gate:
+    name: Release 1.0 Gate
+    if: always()
+    runs-on: windows-latest
+    needs: [production_py312, privacy, architecture, accessibility, package_smoke]
+    steps:
+      - name: Reject failed, skipped, or cancelled production-critical checks
+        shell: pwsh
+        run: |
+          $results = @(
+            "${{ needs.production_py312.result }}",
+            "${{ needs.privacy.result }}",
+            "${{ needs.architecture.result }}",
+            "${{ needs.accessibility.result }}",
+            "${{ needs.package_smoke.result }}"
+          )
+          if ($results | Where-Object { $_ -ne "success" }) {
+            throw "Release 1.0 Gate rejected production checks: $($results -join ', ')"
+          }
+          Write-Host "Release 1.0 Gate passed"

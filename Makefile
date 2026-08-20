@@ -11,7 +11,8 @@ export UV_CACHE_DIR
 
 .PHONY: help init sync lock lock-check upgrade run setup doctor doctor-json doctor-strict \
 	devices latex-doctor test lint format format-check check build clean compile compile-remote \
-	scan-latex recover support privacy-history privacy-history-full
+	scan-latex recover support recovery-drill hardware-soak windows-build release-validate \
+	privacy-history privacy-history-full
 
 help: ## Показать список команд
 	@$(UV) run --no-project python scripts/make_help.py
@@ -50,6 +51,18 @@ doctor-strict: ## Завершиться с ошибкой при обязате
 
 support: ## Собрать безопасный ZIP диагностики
 	$(UV) run --all-extras tutor-assistant --config "$(CONFIG)" support-bundle
+
+recovery-drill: ## Проверить backup, rollback и восстановление аудио в отдельной песочнице
+	$(UV) run --extra desktop tutor-assistant --config "$(CONFIG)" recovery-drill
+
+hardware-soak: ## Показать текущий sanitized-отчёт аппаратных испытаний
+	$(UV) run --extra desktop tutor-assistant --config "$(CONFIG)" hardware-soak
+
+windows-build: ## Собрать portable Windows приложение из чистого checkout
+	$(UV) run --extra desktop --extra transcription --extra packaging python scripts/build_windows.py --build
+
+release-validate: ## Проверить версии, installer policy и Windows packaging contract
+	$(UV) run --extra desktop python scripts/build_windows.py --validate-only
 
 devices: ## Показать входные аудиоустройства
 	$(UV) run --all-extras tutor-assistant --config "$(CONFIG)" devices

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -123,10 +124,20 @@ class DatabaseBackupStore:
             )
         manifest_path = self._manifest_path(resolved)
         try:
+            initial_stat = resolved.stat()
+        except OSError as exc:
+            return DatabaseBackupVerification(
+                path=resolved,
+                valid=False,
+                errors=[f"Не удалось прочитать резервную копию: {exc}"],
+            )
+        try:
             manifest = DatabaseBackupManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
         except Exception as exc:
             errors.append(f"Manifest отсутствует или повреждён: {exc}")
         if manifest:
+            if manifest.format_version != 1:
+                errors.append(f"Неизвестная версия backup manifest: {manifest.format_version}")
             if manifest.database_file != resolved.name:
                 errors.append("Manifest относится к другому файлу")
             actual_size = resolved.stat().st_size
@@ -136,6 +147,25 @@ class DatabaseBackupStore:
             if manifest.sha256 != actual_sha256:
                 errors.append("Контрольная сумма SHA-256 не совпадает")
         errors.extend(self._sqlite_check(resolved))
+        if manifest and not errors:
+            try:
+                actual_schema = self._schema_version(resolved)
+                if manifest.schema_version != actual_schema:
+                    errors.append(
+                        "SQLite schema version не совпадает с manifest: "
+                        f"{actual_schema} != {manifest.schema_version}"
+                    )
+            except (OSError, sqlite3.DatabaseError) as exc:
+                errors.append(f"Не удалось проверить версию схемы SQLite: {exc}")
+        try:
+            final_stat = resolved.stat()
+            if (initial_stat.st_size, initial_stat.st_mtime_ns) != (
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+            ):
+                errors.append("Резервная копия изменилась во время проверки")
+        except OSError as exc:
+            errors.append(f"Резервная копия стала недоступна во время проверки: {exc}")
         return DatabaseBackupVerification(
             path=resolved,
             valid=not errors,
@@ -163,11 +193,21 @@ class DatabaseBackupStore:
                 continue
         return sorted(backups, key=lambda item: item.manifest.created_at, reverse=True)
 
-    def prune(self, keep: int) -> DatabaseBackupRetentionResult:
+    def prune(
+        self,
+        keep: int,
+        *,
+        reasons: Collection[str] | None = None,
+    ) -> DatabaseBackupRetentionResult:
         if keep < 1:
             raise ValueError("Должна сохраняться хотя бы одна резервная копия")
         result = DatabaseBackupRetentionResult()
-        for backup in self.list()[keep:]:
+        candidates = [
+            backup
+            for backup in self.list()
+            if reasons is None or backup.manifest.reason in reasons
+        ]
+        for backup in candidates[keep:]:
             try:
                 backup.path.unlink()
                 backup.manifest_path.unlink(missing_ok=True)

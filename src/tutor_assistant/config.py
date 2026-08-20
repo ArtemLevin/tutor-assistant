@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .atomic_io import atomic_write_text
 from .domain import Student
+from .paths import default_students_path, default_workspace_path
 
 
 class RecordingConfig(BaseModel):
@@ -254,8 +255,8 @@ class NormalizationConfig(BaseModel):
 
 class AppConfig(BaseModel):
     setup_completed: bool = False
-    workspace: Path = Path("data")
-    students_file: Path = Path("config/students.yaml")
+    workspace: Path = Field(default_factory=default_workspace_path)
+    students_file: Path = Field(default_factory=default_students_path)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
