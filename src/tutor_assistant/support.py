@@ -12,6 +12,7 @@ from .config import AppConfig
 from .diagnostics import run_diagnostics
 from .logging_config import log_directory
 from .recording import list_input_devices, list_system_audio_sources
+from .runtime import build_identity
 from .security.redaction import find_secret_matches, redact_text
 
 SAFE_SESSION_FILES = {"session.json", "sync_report.json", "audio_quality_report.json"}
@@ -51,6 +52,24 @@ def _safe_entry(name: str, value: str) -> str:
     if findings:
         raise RuntimeError(f"Support bundle заблокирован: секрет обнаружен в {name}")
     return redacted
+
+
+def _safe_json_file(path: Path, *, fallback: dict[str, object]) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else fallback
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return fallback
+
+
+def _workspace_health(config: AppConfig) -> dict[str, object]:
+    database = config.workspace / "tutor-assistant.sqlite3"
+    return {
+        "database_exists": database.is_file(),
+        "database_size_bytes": database.stat().st_size if database.is_file() else 0,
+        "backups_present": sum(1 for _ in (config.workspace / "backups").glob("*.sqlite3")),
+        "crash_marker_present": (config.workspace / "crash" / "last-crash.json").is_file(),
+    }
 
 
 def create_support_bundle(
@@ -99,7 +118,23 @@ def create_support_bundle(
         "devices.json": _json(devices),
         "config-sanitized.json": _json(_safe_config(config)),
         "privacy-report.json": _json(privacy_report),
+        "build-info.json": _json(build_identity().to_dict()),
+        "backup-status.json": _json(
+            _safe_json_file(
+                config.workspace / "maintenance" / "backup-status.json",
+                fallback={"available": False},
+            )
+        ),
+        "workspace-health.json": _json(_workspace_health(config)),
     }
+    crash_marker = config.workspace / "crash" / "last-crash.json"
+    if crash_marker.is_file():
+        from .crash import read_crash_marker
+
+        marker = read_crash_marker(config.workspace)
+        entries["crash/last-crash.json"] = _json(
+            marker if marker is not None else {"available": False, "malformed": True}
+        )
     logs = log_directory(config.workspace)
     if logs.exists():
         for path in sorted(logs.glob("application.log*")):

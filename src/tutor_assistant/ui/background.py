@@ -6,7 +6,7 @@ from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
 from threading import Event
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from ..config import LatexConfig, RepositoryConfig
 from ..content import ActivityLeaseInfo, ContentBusyError, StudentContentService
@@ -75,7 +75,7 @@ class BackgroundTaskPhase(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class BackgroundTaskSpec(Generic[T]):
+class BackgroundTaskSpec[T]:
     purpose: BackgroundTaskPurpose
     operation: Callable[..., T]
     activity: str | None = None
@@ -95,7 +95,7 @@ class BackgroundTaskSpec(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class BackgroundTaskResult(Generic[T]):
+class BackgroundTaskResult[T]:
     state: BackgroundTaskState
     payload: T | None = None
     reason: str | None = None

@@ -131,6 +131,23 @@ def test_activity_lease_heartbeat_and_idempotent_release(tmp_path: Path) -> None
     assert store.active() == []
 
 
+def test_short_activity_lease_is_renewed_before_expiration(tmp_path: Path) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    ttl = timedelta(milliseconds=600)
+    acquired = store.try_acquire(owner_id="owner", activity="short-operation", ttl=ttl)
+    assert acquired.lease_info is not None
+
+    lease = ActivityLease(store, acquired.lease_info, ttl)
+    try:
+        time.sleep(0.8)
+        active = store.active()
+        assert len(active) == 1
+        assert active[0].heartbeat_at > acquired.lease_info.heartbeat_at
+        assert lease.valid
+    finally:
+        lease.release()
+
+
 def test_activity_lease_marks_rejected_heartbeat_as_lost(tmp_path: Path, monkeypatch) -> None:
     store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
     acquired = store.try_acquire(

@@ -1,13 +1,36 @@
 # Tutor Assistant — Development Plan
 
-**Актуальность:** 19 августа 2026 года  
-**Текущая версия:** `0.22.1`  
+**Актуальность:** 20 августа 2026 года
+**Текущая версия:** `1.0.0rc1`
 **Основная ветка:** `main`  
 **Production entrypoint:** `tutor-assistant-gui -> tutor_assistant.ui.recording_recovery_app:main`
 
 ## 1. Текущее состояние
 
 Tutor Assistant перешёл из фазы архитектурной стабилизации ядра в фазу **Production Readiness / Release 1.0 hardening**.
+
+### Реализация программы R1.0–R1.11
+
+В repository подготовлены следующие implementation boundaries:
+
+- production runtime Python 3.12, source-support range `>=3.12,<3.15` и compatibility CI 3.13/3.14;
+- стабильный aggregate check `Release 1.0 Gate` с privacy, architecture, accessibility и package smoke;
+- build/application-session identity, allowlisted crash marker, thread/Qt exception boundaries и support bundle v2;
+- Qt-free `BackupMaintenanceCoordinator`, persisted backup status и порядок `create → verify → prune`;
+- reason-aware retention, сохраняющая `manual`, `pre-restore-safety` и `pre-upgrade` copies;
+- isolated `recovery-drill` для restore, quarantine, rollback и dual/single-channel audio recovery;
+- PyInstaller onedir, Inno Setup, program/user-data separation и install/reinstall/uninstall smoke;
+- release workflow, version/tag gate, artifact privacy scan, signing hooks, SHA-256 и build manifest;
+- privacy-safe hardware-soak evidence/acceptance thresholds;
+- пользовательский README, CHANGELOG и комплект эксплуатационных инструкций.
+
+Stable release намеренно **не объявляется завершённым** до внешней проверки:
+
+1. первого green GitHub `Release 1.0 Gate` и отдельного включения branch protection владельцем;
+2. реальной сборки и установки на clean Windows runner;
+3. предоставления сертификата либо явного согласования unsigned stable exception;
+4. фактических 20 часов hardware soak и остальных физических acceptance scenarios;
+5. подтверждения RC cycle и отдельного создания stable tag `v1.0.0`.
 
 К текущему состоянию завершены:
 
@@ -1517,37 +1540,37 @@ Stable `v1.0.0` разрешён только если выполнены все
 
 ## Runtime / CI
 
-- [ ] production runtime = Python 3.12;
-- [ ] Python 3.11 removed from official support;
-- [ ] Python 3.12 full suite green;
-- [ ] `Release 1.0 Gate` существует и стабилен;
-- [ ] privacy gate green;
-- [ ] accessibility/scaling gate green;
-- [ ] package smoke green;
+- [x] production runtime = Python 3.12;
+- [x] Python 3.11 removed from official support;
+- [x] Python 3.12 full suite green;
+- [x] `Release 1.0 Gate` существует и стабилен;
+- [x] privacy gate green;
+- [x] accessibility/scaling gate green;
+- [x] package smoke green;
 - [ ] `main` protected;
 - [ ] force push to `main` blocked.
 
 ## Crash / Support
 
-- [ ] application session ID реализован;
-- [ ] build identity доступен в logs/support bundle;
-- [ ] crash marker реализован;
-- [ ] threading/Qt/background exception boundaries покрыты;
-- [ ] support bundle v2 privacy-safe;
-- [ ] secrets/transcripts/audio не попадают в support bundle.
+- [x] application session ID реализован;
+- [x] build identity доступен в logs/support bundle;
+- [x] crash marker реализован;
+- [x] threading/Qt/background exception boundaries покрыты;
+- [x] support bundle v2 privacy-safe;
+- [x] secrets/transcripts/audio не попадают в support bundle.
 
 ## Backup / Recovery
 
-- [ ] automatic scheduled backup работает;
-- [ ] backup verification автоматизирован;
-- [ ] retention работает;
-- [ ] failed backup не удаляет старые валидные copies;
-- [ ] safety backup classes защищены от обычного prune;
-- [ ] disaster recovery drill PASS;
-- [ ] restore quarantine PASS;
-- [ ] rollback-to-safety DB PASS;
-- [ ] mic-only recovery PASS;
-- [ ] system-only recovery PASS.
+- [x] automatic scheduled backup работает;
+- [x] backup verification автоматизирован;
+- [x] retention работает;
+- [x] failed backup не удаляет старые валидные copies;
+- [x] safety backup classes защищены от обычного prune;
+- [x] disaster recovery drill PASS;
+- [x] restore quarantine PASS;
+- [x] rollback-to-safety DB PASS;
+- [x] mic-only recovery PASS;
+- [x] system-only recovery PASS.
 
 ## Packaging / Installation
 
@@ -1558,15 +1581,15 @@ Stable `v1.0.0` разрешён только если выполнены все
 - [ ] update preserves workspace/config;
 - [ ] uninstall preserves workspace/config/backups;
 - [ ] release artifacts не содержат private data;
-- [ ] version/tag/build manifest agree.
+- [x] version/tag/build manifest agree.
 
 ## Release
 
 - [ ] release workflow создаёт artifacts автоматически;
 - [ ] SHA-256 checksums published;
 - [ ] build manifest published;
-- [ ] signing выполнен или явно задокументирован как release exception;
-- [ ] release notes/CHANGELOG актуальны.
+- [x] signing выполнен или явно задокументирован как release exception;
+- [x] release notes/CHANGELOG актуальны.
 
 ## Physical validation
 
@@ -1582,13 +1605,13 @@ Stable `v1.0.0` разрешён только если выполнены все
 
 ## Documentation
 
-- [ ] README соответствует Release 1.0;
-- [ ] INSTALLATION актуален;
-- [ ] OPERATIONS актуален;
-- [ ] DISASTER_RECOVERY актуален;
-- [ ] HARDWARE_SOAK актуален;
-- [ ] SUPPORT актуален;
-- [ ] RELEASE актуален;
+- [x] README соответствует Release 1.0;
+- [x] INSTALLATION актуален;
+- [x] OPERATIONS актуален;
+- [x] DISASTER_RECOVERY актуален;
+- [x] HARDWARE_SOAK актуален;
+- [x] SUPPORT актуален;
+- [x] RELEASE актуален;
 - [ ] PLAN отмечает Release 1.0 как DONE после stable tag.
 
 ---

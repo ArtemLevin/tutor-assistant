@@ -283,7 +283,9 @@ class ActivityLease:
         self._lost_reason: str | None = None
         self.origin_thread_id = get_ident()
         self._on_release = on_release
-        interval = max(1.0, min(30.0, ttl.total_seconds() / 3))
+        # Renew well before expiry: a one-second floor lets short-lived leases
+        # expire outright and leaves too little scheduling margin under load.
+        interval = max(0.05, min(30.0, ttl.total_seconds() / 4))
         self._thread = Thread(
             target=self._heartbeat_loop,
             args=(interval,),

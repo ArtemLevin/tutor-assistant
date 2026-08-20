@@ -1,6 +1,6 @@
 # Tutor Assistant
 
-Текущая версия: **0.22.1**.
+Текущая версия: **1.0.0rc1** · Production Readiness / Release 1.0.
 
 Tutor Assistant — локальное Windows-приложение для полного цикла работы преподавателя после занятия:
 
@@ -16,11 +16,74 @@ Tutor Assistant — локальное Windows-приложение для по�
 
 Главный принцип проекта — **local first**. Аудиозаписи, локальная SQLite-база, CRM и рабочие файлы преподавателя остаются на компьютере. В ученический репозиторий передаются только явно подготовленные артефакты публикации.
 
-Подробный текущий roadmap: [`PLAN.md`](PLAN.md).
+Подробный roadmap и условия выхода stable release: [`PLAN.md`](PLAN.md).
+
+## Установка и поддерживаемый runtime
+
+Windows installer устанавливает приложение в `%LOCALAPPDATA%\Programs\TutorAssistant`; отдельная
+установка Python конечному пользователю не требуется. Portable ZIP запускается рядом с явным
+маркером `portable.mode`. До публикации release artifacts доступна установка из исходников:
+
+```powershell
+git clone https://github.com/ArtemLevin/tutor-assistant.git
+cd tutor-assistant
+uv sync --extra desktop --extra transcription --group dev
+uv run python scripts\bootstrap.py
+```
+
+| Runtime | Поддержка |
+| --- | --- |
+| Python 3.12.x | Production runtime и обязательная release-сборка |
+| Python 3.13 / 3.14 | Compatibility testing; не блокирует production gate |
+| Python 3.11 и ниже | Не поддерживается |
+
+## Первый запуск и проверка окружения
+
+```powershell
+uv run tutor-assistant-gui config\app.yaml
+uv run tutor-assistant --config config\app.yaml doctor
+```
+
+Мастер первого запуска помогает выбрать рабочий каталог, устройства записи и параметры урока.
+Команда `doctor` показывает production/compatibility runtime, доступность аудио и статус
+проверенной резервной копии. Для GitHub-публикации `gh` CLI не обязателен.
+
+## Запись, восстановление и обработка урока
+
+1. Выберите ученика, предмет, тему и проверьте микрофон/системное аудио.
+2. Начните или завершите запись основной кнопкой либо клавишей `F9`.
+3. При аварийном завершении восстановите доступные WAV-чанки при следующем запуске.
+4. Запустите локальную транскрибацию, проверьте текст и подтвердите его перед публикацией.
+5. Для облачной фильтрации требуется отдельное согласие; аудио наружу не отправляется.
+
+## Резервирование, восстановление и диагностика
+
+```powershell
+uv run tutor-assistant --config config\app.yaml content-backup --create
+uv run tutor-assistant --config config\app.yaml content-backup --verify PATH.sqlite3
+uv run tutor-assistant --config config\app.yaml recovery-drill --output ..\recovery-report.json
+uv run tutor-assistant --config config\app.yaml support-bundle
+uv run tutor-assistant --config config\app.yaml hardware-soak
+```
+
+Плановые копии обязательно проверяются и очищаются отдельно от protective
+`pre-restore-safety`/`pre-upgrade` copies. `recovery-drill` работает только с синтетической
+песочницей и не изменяет реальное рабочее пространство. Support bundle не включает аудио,
+транскрипты или API-ключи.
+
+## Эксплуатационная документация
+
+- [`docs/INSTALLATION.md`](docs/INSTALLATION.md) — installer, portable, каталоги и обновление.
+- [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — ежедневная работа, doctor, backup и shutdown.
+- [`docs/DISASTER_RECOVERY.md`](docs/DISASTER_RECOVERY.md) — restore, quarantine и recovery drill.
+- [`docs/SUPPORT.md`](docs/SUPPORT.md) — crash marker, безопасный журнал и support bundle.
+- [`docs/HARDWARE_SOAK.md`](docs/HARDWARE_SOAK.md) — физические сценарии и release thresholds.
+- [`docs/RELEASE.md`](docs/RELEASE.md) — CI gate, защита main, packaging и signing.
+- [`CHANGELOG.md`](CHANGELOG.md) — изменения по версиям.
 
 ## Текущее состояние архитектуры
 
-**Срез:** 18 августа 2026 года.
+**Срез:** 20 августа 2026 года.
 
 Production GUI запускается через console entrypoint:
 
@@ -63,7 +126,9 @@ recording, persistence and external infrastructure
 - Qt-free `LatexMonitorCoordinator` для enable/disable, manual/periodic scan eligibility и single-flight state; `latex_monitor_presentation` централизует no-update/success/failure UI state, а `RemoteLatexService` остаётся infrastructure concern.
 - Qt-free `ShutdownCoordinator` для `IDLE/DRAINING/READY`, prompt/immediate-close decisions и drain barriers; `shutdown_app` вставлен в production MRO между publication/cockpit и concurrent layers, сохраняя recording finalize, normalization cancellation, background-task shutdown и persisted transcription queue semantics.
 
-**Wave 2 завершён, Wave 3 / Slices 13–16 также завершены.** Следующий архитектурный шаг — **Wave 3 / Slice 17: Teacher cockpit / parallel-review synchronization**. Цель — сделать recording context, review context и cockpit snapshot согласованными через typed state/data boundary и event-driven refresh, сохранив 30-секундный timer только как fallback. Детали описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён; Wave 3 / Slices 13–17 завершены.** Текущий приоритет — Release 1.0:
+production runtime, безопасный backup, disaster recovery, packaging и физическая проверка записи.
+**Wave 3 / Slice 18 перенесён после stable `v1.0.0`.** Детали описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -190,7 +255,7 @@ gh auth status
 ## Требования
 
 - Windows 10/11;
-- Python 3.11–3.14;
+- Python 3.12 для production; Python 3.13–3.14 только для compatibility testing;
 - `uv`;
 - Git;
 - FFmpeg в `PATH` — рекомендуется;

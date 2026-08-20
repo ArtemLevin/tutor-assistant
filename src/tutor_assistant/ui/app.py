@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
 
 from ..application import (
     AudioInputDeviceSnapshot,
+    BackupMaintenanceCoordinator,
+    BackupMaintenanceSnapshot,
     LatexMonitorCoordinator,
     LatexMonitorScanTrigger,
     NormalizationAfterWorkerAction,
@@ -62,9 +64,16 @@ from ..application import (
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
+from ..crash import read_crash_marker
 from ..crm import CrmStore
 from ..domain import JobStatus, Lesson
-from ..logging_config import configure_logging, install_exception_hook, log_directory
+from ..logging_config import (
+    configure_logging,
+    enable_native_fault_handler,
+    install_exception_hook,
+    install_qt_message_handler,
+    log_directory,
+)
 from ..normalization import NormalizationService, SourceSegment
 from ..normalization.models import (
     NormalizationExecution,
@@ -72,6 +81,7 @@ from ..normalization.models import (
     NormalizedTranscript,
 )
 from ..normalization.protocol import CancellationToken
+from ..paths import default_config_path
 from ..pipeline import LessonPipeline
 from ..playback import PlaybackController, PlaybackSegment
 from ..publisher import publication_payload_files
@@ -144,6 +154,7 @@ class Worker(QThread):
         try:
             self.succeeded.emit(self.callable(*self.args))
         except Exception:
+            logging.exception("Фоновая операция завершилась необработанной ошибкой")
             self.failed.emit(traceback.format_exc())
 
 
@@ -158,6 +169,13 @@ class MainWindow(QMainWindow):
         self.crm_store.sync_students(self.students)
         self.students = self.crm_store.domain_students()
         self.content_service = self.pipeline.content_service
+        self.backup_coordinator = BackupMaintenanceCoordinator(
+            self.content_service,
+            self.config.workspace,
+            enabled=self.config.content.backup_enabled,
+            interval_hours=self.config.content.backup_interval_hours,
+            retention_count=self.config.content.backup_retention_count,
+        )
         self.normalization_service = NormalizationService(
             self.config.normalization,
             self.content_service,
@@ -242,12 +260,21 @@ class MainWindow(QMainWindow):
             self.config.content.maintenance_interval_minutes * 60 * 1000
         )
         self.content_maintenance_timer.timeout.connect(self._run_content_maintenance)
+        self.backup_maintenance_timer = QTimer(self)
+        self.backup_maintenance_timer.setInterval(
+            min(self.config.content.backup_interval_hours * 3_600_000, 300_000)
+        )
+        self.backup_maintenance_timer.timeout.connect(self._run_scheduled_backup)
+        if self.config.content.backup_enabled:
+            self.backup_maintenance_timer.start()
+            QTimer.singleShot(750, self._run_scheduled_backup)
         if self.config.content.maintenance_enabled:
             self.content_maintenance_timer.start()
             QTimer.singleShot(1000, self._run_content_maintenance)
         QTimer.singleShot(0, self._offer_recovery)
         QTimer.singleShot(100, self._restore_background_jobs)
         QTimer.singleShot(150, self._offer_unfinished_job)
+        QTimer.singleShot(300, self._offer_previous_crash_support)
         QTimer.singleShot(
             0,
             lambda: self.auto_latex.setChecked(self.config.latex.enabled and self.config.latex.auto_monitor),
@@ -439,6 +466,66 @@ class MainWindow(QMainWindow):
         self.workers.append(worker)
         worker.start()
 
+    def _run_scheduled_backup(self) -> None:
+        recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
+        decision = self.backup_coordinator.decide(
+            recording_active=recording_busy,
+            shutdown_requested=self._shutdown_requested,
+        )
+        if decision.action.value != "run":
+            return
+        if any(getattr(worker, "purpose", "") == "scheduled-backup" for worker in self.workers):
+            return
+        worker = Worker(
+            lambda: self.backup_coordinator.run_due(
+                recording_active=recording_busy,
+                shutdown_requested=self._shutdown_requested,
+            )
+        )
+        worker.purpose = "scheduled-backup"
+        worker.succeeded.connect(self._scheduled_backup_ready)
+        worker.failed.connect(self._scheduled_backup_failed)
+        worker.finished.connect(lambda: self._worker_finished(worker))
+        self.workers.append(worker)
+        worker.start()
+
+    def _scheduled_backup_ready(self, result: object) -> None:
+        if not isinstance(result, BackupMaintenanceSnapshot):
+            self._scheduled_backup_failed("Получен некорректный статус резервной копии")
+            return
+        if result.last_error:
+            self._scheduled_backup_failed(result.last_error)
+            return
+        logging.info(
+            "Автоматическая резервная копия проверена; scheduled=%s next=%s",
+            result.scheduled_copy_count,
+            result.next_due_at,
+        )
+
+    def _scheduled_backup_failed(self, details: str) -> None:
+        logging.error("Автоматическое резервирование недоступно: %s", details)
+        self._set_status("Не удалось проверить резервную копию", "warning")
+
+    def _offer_previous_crash_support(self) -> None:
+        marker = read_crash_marker(self.config.workspace)
+        if marker is None:
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Предыдущий запуск завершился аварийно")
+        dialog.setText("Предыдущий запуск завершился аварийно. Диагностика сохраняется только локально.")
+        support = dialog.addButton("Создать пакет диагностики", QMessageBox.ActionRole)
+        logs = dialog.addButton("Открыть журнал", QMessageBox.ActionRole)
+        dialog.addButton("Продолжить", QMessageBox.AcceptRole)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.buttonClicked.connect(
+            lambda button: self._create_support_bundle()
+            if button is support
+            else self._open_logs()
+            if button is logs
+            else None
+        )
+        dialog.open()
+
     def _run_content_maintenance(self) -> None:
         if (
             not self.config.content.maintenance_enabled
@@ -454,9 +541,7 @@ class MainWindow(QMainWindow):
                 purge_expired=self.config.content.auto_purge_trash,
                 cleanup_temporary=self.config.content.auto_cleanup_temporary,
                 temporary_retention=timedelta(hours=self.config.content.temporary_retention_hours),
-                backup_enabled=self.config.content.backup_enabled,
-                backup_interval=timedelta(hours=self.config.content.backup_interval_hours),
-                backup_retention_count=self.config.content.backup_retention_count,
+                backup_enabled=False,
             )
 
         worker = Worker(maintain)
@@ -2953,14 +3038,26 @@ class MainWindow(QMainWindow):
 
 
 def main(window_type: type[MainWindow] = MainWindow) -> None:
+    if "--version" in sys.argv:
+        from .. import __version__
+
+        print(__version__)
+        return
+    if "--release-smoke" in sys.argv:
+        from ..runtime import build_identity
+
+        print(json.dumps(build_identity().to_dict(), ensure_ascii=False))
+        return
     force_setup = "--setup" in sys.argv
     if force_setup:
         sys.argv.remove("--setup")
-    config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("config/app.yaml")
+    config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else default_config_path()
     config = AppConfig.load(config_path)
     configure_logging(config.workspace)
-    install_exception_hook()
+    enable_native_fault_handler(config.workspace)
+    install_exception_hook(config.workspace)
     app = QApplication(sys.argv)
+    install_qt_message_handler()
     app.setApplicationName("Tutor Assistant")
     app.setOrganizationName("Tutor Assistant")
     apply_theme(app)
@@ -2972,7 +3069,15 @@ def main(window_type: type[MainWindow] = MainWindow) -> None:
             raise SystemExit(0)
         config = AppConfig.load(config_path)
         configure_logging(config.workspace)
+        enable_native_fault_handler(config.workspace)
     window = window_type(config_path)
+    install_exception_hook(
+        config.workspace,
+        activity_provider=lambda: {
+            "recording_active": bool(window.recorder and window.recorder.active),
+            "transcription_active": bool(window.transcription_worker.busy),
+        },
+    )
     window.show()
     raise SystemExit(app.exec())
 
