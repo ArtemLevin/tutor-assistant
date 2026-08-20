@@ -209,7 +209,7 @@ def test_backup_verification_detects_concurrent_file_change(tmp_path: Path, monk
     def hash_and_change_timestamp(path: Path) -> str:
         digest = original_hash(path)
         current = path.stat()
-        os.utime(path, ns=(current.st_atime_ns, current.st_mtime_ns + 1))
+        os.utime(path, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
         return digest
 
     monkeypatch.setattr(backup_module, "_sha256_file", hash_and_change_timestamp)

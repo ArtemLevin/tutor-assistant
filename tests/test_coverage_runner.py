@@ -53,6 +53,7 @@ def test_coverage_runner_counts_and_enforces_real_conditional_branches(
         capture_output=True,
         text=True,
         env=environment,
+        cwd=tmp_path,
         check=False,
     )
 
