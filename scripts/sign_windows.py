@@ -13,7 +13,7 @@ from pathlib import Path
 
 def sign_and_verify(paths: list[Path], *, allow_unsigned: bool = False) -> bool:
     certificate = os.environ.get("WINDOWS_SIGNING_CERTIFICATE", "")
-    password = os.environ.get("WINDOWS_SIGNING_PASSWORD", "")
+    signing_credential = os.environ.get("WINDOWS_SIGNING_PASSWORD", "")
     if not certificate:
         if allow_unsigned:
             return False
@@ -35,7 +35,7 @@ def sign_and_verify(paths: list[Path], *, allow_unsigned: bool = False) -> bool:
                         "/f",
                         str(certificate_path),
                         "/p",
-                        password,
+                        signing_credential,
                         "/fd",
                         "SHA256",
                         "/tr",
