@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,7 +11,7 @@ from uuid import uuid4
 
 from .atomic_io import atomic_write_text
 from .config import AppConfig
-from .content import StudentContentService
+from .content import ActivityLease, StudentContentService
 from .domain import ArtifactPaths, JobStatus, Lesson, PublicationInfo
 from .latex.remote import (
     LatexCompilationReservation,
@@ -74,6 +76,18 @@ class LessonPipeline:
         )
         self._replace_lesson(lesson, stored)
         return stored
+
+    @contextmanager
+    def recording_lease_scope(
+        self,
+        lease: ActivityLease,
+        *,
+        lesson_id: str,
+    ) -> Iterator[None]:
+        """Carry the recording's existing protection into its finalize worker."""
+
+        with self.content_service.use_owned_activity_lease(lease, lesson_id=lesson_id):
+            yield
 
     @staticmethod
     def _clear_latex_reservation(lesson: Lesson) -> None:

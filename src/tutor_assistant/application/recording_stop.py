@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import traceback
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -36,6 +37,13 @@ class RecordingStopPipeline(Protocol):
     """Persistence contract required after capture has stopped."""
 
     def save_state(self, lesson: Lesson, *fields: str, **kwargs: object) -> Lesson: ...
+
+    def recording_lease_scope(
+        self,
+        lease: RecordingLease,
+        *,
+        lesson_id: str,
+    ) -> AbstractContextManager[None]: ...
 
 
 RecordingResultFinalizer = Callable[[RecordingResult, Lesson], RecordingResult]
@@ -148,16 +156,16 @@ class StopRecordingUseCase:
                 return RecordingStopOutcome.recovery_required(session, details)
 
             try:
-                result = self._result_finalizer(result, session.lesson)
-                session.lesson.source_audio_local = str(result.mixed_file.resolve())
-                session.lesson.transition(JobStatus.RECORDED)
-                self._pipeline.save_state(
-                    session.lesson,
-                    "source_audio_local",
-                    "status",
-                    "error",
+                lease_scope = (
+                    self._pipeline.recording_lease_scope(
+                        session.lease,
+                        lesson_id=session.lesson.lesson_id,
+                    )
+                    if session.lease is not None
+                    else nullcontext()
                 )
-                return RecordingStopOutcome.recorded(session, result)
+                with lease_scope:
+                    return self._finalize_stopped_recording(session, result)
             except Exception:
                 details = traceback.format_exc()
                 logging.error(
@@ -179,6 +187,36 @@ class StopRecordingUseCase:
                     "Recording lease retained because recorder is not quiesced: lesson=%s",
                     session.lesson.lesson_id,
                 )
+
+    def _finalize_stopped_recording(
+        self,
+        session: RecordingStopSession,
+        result: RecordingResult,
+    ) -> RecordingStopOutcome:
+        try:
+            result = self._result_finalizer(result, session.lesson)
+            session.lesson.source_audio_local = str(result.mixed_file.resolve())
+            session.lesson.transition(JobStatus.RECORDED)
+            self._pipeline.save_state(
+                session.lesson,
+                "source_audio_local",
+                "status",
+                "error",
+            )
+            return RecordingStopOutcome.recorded(session, result)
+        except Exception:
+            details = traceback.format_exc()
+            logging.error(
+                "Recording finalization failed: lesson=%s\n%s",
+                session.lesson.lesson_id,
+                details,
+            )
+            self._mark_failed(session.lesson, details)
+            return RecordingStopOutcome.failed(
+                session,
+                result=result,
+                error=details,
+            )
 
     @staticmethod
     def _recorder_quiesced(recorder: RecordingFinalizingRecorder) -> bool:

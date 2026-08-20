@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -10,7 +13,10 @@ from tutor_assistant.application.recording_stop import (
     RecordingStopState,
     StopRecordingUseCase,
 )
+from tutor_assistant.config import AppConfig
+from tutor_assistant.content import LeaseState
 from tutor_assistant.domain import JobStatus, Lesson, Student
+from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.recording import RecordingResult
 from tutor_assistant.ui.recording_finalize_app import MainWindow as StopFinalizeMainWindow
 
@@ -79,6 +85,16 @@ class FakePipeline:
             raise RuntimeError("database boom")
         self.saved.append((lesson.status, fields, lesson.error))
         return lesson
+
+    @contextmanager
+    def recording_lease_scope(
+        self,
+        _lease: FakeLease,
+        *,
+        lesson_id: str,
+    ) -> Iterator[None]:
+        assert lesson_id
+        yield
 
 
 def make_lesson() -> Lesson:
@@ -261,6 +277,86 @@ def test_missing_lease_does_not_block_safe_stop(tmp_path: Path) -> None:
     assert outcome.state == RecordingStopState.RECORDED
     assert lesson.status == JobStatus.RECORDED
     assert events == ["recorder.stop", "lesson.save:recorded"]
+
+
+def test_worker_stop_reuses_main_thread_lease_with_real_persistence(tmp_path: Path) -> None:
+    pipeline = LessonPipeline(AppConfig(workspace=tmp_path / "data"))
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    recording_dir = pipeline.lesson_dir(lesson) / "recording"
+    recording_dir.mkdir(parents=True)
+    result = make_result(recording_dir, name="Student_2026-08-17.m4a")
+    events: list[str] = []
+    recorder = FakeRecorder(result, events)
+    lease = pipeline.content_service.acquire_activity(
+        "recording",
+        lesson_id=lesson.lesson_id,
+    )
+
+    def finalize(delivery: RecordingResult, _lesson: Lesson) -> RecordingResult:
+        blocked = pipeline.content_service.try_acquire_activity(
+            "database-backup",
+            exclusive=True,
+        )
+        assert not blocked.acquired
+        assert [item.activity for item in blocked.blockers] == ["recording"]
+        return delivery
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        outcome = executor.submit(
+            StopRecordingUseCase(pipeline, result_finalizer=finalize).stop,
+            RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease),
+        ).result(timeout=10)
+
+    persisted = pipeline.store.get(lesson.lesson_id)
+    assert outcome.state == RecordingStopState.RECORDED
+    assert persisted is not None
+    assert persisted.status == JobStatus.RECORDED
+    assert persisted.source_audio_local == str(result.mixed_file.resolve())
+    assert lease.state == LeaseState.RELEASED
+    assert pipeline.content_service.active_activities() == []
+
+
+def test_worker_stop_persists_failure_under_delegated_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pipeline = LessonPipeline(AppConfig(workspace=tmp_path / "data"))
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    recording_dir = pipeline.lesson_dir(lesson) / "recording"
+    recording_dir.mkdir(parents=True)
+    result = make_result(recording_dir)
+    recorder = FakeRecorder(result, [])
+    lease = pipeline.content_service.acquire_activity(
+        "recording",
+        lesson_id=lesson.lesson_id,
+    )
+    original_persist = pipeline.content_service.persist_pipeline_lesson
+    attempts = 0
+
+    def fail_first_persist(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database boom")
+        return original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.content_service, "persist_pipeline_lesson", fail_first_persist)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        outcome = executor.submit(
+            StopRecordingUseCase(pipeline).stop,
+            RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease),
+        ).result(timeout=10)
+
+    persisted = pipeline.store.get(lesson.lesson_id)
+    assert outcome.state == RecordingStopState.FAILED
+    assert attempts == 2
+    assert persisted is not None
+    assert persisted.status == JobStatus.FAILED
+    assert "database boom" in (persisted.error or "")
+    assert lease.state == LeaseState.RELEASED
 
 
 def test_lease_release_failure_does_not_change_recorded_outcome(tmp_path: Path) -> None:

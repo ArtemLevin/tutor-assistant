@@ -6,6 +6,7 @@ import mimetypes
 import shutil
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -140,6 +141,10 @@ class StudentContentService:
         self._workspace_generation = self.lease_store.generation()
         self._owned_leases: dict[str, ActivityLease] = {}
         self._owned_leases_lock = Lock()
+        self._delegated_activity_leases: ContextVar[tuple[ActivityLease, ...]] = ContextVar(
+            f"content-activity-delegation-{id(self)}",
+            default=(),
+        )
         self._maintenance_lock = Lock()
         self._maintenance_thread_id: int | None = None
         try:
@@ -188,17 +193,40 @@ class StudentContentService:
 
     def _current_thread_lease_protects(self, lesson_id: str | None) -> bool:
         thread_id = get_ident()
+        delegated_leases = self._delegated_activity_leases.get()
         with self._owned_leases_lock:
             leases = tuple(self._owned_leases.values())
         return any(
-            lease.origin_thread_id == thread_id
+            lease.valid
             and (
-                lease.info.exclusive
-                or lesson_id is None
-                or lease.info.lesson_id == lesson_id
+                lease.origin_thread_id == thread_id
+                or any(lease is delegated for delegated in delegated_leases)
             )
+            and (lease.info.exclusive or lesson_id is None or lease.info.lesson_id == lesson_id)
             for lease in leases
         )
+
+    @contextmanager
+    def use_owned_activity_lease(
+        self,
+        lease: ActivityLease,
+        *,
+        lesson_id: str,
+    ) -> Iterator[None]:
+        """Delegate one live owned lesson lease to the current execution scope."""
+
+        with self._owned_leases_lock:
+            owned_lease = self._owned_leases.get(lease.info.lease_id)
+        if owned_lease is not lease or lease.info.owner_id != self.owner_id or not lease.valid:
+            raise ContentBusyError("Запрошенная блокировка занятия больше не принадлежит операции")
+        if not lease.info.exclusive and lease.info.lesson_id != lesson_id:
+            raise ContentBusyError("Блокировка операции не защищает указанное занятие")
+
+        token = self._delegated_activity_leases.set((*self._delegated_activity_leases.get(), lease))
+        try:
+            yield
+        finally:
+            self._delegated_activity_leases.reset(token)
 
     @contextmanager
     def _write_activity(
@@ -208,9 +236,7 @@ class StudentContentService:
         lesson_id: str | None = None,
     ) -> Iterator[None]:
         if self.lease_store.generation() != self._workspace_generation:
-            raise ContentBusyError(
-                "База данных была восстановлена; перезагрузите данные перед записью"
-            )
+            raise ContentBusyError("База данных была восстановлена; перезагрузите данные перед записью")
         if self._current_thread_lease_protects(lesson_id):
             yield
             return
@@ -1028,16 +1054,14 @@ class StudentContentService:
                             verification = self.backups.verify(result.backup.path)
                             if not verification.valid:
                                 raise DatabaseBackupError(
-                                    "Scheduled backup verification failed: "
-                                    + "; ".join(verification.errors)
+                                    "Scheduled backup verification failed: " + "; ".join(verification.errors)
                                 )
                             result.backup_retention = self.backups.prune(
                                 backup_retention_count,
                                 reasons=frozenset({"scheduled", "scheduled-maintenance"}),
                             )
                             result.errors.extend(
-                                f"backup retention: {details}"
-                                for details in result.backup_retention.errors
+                                f"backup retention: {details}" for details in result.backup_retention.errors
                             )
                 except Exception as exc:
                     result.errors.append(f"backup: {exc}")
