@@ -51,8 +51,7 @@ class ContentBusyError(RuntimeError):
     ) -> ContentBusyError:
         description = (
             ", ".join(
-                f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}"
-                for item in blockers
+                f"{item.activity}{f' ({item.lesson_id})' if item.lesson_id else ''}" for item in blockers
             )
             or "неизвестная операция"
         )
@@ -100,9 +99,7 @@ class ActivityLeaseStore:
                 )
                 """
             )
-            db.execute(
-                "INSERT OR IGNORE INTO workspace_state(key, value) VALUES ('generation', 0)"
-            )
+            db.execute("INSERT OR IGNORE INTO workspace_state(key, value) VALUES ('generation', 0)")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10, factory=ClosingConnection)
@@ -150,9 +147,7 @@ class ActivityLeaseStore:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM activity_leases WHERE expires_at <= ?", (now.isoformat(),))
             if exclusive:
-                rows = db.execute(
-                    "SELECT * FROM activity_leases ORDER BY acquired_at, lease_id"
-                ).fetchall()
+                rows = db.execute("SELECT * FROM activity_leases ORDER BY acquired_at, lease_id").fetchall()
             else:
                 rows = db.execute(
                     """
@@ -215,6 +210,8 @@ class ActivityLeaseStore:
         ).lease_info
 
     def heartbeat(self, lease_id: str, owner_id: str, ttl: timedelta) -> bool:
+        if ttl.total_seconds() <= 0:
+            raise ValueError("Lease TTL must be positive")
         now = self._now()
         with self._connect() as db:
             cursor = db.execute(
@@ -249,20 +246,14 @@ class ActivityLeaseStore:
 
     def generation(self) -> int:
         with self._connect() as db:
-            row = db.execute(
-                "SELECT value FROM workspace_state WHERE key='generation'"
-            ).fetchone()
+            row = db.execute("SELECT value FROM workspace_state WHERE key='generation'").fetchone()
         return int(row["value"])
 
     def advance_generation(self) -> int:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "UPDATE workspace_state SET value=value+1 WHERE key='generation'"
-            )
-            row = db.execute(
-                "SELECT value FROM workspace_state WHERE key='generation'"
-            ).fetchone()
+            db.execute("UPDATE workspace_state SET value=value+1 WHERE key='generation'")
+            row = db.execute("SELECT value FROM workspace_state WHERE key='generation'").fetchone()
         return int(row["value"])
 
 
@@ -280,6 +271,7 @@ class ActivityLease:
         self._stop = Event()
         self._state_lock = Lock()
         self._state = LeaseState.HEALTHY
+        self._releasing = False
         self._lost_reason: str | None = None
         self.origin_thread_id = get_ident()
         self._on_release = on_release
@@ -342,8 +334,9 @@ class ActivityLease:
 
     def release(self) -> None:
         with self._state_lock:
-            if self._state == LeaseState.RELEASED:
+            if self._state == LeaseState.RELEASED or self._releasing:
                 return
+            self._releasing = True
         self._stop.set()
         try:
             self.store.release(self.info.lease_id, self.info.owner_id)

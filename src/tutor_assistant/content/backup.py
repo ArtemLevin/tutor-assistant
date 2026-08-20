@@ -46,9 +46,7 @@ class DatabaseBackupStore:
         errors: list[str] = []
         try:
             uri = f"{path.resolve().as_uri()}?mode=ro"
-            with sqlite3.connect(
-                uri, uri=True, timeout=10, factory=ClosingConnection
-            ) as db:
+            with sqlite3.connect(uri, uri=True, timeout=10, factory=ClosingConnection) as db:
                 quick_check = db.execute("PRAGMA quick_check").fetchall()
                 messages = [str(row[0]) for row in quick_check]
                 if messages != ["ok"]:
@@ -76,12 +74,8 @@ class DatabaseBackupStore:
         final_path = self.directory / filename
         temporary_path = self.directory / f".{filename}.tmp"
         try:
-            with sqlite3.connect(
-                self.database_path, timeout=10, factory=ClosingConnection
-            ) as source:
-                with sqlite3.connect(
-                    temporary_path, timeout=10, factory=ClosingConnection
-                ) as destination:
+            with sqlite3.connect(self.database_path, timeout=10, factory=ClosingConnection) as source:
+                with sqlite3.connect(temporary_path, timeout=10, factory=ClosingConnection) as destination:
                     source.backup(destination)
             errors = self._sqlite_check(temporary_path)
             if errors:
@@ -140,12 +134,17 @@ class DatabaseBackupStore:
                 errors.append(f"Неизвестная версия backup manifest: {manifest.format_version}")
             if manifest.database_file != resolved.name:
                 errors.append("Manifest относится к другому файлу")
-            actual_size = resolved.stat().st_size
-            if manifest.size_bytes != actual_size:
-                errors.append(f"Размер не совпадает: ожидалось {manifest.size_bytes}, получено {actual_size}")
-            actual_sha256 = _sha256_file(resolved)
-            if manifest.sha256 != actual_sha256:
-                errors.append("Контрольная сумма SHA-256 не совпадает")
+            try:
+                actual_size = resolved.stat().st_size
+                if manifest.size_bytes != actual_size:
+                    errors.append(
+                        f"Размер не совпадает: ожидалось {manifest.size_bytes}, получено {actual_size}"
+                    )
+                actual_sha256 = _sha256_file(resolved)
+                if manifest.sha256 != actual_sha256:
+                    errors.append("Контрольная сумма SHA-256 не совпадает")
+            except OSError as exc:
+                errors.append(f"Резервная копия стала недоступна во время проверки: {exc}")
         errors.extend(self._sqlite_check(resolved))
         if manifest and not errors:
             try:
@@ -203,9 +202,7 @@ class DatabaseBackupStore:
             raise ValueError("Должна сохраняться хотя бы одна резервная копия")
         result = DatabaseBackupRetentionResult()
         candidates = [
-            backup
-            for backup in self.list()
-            if reasons is None or backup.manifest.reason in reasons
+            backup for backup in self.list() if reasons is None or backup.manifest.reason in reasons
         ]
         for backup in candidates[keep:]:
             try:
@@ -221,9 +218,7 @@ class DatabaseBackupStore:
         if not verification.valid:
             raise DatabaseBackupError("Резервная копия не прошла проверку: " + "; ".join(verification.errors))
         try:
-            with sqlite3.connect(
-                path.resolve(), timeout=10, factory=ClosingConnection
-            ) as source:
+            with sqlite3.connect(path.resolve(), timeout=10, factory=ClosingConnection) as source:
                 with sqlite3.connect(
                     self.database_path, timeout=10, factory=ClosingConnection
                 ) as destination:
@@ -240,21 +235,15 @@ class DatabaseBackupStore:
 
         verification = self.verify(path)
         if not verification.valid:
-            raise DatabaseBackupError(
-                "Резервная копия не прошла проверку: " + "; ".join(verification.errors)
-            )
+            raise DatabaseBackupError("Резервная копия не прошла проверку: " + "; ".join(verification.errors))
         recovery_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid4().hex[:8]
         safety_directory = self.directory / f"pre-restore-raw-{recovery_id}"
         temporary_path = self.database_path.with_suffix(".restore.tmp")
         moved: list[tuple[Path, Path]] = []
         try:
             temporary_path.unlink(missing_ok=True)
-            with sqlite3.connect(
-                path.resolve(), timeout=10, factory=ClosingConnection
-            ) as source:
-                with sqlite3.connect(
-                    temporary_path, timeout=10, factory=ClosingConnection
-                ) as destination:
+            with sqlite3.connect(path.resolve(), timeout=10, factory=ClosingConnection) as source:
+                with sqlite3.connect(temporary_path, timeout=10, factory=ClosingConnection) as destination:
                     source.backup(destination)
             errors = self._sqlite_check(temporary_path)
             if errors:

@@ -30,7 +30,6 @@ def wait_until(application: QApplication, predicate, *, timeout: float = 5.0) ->
         application.processEvents()
         if predicate():
             return
-        time.sleep(0.01)
     application.processEvents()
     assert predicate()
 
@@ -42,13 +41,14 @@ def test_cooperative_cancel_stops_operation_without_result_or_failure_callback(
     service = StudentContentService(tmp_path / "data")
     coordinator = BackgroundTaskCoordinator(service)
     started = threading.Event()
+    cancellation_requested = threading.Event()
     callbacks: list[str] = []
 
     def operation(cancellation) -> str:
         started.set()
-        while True:
-            cancellation.raise_if_cancelled()
-            time.sleep(0.005)
+        assert cancellation_requested.wait(timeout=3)
+        cancellation.raise_if_cancelled()
+        raise AssertionError("cancelled operation unexpectedly continued")
 
     assert coordinator.submit(
         BackgroundTaskSpec(
@@ -63,6 +63,7 @@ def test_cooperative_cancel_stops_operation_without_result_or_failure_callback(
     assert started.wait(2)
 
     assert coordinator.cancel(BackgroundTaskPurpose.CONTENT_BROWSER) == 1
+    cancellation_requested.set()
     wait_until(application, lambda: coordinator.running_count() == 0)
 
     assert callbacks == ["finished"]

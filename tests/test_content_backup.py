@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import tutor_assistant.content.backup as backup_module
+import tutor_assistant.content.safe_service as safe_service_module
 from tutor_assistant.cli import main
 from tutor_assistant.config import AppConfig
 from tutor_assistant.content import (
@@ -135,6 +138,173 @@ def test_corrupted_backup_is_rejected_without_changing_live_database(tmp_path: P
     with pytest.raises(DatabaseBackupError, match="не прошла проверку"):
         service.restore_database_backup(backup.path)
     assert service.get_lesson("still-live").lesson.lesson_id == "still-live"
+
+
+def test_backup_disappearing_during_checksum_verification_returns_invalid_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    backup = service.create_database_backup(reason="race")
+
+    def remove_during_checksum(path: Path) -> str:
+        path.unlink()
+        raise FileNotFoundError("backup disappeared during verification")
+
+    monkeypatch.setattr(backup_module, "_sha256_file", remove_during_checksum)
+
+    verification = service.verify_database_backup(backup.path)
+
+    assert not verification.valid
+    assert any("недоступ" in error for error in verification.errors)
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_error"),
+    [
+        ("missing", "Manifest отсутствует или повреждён"),
+        ("malformed", "Manifest отсутствует или повреждён"),
+        ("filename", "Manifest относится к другому файлу"),
+        ("size", "Размер не совпадает"),
+        ("checksum", "Контрольная сумма SHA-256 не совпадает"),
+    ],
+)
+def test_backup_verification_rejects_invalid_manifest_without_mutating_live_data(
+    tmp_path: Path,
+    change: str,
+    expected_error: str,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    service.create_lesson(lesson("live-lesson"))
+    backup = service.create_database_backup(reason="integrity")
+
+    if change == "missing":
+        backup.manifest_path.unlink()
+    elif change == "malformed":
+        backup.manifest_path.write_text("{not-valid-json", encoding="utf-8")
+    else:
+        manifest = json.loads(backup.manifest_path.read_text(encoding="utf-8"))
+        if change == "filename":
+            manifest["database_file"] = "another.sqlite3"
+        elif change == "size":
+            manifest["size_bytes"] += 1
+        else:
+            manifest["sha256"] = "0" * 64
+        backup.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    verification = service.verify_database_backup(backup.path)
+
+    assert not verification.valid
+    assert any(expected_error in error for error in verification.errors)
+    with pytest.raises(DatabaseBackupError, match="не прошла проверку"):
+        service.restore_database_backup(backup.path)
+    assert service.get_lesson("live-lesson").lesson.lesson_id == "live-lesson"
+
+
+def test_backup_verification_detects_concurrent_file_change(tmp_path: Path, monkeypatch) -> None:
+    service = StudentContentService(tmp_path / "data")
+    backup = service.create_database_backup(reason="race")
+    original_hash = backup_module._sha256_file
+
+    def hash_and_change_timestamp(path: Path) -> str:
+        digest = original_hash(path)
+        current = path.stat()
+        os.utime(path, ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000_000))
+        return digest
+
+    monkeypatch.setattr(backup_module, "_sha256_file", hash_and_change_timestamp)
+
+    verification = service.verify_database_backup(backup.path)
+
+    assert not verification.valid
+    assert "Резервная копия изменилась во время проверки" in verification.errors
+
+
+def test_failed_backup_manifest_write_cleans_database_and_temporary_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+
+    def fail_manifest_write(_path: Path, _payload: str) -> None:
+        raise PermissionError("manifest destination is read-only")
+
+    monkeypatch.setattr(backup_module, "atomic_write_text", fail_manifest_write)
+
+    with pytest.raises(PermissionError, match="read-only"):
+        service.create_database_backup(reason="manifest-failure")
+
+    assert list(service.backups.directory.iterdir()) == []
+
+
+def test_failed_restore_and_rollback_preserve_both_errors_and_safety_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    service.create_lesson(lesson("recoverable"))
+    backup = service.create_database_backup(reason="known-good")
+
+    def fail_restore(path: Path) -> None:
+        if path == backup.path:
+            raise RuntimeError("primary restore failed")
+        raise OSError("safety rollback failed")
+
+    monkeypatch.setattr(service, "_restore_database_file", fail_restore)
+
+    with pytest.raises(DatabaseBackupError, match="safety rollback") as captured:
+        service.restore_database_backup(backup.path)
+
+    assert isinstance(captured.value.__cause__, ExceptionGroup)
+    assert [str(error) for error in captured.value.__cause__.exceptions] == [
+        "primary restore failed",
+        "safety rollback failed",
+    ]
+    safety = [
+        item for item in service.list_database_backups() if item.manifest.reason == "pre-restore-safety"
+    ]
+    assert len(safety) == 1
+    assert safety[0].path.is_file()
+
+
+def test_failed_quarantine_manifest_restores_post_backup_lesson_directories(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "data"
+    service = StudentContentService(workspace)
+    service.create_lesson(lesson("before-backup"))
+    backup = service.create_database_backup(reason="known-good")
+    service.create_lesson(lesson("after-backup"))
+    post_backup_directory = workspace / "lessons" / "after-backup"
+
+    def fail_quarantine_manifest(_path: Path, _payload: str) -> None:
+        raise PermissionError("quarantine manifest write failed")
+
+    monkeypatch.setattr(safe_service_module, "atomic_write_text", fail_quarantine_manifest)
+
+    with pytest.raises(PermissionError, match="quarantine manifest"):
+        service.restore_database_backup(backup.path)
+
+    assert service.get_lesson("before-backup").lesson.lesson_id == "before-backup"
+    assert service.get_lesson("after-backup").lesson.lesson_id == "after-backup"
+    assert post_backup_directory.is_dir()
+    assert (post_backup_directory / "lesson.json").is_file()
+
+
+@pytest.mark.parametrize("keep", [0, -1])
+def test_backup_retention_never_accepts_policy_that_removes_all_copies(
+    tmp_path: Path,
+    keep: int,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    backup = service.create_database_backup(reason="manual")
+
+    with pytest.raises(ValueError, match="хотя бы одна"):
+        service.backups.prune(keep)
+
+    assert backup.path.is_file()
+    assert backup.manifest_path.is_file()
 
 
 def test_backup_retention_removes_only_old_recognized_pairs(tmp_path: Path) -> None:

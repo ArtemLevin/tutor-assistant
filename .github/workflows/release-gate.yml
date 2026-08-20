@@ -29,12 +29,18 @@ jobs:
       - run: uv sync --locked --extra desktop --group dev
       - run: uv run ruff check . --output-format=concise
       - run: uv run python -m compileall -q src tests scripts
-      - run: uv run pytest -q --junitxml=production-py312.xml
+      - run: >-
+          uv run python scripts/test_coverage.py
+          --fail-under 70 --branch-fail-under 45
+          --output production-py312-coverage.json
+          -- -q --junitxml=production-py312.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: production-py312-test-report
-          path: production-py312.xml
+          path: |
+            production-py312.xml
+            production-py312-coverage.json
           if-no-files-found: ignore
 
   privacy:

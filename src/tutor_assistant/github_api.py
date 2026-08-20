@@ -94,7 +94,7 @@ class GitHubRestGateway:
         if not isinstance(payload, dict):
             raise GitHubApiError("GitHub API вернул некорректное описание репозитория")
         visibility = str(payload.get("visibility") or "").upper()
-        is_private = bool(payload.get("private")) or visibility == "PRIVATE"
+        is_private = payload.get("private") is True or visibility == "PRIVATE"
         if not is_private:
             raise GitHubApiError(
                 f"Публикация заблокирована: {self.config.repository_full_name} имеет visibility "
