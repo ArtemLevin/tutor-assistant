@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -9,6 +10,7 @@ from tutor_assistant.application.recording_recovery import (
     RecordingRecoveryState,
     RecoverRecordingUseCase,
 )
+from tutor_assistant.audio_files import finalize_readable_audio
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.recording import RecordingResult
 from tutor_assistant.ui.recording_recovery_app import MainWindow as ProductionMainWindow
@@ -89,6 +91,149 @@ def test_discover_preserves_infrastructure_order(tmp_path: Path) -> None:
     )
 
     assert use_case.discover(tmp_path) == (first, second)
+
+
+def test_discover_completed_audio_when_lesson_was_not_finalized(tmp_path: Path) -> None:
+    lesson = make_lesson()
+    recording_dir = tmp_path / "lessons" / lesson.lesson_id / "recording"
+    recording_dir.mkdir(parents=True)
+    audio = recording_dir / "Student_2026-08-17.m4a"
+    audio.write_bytes(b"already encoded")
+    (recording_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "output_file": audio.name,
+                "readable_output_file": audio.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    use_case = RecoverRecordingUseCase(
+        discoverer=lambda _workspace: (),
+        recoverer=lambda _directory: make_result(recording_dir),
+        lesson_lookup=lambda lesson_id: lesson if lesson_id == lesson.lesson_id else None,
+        lesson_saver=lambda _lesson, _fields: None,
+        result_finalizer=lambda result, _lesson: result,
+    )
+
+    assert use_case.discover(tmp_path) == (recording_dir,)
+
+
+def test_discover_skips_already_reconciled_completed_recordings(tmp_path: Path) -> None:
+    lesson = make_lesson(status=JobStatus.RECORDED)
+    recording_dir = tmp_path / "lessons" / lesson.lesson_id / "recording"
+    recording_dir.mkdir(parents=True)
+    audio = recording_dir / "Student_2026-08-17.m4a"
+    audio.write_bytes(b"already encoded")
+    lesson.source_audio_local = str(audio)
+    (recording_dir / "session.json").write_text(
+        json.dumps({"status": "completed", "output_file": audio.name}),
+        encoding="utf-8",
+    )
+    use_case = RecoverRecordingUseCase(
+        discoverer=lambda _workspace: (),
+        recoverer=lambda _directory: make_result(recording_dir),
+        lesson_lookup=lambda _lesson_id: lesson,
+        lesson_saver=lambda _lesson, _fields: None,
+        result_finalizer=lambda result, _lesson: result,
+    )
+
+    assert use_case.discover(tmp_path) == ()
+
+
+def test_completed_recovery_reattaches_existing_audio_without_reencoding(
+    tmp_path: Path,
+) -> None:
+    lesson = make_lesson()
+    recording_dir = tmp_path / "lessons" / lesson.lesson_id / "recording"
+    recording_dir.mkdir(parents=True)
+    audio = recording_dir / "Student_2026-08-17.m4a"
+    audio.write_bytes(b"original compressed audio")
+    (recording_dir / "session.json").write_text(
+        json.dumps({"status": "completed", "output_file": audio.name}),
+        encoding="utf-8",
+    )
+    saver = Saver()
+
+    def recoverer(_directory: Path) -> RecordingResult:
+        raise AssertionError("completed delivery audio must not be rebuilt or re-encoded")
+
+    use_case = RecoverRecordingUseCase(
+        discoverer=lambda _workspace: (),
+        recoverer=recoverer,
+        lesson_lookup=lambda _lesson_id: lesson,
+        lesson_saver=saver,
+        result_finalizer=lambda result, current: finalize_readable_audio(
+            result,
+            current.student.full_name,
+            current.lesson_date,
+        ),
+    )
+
+    assert use_case.discover(tmp_path) == (recording_dir,)
+    outcome = use_case.recover(recording_dir)
+
+    assert outcome.state == RecordingRecoveryState.RECOVERED
+    assert outcome.result is not None
+    assert outcome.result.mixed_file == audio
+    assert audio.read_bytes() == b"original compressed audio"
+    assert lesson.status == JobStatus.RECORDED
+    assert lesson.source_audio_local == str(audio.resolve())
+    assert saver.calls == [(JobStatus.RECORDED, ("source_audio_local", "status", "error"), None)]
+    assert use_case.discover(tmp_path) == ()
+
+
+def test_completed_recovery_falls_back_to_chunks_when_delivery_is_missing(
+    tmp_path: Path,
+) -> None:
+    lesson = make_lesson()
+    recording_dir = tmp_path / "lessons" / lesson.lesson_id / "recording"
+    chunks = recording_dir / "chunks" / "microphone"
+    chunks.mkdir(parents=True)
+    (chunks / "mic_00000.wav").write_bytes(b"recoverable")
+    (recording_dir / "session.json").write_text(
+        json.dumps({"status": "completed", "output_file": "missing.m4a"}),
+        encoding="utf-8",
+    )
+    recovered = make_result(recording_dir)
+    recover_calls: list[Path] = []
+    use_case = RecoverRecordingUseCase(
+        discoverer=lambda _workspace: (),
+        recoverer=lambda directory: recover_calls.append(directory) or recovered,
+        lesson_lookup=lambda _lesson_id: lesson,
+        lesson_saver=Saver(),
+        result_finalizer=lambda result, _lesson: result,
+    )
+
+    assert use_case.discover(tmp_path) == (recording_dir,)
+    outcome = use_case.recover(recording_dir)
+
+    assert outcome.state == RecordingRecoveryState.RECOVERED
+    assert recover_calls == [recording_dir.resolve()]
+
+
+def test_completed_recovery_rejects_output_outside_recording_directory(
+    tmp_path: Path,
+) -> None:
+    lesson = make_lesson()
+    recording_dir = tmp_path / "lessons" / lesson.lesson_id / "recording"
+    recording_dir.mkdir(parents=True)
+    external_audio = recording_dir.parent / "external.m4a"
+    external_audio.write_bytes(b"not owned by recording")
+    (recording_dir / "session.json").write_text(
+        json.dumps({"status": "completed", "output_file": "../external.m4a"}),
+        encoding="utf-8",
+    )
+    use_case = RecoverRecordingUseCase(
+        discoverer=lambda _workspace: (),
+        recoverer=lambda _directory: make_result(recording_dir),
+        lesson_lookup=lambda _lesson_id: lesson,
+        lesson_saver=lambda _lesson, _fields: None,
+        result_finalizer=lambda result, _lesson: result,
+    )
+
+    assert use_case.discover(tmp_path) == ()
 
 
 def test_recovery_reconciles_audio_and_recording_lesson(tmp_path: Path) -> None:
@@ -232,9 +377,7 @@ def test_stale_recovery_does_not_roll_progressed_lesson_backwards(tmp_path: Path
     assert outcome.state == RecordingRecoveryState.RECOVERED
     assert lesson.status == JobStatus.REVIEW_REQUIRED
     assert lesson.source_audio_local == str(result.mixed_file.resolve())
-    assert saver.calls == [
-        (JobStatus.REVIEW_REQUIRED, ("source_audio_local",), None)
-    ]
+    assert saver.calls == [(JobStatus.REVIEW_REQUIRED, ("source_audio_local",), None)]
 
 
 def test_recovery_application_module_is_qt_independent() -> None:

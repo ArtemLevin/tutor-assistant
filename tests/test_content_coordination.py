@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -202,6 +203,69 @@ def test_lost_owned_lease_does_not_bypass_write_coordination(tmp_path: Path) -> 
 
     assert not service._current_thread_lease_protects("lesson")
     lease.release()
+
+
+def test_owned_lease_delegation_is_limited_to_one_worker_scope(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    lease = service.acquire_activity("recording", lesson_id="lesson")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+
+        def unrelated_worker() -> bool:
+            assert not service._current_thread_lease_protects("lesson")
+            with pytest.raises(ContentBusyError, match="recording"):
+                with service._write_activity("pipeline-write", lesson_id="lesson"):
+                    raise AssertionError("unrelated worker bypassed the recording lease")
+            return True
+
+        def finalizing_worker() -> bool:
+            assert not service._current_thread_lease_protects("lesson")
+            with pytest.raises(ContentBusyError, match="recording"):
+                with service._write_activity("pipeline-write", lesson_id="lesson"):
+                    raise AssertionError("worker bypassed the lease before delegation")
+
+            with service.use_owned_activity_lease(lease, lesson_id="lesson"):
+                assert service._current_thread_lease_protects("lesson")
+                with service._write_activity("pipeline-write", lesson_id="lesson"):
+                    assert executor.submit(unrelated_worker).result(timeout=5)
+                    exclusive = service.try_acquire_activity(
+                        "database-backup",
+                        exclusive=True,
+                    )
+                    assert not exclusive.acquired
+                    assert [item.activity for item in exclusive.blockers] == ["recording"]
+
+            assert not service._current_thread_lease_protects("lesson")
+            return True
+
+        try:
+            assert executor.submit(finalizing_worker).result(timeout=10)
+            assert service._current_thread_lease_protects("lesson")
+        finally:
+            lease.release()
+
+
+def test_owned_lease_delegation_rejects_other_lesson_owner_and_lost_lease(
+    tmp_path: Path,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    other_owner = StudentContentService(tmp_path / "data")
+    lease = service.acquire_activity("recording", lesson_id="lesson")
+    try:
+        with pytest.raises(ContentBusyError, match="не защищает указанное занятие"):
+            with service.use_owned_activity_lease(lease, lesson_id="other-lesson"):
+                raise AssertionError("lease protected an unrelated lesson")
+
+        with pytest.raises(ContentBusyError, match="не принадлежит операции"):
+            with other_owner.use_owned_activity_lease(lease, lesson_id="lesson"):
+                raise AssertionError("lease was delegated to another owner")
+
+        lease._mark_lost("simulated heartbeat loss")
+        with pytest.raises(ContentBusyError, match="не принадлежит операции"):
+            with service.use_owned_activity_lease(lease, lesson_id="lesson"):
+                raise AssertionError("lost lease protected the worker")
+    finally:
+        lease.release()
 
 
 def test_uncoordinated_maintenance_uses_existing_coordinator_lease(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import traceback
 from collections.abc import Callable, Iterable
@@ -120,9 +121,27 @@ class RecoverRecordingUseCase:
         self._result_finalizer = result_finalizer
 
     def discover(self, workspace: Path) -> tuple[Path, ...]:
-        """Return recoverable recording directories in infrastructure order."""
+        """Find incomplete capture plus completed audio missing lesson metadata."""
 
-        return tuple(self._discoverer(workspace))
+        sessions = list(self._discoverer(workspace))
+        discovered = set(sessions)
+        for manifest in sorted(workspace.glob("lessons/*/recording/session.json")):
+            recording_dir = manifest.parent
+            if recording_dir in discovered or self._completed_session(recording_dir) is None:
+                continue
+            lesson = self._lesson_lookup(recording_dir.parent.name)
+            if lesson is None:
+                continue
+            existing_audio = Path(lesson.source_audio_local).is_file() if lesson.source_audio_local else False
+            if existing_audio and lesson.status not in {JobStatus.DRAFT, JobStatus.RECORDING}:
+                continue
+            if self._completed_result(recording_dir) is None and not any(
+                (recording_dir / "chunks").rglob("*.wav")
+            ):
+                continue
+            sessions.append(recording_dir)
+            discovered.add(recording_dir)
+        return tuple(sessions)
 
     def recover(self, recording_dir: Path) -> RecordingRecoveryOutcome:
         """Recover one recording without leaking persistence decisions into Qt."""
@@ -132,7 +151,9 @@ class RecoverRecordingUseCase:
         result: RecordingResult | None = None
 
         try:
-            result = self._recoverer(recording_dir)
+            result = self._completed_result(recording_dir)
+            if result is None:
+                result = self._recoverer(recording_dir)
         except Exception:
             details = traceback.format_exc()
             logging.error(
@@ -200,6 +221,37 @@ class RecoverRecordingUseCase:
             )
 
         return RecordingRecoveryOutcome.recovered(recording_dir, result, lesson)
+
+    @staticmethod
+    def _completed_session(recording_dir: Path) -> dict[str, object] | None:
+        try:
+            session = json.loads((recording_dir / "session.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(session, dict) or session.get("status") != "completed":
+            return None
+        return session
+
+    @classmethod
+    def _completed_result(cls, recording_dir: Path) -> RecordingResult | None:
+        session = cls._completed_session(recording_dir)
+        if session is None:
+            return None
+
+        output_name = session.get("readable_output_file") or session.get("output_file")
+        if not isinstance(output_name, str) or not output_name or "/" in output_name or "\\" in output_name:
+            return None
+        mixed_file = recording_dir / output_name
+        if not mixed_file.is_file():
+            return None
+        return RecordingResult(
+            microphone_file=recording_dir / "microphone.wav",
+            system_file=recording_dir / "system.wav",
+            mixed_file=mixed_file,
+            session_file=recording_dir / "session.json",
+            sync_report=recording_dir / "sync_report.json",
+            quality_report=recording_dir / "audio_quality_report.json",
+        )
 
     def _mark_failed_if_unfinished(self, lesson: Lesson, details: str) -> None:
         if lesson.status not in self._RECOVERABLE_LESSON_STATUSES:
