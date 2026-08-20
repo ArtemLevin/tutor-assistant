@@ -37,7 +37,6 @@ def wait_until(
         application.processEvents()
         if predicate():
             return
-        time.sleep(0.01)
     application.processEvents()
     assert predicate()
 
@@ -187,8 +186,6 @@ def test_external_blocker_waits_for_next_submit_instead_of_tight_loop(
 
     assert not coordinator.submit(spec)
     coordinator.resume_deferred(released_activity="content-maintenance")
-    application.processEvents()
-    time.sleep(0.05)
     application.processEvents()
     assert calls == []
     assert coordinator.phase(BackgroundTaskPurpose.LATEX_MONITOR) == (BackgroundTaskPhase.DEFERRED)

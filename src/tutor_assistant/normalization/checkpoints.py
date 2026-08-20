@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import hashlib
@@ -78,9 +77,7 @@ class NormalizationCheckpointStore:
             attempts=int(row["attempts"]),
             normalized_text=row["normalized_text"],
             quality=(
-                NormalizationQuality.model_validate_json(quality_json)
-                if quality_json is not None
-                else None
+                NormalizationQuality.model_validate_json(quality_json) if quality_json is not None else None
             ),
             response_sha256=row["response_sha256"],
             error=row["error"],
@@ -165,18 +162,40 @@ class NormalizationCheckpointStore:
             ).fetchone()
         return self._from_row(row) if row else None
 
+    @staticmethod
+    def _assert_transition(
+        db: sqlite3.Connection,
+        cursor: sqlite3.Cursor,
+        run_id: int,
+        chunk_index: int,
+        target_status: NormalizationChunkStatus,
+    ) -> None:
+        if cursor.rowcount == 1:
+            return
+        row = db.execute(
+            "SELECT status FROM normalization_chunks WHERE run_id=? AND chunk_index=?",
+            (run_id, chunk_index),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"Normalization chunk not found: {run_id}/{chunk_index}")
+        current_status = str(row["status"])
+        raise NormalizationCheckpointMismatchError(
+            f"Недопустимый переход normalization checkpoint: {current_status} → {target_status.value}"
+        )
+
     def mark_running(self, run_id: int, chunk_index: int) -> None:
         now = self._now()
         with self.repository.connect() as db:
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE normalization_chunks
                 SET status='running', attempts=attempts+1, error=NULL,
                     started_at=?, completed_at=NULL, updated_at=?
-                WHERE run_id=? AND chunk_index=?
+                WHERE run_id=? AND chunk_index=? AND status IN ('pending', 'failed')
                 """,
                 (now, now, run_id, chunk_index),
             )
+            self._assert_transition(db, cursor, run_id, chunk_index, NormalizationChunkStatus.RUNNING)
 
     def complete(
         self,
@@ -195,7 +214,7 @@ class NormalizationCheckpointStore:
                 UPDATE normalization_chunks
                 SET status='completed', normalized_text=?, quality_json=?,
                     response_sha256=?, error=NULL, completed_at=?, updated_at=?
-                WHERE run_id=? AND chunk_index=?
+                WHERE run_id=? AND chunk_index=? AND status='running'
                 """,
                 (
                     normalized_text,
@@ -207,35 +226,36 @@ class NormalizationCheckpointStore:
                     chunk_index,
                 ),
             )
-            if cursor.rowcount != 1:
-                raise LookupError(f"Normalization chunk not found: {run_id}/{chunk_index}")
+            self._assert_transition(db, cursor, run_id, chunk_index, NormalizationChunkStatus.COMPLETED)
 
     def fail(self, run_id: int, chunk_index: int, error: str) -> None:
         now = self._now()
         with self.repository.connect() as db:
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE normalization_chunks
                 SET status='failed', error=?, updated_at=?
-                WHERE run_id=? AND chunk_index=?
+                WHERE run_id=? AND chunk_index=? AND status='running'
                 """,
                 (error[-2000:], now, run_id, chunk_index),
             )
+            self._assert_transition(db, cursor, run_id, chunk_index, NormalizationChunkStatus.FAILED)
 
     def reset_pending(self, run_id: int, chunk_index: int) -> None:
         with self.repository.connect() as db:
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE normalization_chunks
                 SET status='pending', error=NULL, updated_at=?
-                WHERE run_id=? AND chunk_index=?
+                WHERE run_id=? AND chunk_index=? AND status IN ('running', 'failed')
                 """,
                 (self._now(), run_id, chunk_index),
             )
+            self._assert_transition(db, cursor, run_id, chunk_index, NormalizationChunkStatus.PENDING)
 
     def reset_indeterminate(self, run_id: int, chunk_index: int) -> None:
         with self.repository.connect() as db:
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE normalization_chunks
                 SET status='pending', error='indeterminate_retry_confirmed', updated_at=?
@@ -243,17 +263,25 @@ class NormalizationCheckpointStore:
                 """,
                 (self._now(), run_id, chunk_index),
             )
+            self._assert_transition(db, cursor, run_id, chunk_index, NormalizationChunkStatus.PENDING)
 
     def mark_indeterminate(self, run_id: int, chunk_index: int, error: str) -> None:
         now = self._now()
         with self.repository.connect() as db:
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE normalization_chunks
                 SET status='indeterminate', error=?, updated_at=?
-                WHERE run_id=? AND chunk_index=?
+                WHERE run_id=? AND chunk_index=? AND status='running'
                 """,
                 (error[-2000:], now, run_id, chunk_index),
+            )
+            self._assert_transition(
+                db,
+                cursor,
+                run_id,
+                chunk_index,
+                NormalizationChunkStatus.INDETERMINATE,
             )
 
     def recover_interrupted(self) -> int:

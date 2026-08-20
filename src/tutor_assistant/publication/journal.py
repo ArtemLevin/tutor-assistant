@@ -207,9 +207,12 @@ class PublicationOperationStore:
                     ),
                 )
         except sqlite3.IntegrityError as exc:
-            raise PublicationOperationConflict(
-                f"Для занятия {lesson_id} уже выполняется публикация"
-            ) from exc
+            if (
+                getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_CONSTRAINT_UNIQUE
+                or self.active_for_lesson(lesson_id) is None
+            ):
+                raise
+            raise PublicationOperationConflict(f"Для занятия {lesson_id} уже выполняется публикация") from exc
         return self.get(operation_id)
 
     def _update(
@@ -227,8 +230,7 @@ class PublicationOperationStore:
         placeholders = ", ".join("?" for _ in expected)
         with self._connect() as db:
             cursor = db.execute(
-                f"UPDATE publication_operations SET {columns} "
-                f"WHERE id=? AND status IN ({placeholders})",
+                f"UPDATE publication_operations SET {columns} WHERE id=? AND status IN ({placeholders})",
                 parameters,
             )
         if cursor.rowcount != 1:
@@ -259,12 +261,16 @@ class PublicationOperationStore:
         allow_prepared: bool = False,
     ) -> PublicationOperation:
         expected = (
-            PublicationOperationStatus.PREPARED,
-            PublicationOperationStatus.PUSHING,
-            PublicationOperationStatus.INDETERMINATE,
-        ) if allow_prepared else (
-            PublicationOperationStatus.PUSHING,
-            PublicationOperationStatus.INDETERMINATE,
+            (
+                PublicationOperationStatus.PREPARED,
+                PublicationOperationStatus.PUSHING,
+                PublicationOperationStatus.INDETERMINATE,
+            )
+            if allow_prepared
+            else (
+                PublicationOperationStatus.PUSHING,
+                PublicationOperationStatus.INDETERMINATE,
+            )
         )
         return self._update(
             operation_id,

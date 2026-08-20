@@ -10,7 +10,7 @@ export UV_CACHE_DIR
 .DEFAULT_GOAL := help
 
 .PHONY: help init sync lock lock-check upgrade run setup doctor doctor-json doctor-strict \
-	devices latex-doctor test lint format format-check check build clean compile compile-remote \
+	devices latex-doctor test coverage lint format format-check check build clean compile compile-remote \
 	scan-latex recover support recovery-drill hardware-soak windows-build release-validate \
 	privacy-history privacy-history-full
 
@@ -72,6 +72,9 @@ latex-doctor: ## Проверить TeX Live, движок и Poppler
 
 test: ## Запустить тесты
 	$(UV) run --all-extras pytest -q
+
+coverage: ## Запустить тесты с измерением line и branch coverage без дополнительных зависимостей
+	$(UV) run --all-extras python scripts/test_coverage.py --fail-under 70 --branch-fail-under 45 --output coverage.json -- -q
 
 lint: ## Проверить код с Ruff
 	$(UV) run --all-extras ruff check .

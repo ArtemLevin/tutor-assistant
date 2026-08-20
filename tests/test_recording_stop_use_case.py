@@ -376,6 +376,127 @@ def test_lease_release_failure_does_not_change_recorded_outcome(tmp_path: Path) 
     assert lease.release_calls == 1
 
 
+def test_result_returned_before_recorder_quiescence_retains_lease_for_recovery(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    result = make_result(tmp_path)
+
+    class RecorderWithLiveWriter(FakeRecorder):
+        def stop(self) -> RecordingResult:
+            self.events.append("recorder.stop")
+            self.stop_calls += 1
+            self._active = False
+            return self.result
+
+    recorder = RecorderWithLiveWriter(result, events)
+    lease = FakeLease(events)
+    pipeline = FakePipeline(events)
+
+    outcome = StopRecordingUseCase(pipeline).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease)
+    )
+
+    assert outcome.state == RecordingStopState.RECOVERY_REQUIRED
+    assert "capture/writer" in (outcome.error or "")
+    assert lesson.status == JobStatus.RECORDING
+    assert pipeline.saved == []
+    assert lease.release_calls == 0
+
+
+def test_legacy_recorder_without_quiescence_property_uses_inactive_state(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    result = make_result(tmp_path)
+
+    class LegacyRecorder:
+        active = True
+
+        def stop(self) -> RecordingResult:
+            events.append("recorder.stop")
+            self.active = False
+            return result
+
+    recorder = LegacyRecorder()
+    lease = FakeLease(events)
+    pipeline = FakePipeline(events)
+
+    outcome = StopRecordingUseCase(pipeline).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease)
+    )
+
+    assert outcome.state == RecordingStopState.RECORDED
+    assert lesson.source_audio_local == str(result.mixed_file.resolve())
+    assert lease.release_calls == 1
+
+
+def test_failed_error_compensation_preserves_audio_outcome_and_releases_lease(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    result = make_result(tmp_path)
+    recorder = FakeRecorder(result, events)
+    lease = FakeLease(events)
+
+    class UnavailablePipeline(FakePipeline):
+        def save_state(self, current: Lesson, *fields: str, **kwargs: object) -> Lesson:
+            self.save_calls += 1
+            self.events.append(f"lesson.save:{current.status.value}")
+            raise RuntimeError("database unavailable")
+
+    pipeline = UnavailablePipeline(events)
+
+    outcome = StopRecordingUseCase(pipeline).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease)
+    )
+
+    assert outcome.state == RecordingStopState.FAILED
+    assert outcome.result is result
+    assert "database unavailable" in (outcome.error or "")
+    assert lesson.status == JobStatus.FAILED
+    assert pipeline.save_calls == 2
+    assert lease.release_calls == 1
+
+
+def test_failed_lease_delegation_marks_stopped_recording_failed_and_releases_lease(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    result = make_result(tmp_path)
+    recorder = FakeRecorder(result, events)
+    lease = FakeLease(events)
+
+    class RejectingPipeline(FakePipeline):
+        @contextmanager
+        def recording_lease_scope(
+            self,
+            _lease: FakeLease,
+            *,
+            lesson_id: str,
+        ) -> Iterator[None]:
+            assert lesson_id == lesson.lesson_id
+            raise RuntimeError("recording lease lost before finalization")
+            yield
+
+    pipeline = RejectingPipeline(events)
+
+    outcome = StopRecordingUseCase(pipeline).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=lease)
+    )
+
+    assert outcome.state == RecordingStopState.FAILED
+    assert outcome.result is result
+    assert "recording lease lost" in (outcome.error or "")
+    assert lesson.status == JobStatus.FAILED
+    assert pipeline.saved[-1][0] == JobStatus.FAILED
+    assert lease.release_calls == 1
+
+
 def test_production_stop_does_not_delegate_back_to_legacy_super() -> None:
     source = inspect.getsource(StopFinalizeMainWindow._stop_recording_async)
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -115,10 +115,19 @@ def test_activity_lease_heartbeat_and_idempotent_release(tmp_path: Path) -> None
         ttl=timedelta(seconds=3),
     )
     assert acquired.lease_info is not None
+    renewed = threading.Event()
+    original_heartbeat = store.heartbeat
+
+    def observe_heartbeat(lease_id: str, owner_id: str, ttl: timedelta) -> bool:
+        result = original_heartbeat(lease_id, owner_id, ttl)
+        renewed.set()
+        return result
+
+    store.heartbeat = observe_heartbeat
     lease = ActivityLease(store, acquired.lease_info, timedelta(seconds=3))
     initial_heartbeat = acquired.lease_info.heartbeat_at
 
-    time.sleep(1.2)
+    assert renewed.wait(timeout=3)
     active = store.active()
 
     assert len(active) == 1
@@ -132,15 +141,82 @@ def test_activity_lease_heartbeat_and_idempotent_release(tmp_path: Path) -> None
     assert store.active() == []
 
 
+@pytest.mark.parametrize("ttl", [timedelta(0), timedelta(seconds=-1)])
+def test_invalid_heartbeat_ttl_cannot_expire_an_active_lease(
+    tmp_path: Path,
+    ttl: timedelta,
+) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    acquired = store.try_acquire(owner_id="owner", activity="recording")
+    assert acquired.lease_info is not None
+
+    with pytest.raises(ValueError, match="TTL must be positive"):
+        store.heartbeat(acquired.lease_info.lease_id, "owner", ttl)
+
+    assert [item.lease_id for item in store.active()] == [acquired.lease_info.lease_id]
+    store.release(acquired.lease_info.lease_id, "owner")
+
+
+def test_concurrent_lease_release_invokes_cleanup_only_once(tmp_path: Path, monkeypatch) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    acquired = store.try_acquire(owner_id="owner", activity="recording")
+    assert acquired.lease_info is not None
+    callbacks: list[str] = []
+    first_entered = threading.Event()
+    second_started = threading.Event()
+    allow_release = threading.Event()
+    original_release = store.release
+
+    def controlled_release(lease_id: str, owner_id: str) -> None:
+        first_entered.set()
+        assert allow_release.wait(timeout=3)
+        original_release(lease_id, owner_id)
+
+    monkeypatch.setattr(store, "release", controlled_release)
+    lease = ActivityLease(
+        store,
+        acquired.lease_info,
+        timedelta(minutes=2),
+        on_release=lambda released: callbacks.append(released.info.lease_id),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(lease.release)
+        assert first_entered.wait(timeout=2)
+
+        def release_again() -> None:
+            second_started.set()
+            lease.release()
+
+        second = executor.submit(release_again)
+        assert second_started.wait(timeout=2)
+        allow_release.set()
+        first.result(timeout=3)
+        second.result(timeout=3)
+
+    assert callbacks == [acquired.lease_info.lease_id]
+    assert lease.state == LeaseState.RELEASED
+    assert store.active() == []
+
+
 def test_short_activity_lease_is_renewed_before_expiration(tmp_path: Path) -> None:
     store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
     ttl = timedelta(milliseconds=600)
     acquired = store.try_acquire(owner_id="owner", activity="short-operation", ttl=ttl)
     assert acquired.lease_info is not None
+    renewed = threading.Event()
+    original_heartbeat = store.heartbeat
+
+    def observe_heartbeat(lease_id: str, owner_id: str, current_ttl: timedelta) -> bool:
+        result = original_heartbeat(lease_id, owner_id, current_ttl)
+        renewed.set()
+        return result
+
+    store.heartbeat = observe_heartbeat
 
     lease = ActivityLease(store, acquired.lease_info, ttl)
     try:
-        time.sleep(0.8)
+        assert renewed.wait(timeout=2)
         active = store.active()
         assert len(active) == 1
         assert active[0].heartbeat_at > acquired.lease_info.heartbeat_at
@@ -160,9 +236,7 @@ def test_activity_lease_marks_rejected_heartbeat_as_lost(tmp_path: Path, monkeyp
     monkeypatch.setattr(store, "heartbeat", lambda *_args, **_kwargs: False)
     lease = ActivityLease(store, acquired.lease_info, timedelta(seconds=3))
 
-    deadline = time.monotonic() + 2.0
-    while lease.state == LeaseState.HEALTHY and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert lease._stop.wait(timeout=2)
 
     assert lease.state == LeaseState.LOST
     assert not lease.valid
@@ -187,13 +261,74 @@ def test_activity_lease_marks_heartbeat_exception_as_lost(tmp_path: Path, monkey
     monkeypatch.setattr(store, "heartbeat", fail_heartbeat)
     lease = ActivityLease(store, acquired.lease_info, timedelta(seconds=3))
 
-    deadline = time.monotonic() + 2.0
-    while lease.state == LeaseState.HEALTHY and time.monotonic() < deadline:
-        time.sleep(0.02)
+    assert lease._stop.wait(timeout=2)
 
     assert lease.state == LeaseState.LOST
     assert "database unavailable" in (lease.lost_reason or "")
     lease.release()
+
+
+@pytest.mark.parametrize("ttl", [timedelta(0), timedelta(seconds=-1)])
+def test_lease_acquisition_rejects_non_positive_ttl_without_creating_blocker(
+    tmp_path: Path,
+    ttl: timedelta,
+) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+
+    with pytest.raises(ValueError, match="TTL must be positive"):
+        store.try_acquire(owner_id="owner", activity="recording", ttl=ttl)
+
+    assert store.active() == []
+
+
+def test_wrong_owner_cannot_renew_or_release_another_process_lease(tmp_path: Path) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    acquired = store.try_acquire(owner_id="actual-owner", activity="recording")
+    assert acquired.lease_info is not None
+
+    assert not store.heartbeat(acquired.lease_info.lease_id, "other-owner", timedelta(minutes=1))
+    store.release(acquired.lease_info.lease_id, "other-owner")
+
+    active = store.active()
+    assert len(active) == 1
+    assert active[0].lease_id == acquired.lease_info.lease_id
+    assert active[0].owner_id == "actual-owner"
+    store.release(acquired.lease_info.lease_id, "actual-owner")
+
+
+def test_lesson_scoped_leases_block_same_lesson_without_blocking_others(tmp_path: Path) -> None:
+    store = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    first = store.try_acquire(owner_id="first", activity="recording", lesson_id="lesson-1")
+    assert first.lease_info is not None
+
+    same_lesson = store.try_acquire(
+        owner_id="second",
+        activity="pipeline-write",
+        lesson_id="lesson-1",
+    )
+    different_lesson = store.try_acquire(
+        owner_id="third",
+        activity="pipeline-write",
+        lesson_id="lesson-2",
+    )
+
+    assert not same_lesson.acquired
+    assert [item.activity for item in same_lesson.blockers] == ["recording"]
+    assert different_lesson.lease_info is not None
+    store.release(first.lease_info.lease_id, "first")
+    store.release(different_lesson.lease_info.lease_id, "third")
+
+
+def test_workspace_generation_is_shared_and_monotonically_advanced(tmp_path: Path) -> None:
+    first = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+    second = ActivityLeaseStore(tmp_path / "operations.sqlite3")
+
+    initial = first.generation()
+    assert second.generation() == initial
+    assert first.advance_generation() == initial + 1
+    assert second.generation() == initial + 1
+    assert second.advance_generation() == initial + 2
+    assert first.generation() == initial + 2
 
 
 def test_lost_owned_lease_does_not_bypass_write_coordination(tmp_path: Path) -> None:
