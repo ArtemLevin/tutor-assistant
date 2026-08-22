@@ -598,7 +598,6 @@ class MainWindow(QMainWindow):
             logging.warning("Активное задание не удалено из очереди: %s", lesson_id)
         if self.lesson and self.lesson.lesson_id == lesson_id:
             self.lesson = None
-            self._prepare_next_lesson()
         self._update_transcription_queue_ui()
 
     def _save_trash_retention(self, days: int) -> None:
@@ -1626,7 +1625,6 @@ class MainWindow(QMainWindow):
             )
             self._enqueue_transcription(lesson, audio)
             self.lesson = None
-            self._prepare_next_lesson()
             self._set_status(
                 f"{lesson.student.full_name}: добавлено в фоновую очередь",
                 "working",
