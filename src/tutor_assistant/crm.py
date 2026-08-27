@@ -524,7 +524,8 @@ class CrmStore:
                 """
                 SELECT id, start_minute, duration_minutes, valid_from, valid_until
                 FROM crm_schedule_rules
-                WHERE active=1 AND weekday=? AND (? IS NULL OR id<>?)
+                WHERE (active=1 OR valid_until IS NOT NULL)
+                  AND weekday=? AND (? IS NULL OR id<>?)
                 """,
                 (rule.weekday, rule.id, rule.id),
             ).fetchall()

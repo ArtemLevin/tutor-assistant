@@ -145,6 +145,19 @@ def test_same_time_recurring_rules_are_allowed_when_date_ranges_do_not_overlap(t
     assert len(store.list_schedule_rules()) == 2
 
 
+def test_new_rule_cannot_overlap_preserved_history_of_ended_series(tmp_path) -> None:
+    store = _store(tmp_path)
+    rule_id = _save_series(store)
+    store.end_schedule_rule(rule_id, effective_from=date(2026, 8, 12))
+
+    with pytest.raises(ScheduleConflict, match="повторяющееся занятие"):
+        _save_series(
+            store,
+            valid_from=date(2026, 8, 1),
+            valid_until=date(2026, 8, 11),
+        )
+
+
 def test_completed_occurrence_cannot_be_cancelled_as_future_lesson(tmp_path) -> None:
     store = _store(tmp_path)
     _save_series(store)
