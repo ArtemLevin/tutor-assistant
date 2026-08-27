@@ -295,6 +295,7 @@ class CrmStore:
                     meeting_secret TEXT,
                     valid_from TEXT NOT NULL,
                     valid_until TEXT,
+                    ended_from TEXT,
                     rate_cents INTEGER NOT NULL DEFAULT 0,
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
@@ -333,11 +334,18 @@ class CrmStore:
 
     @staticmethod
     def _ensure_schema_upgrades(db: sqlite3.Connection) -> None:
-        columns = {
+        rule_columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(crm_schedule_rules)")
+        }
+        if "ended_from" not in rule_columns:
+            db.execute("ALTER TABLE crm_schedule_rules ADD COLUMN ended_from TEXT")
+
+        occurrence_columns = {
             str(row["name"])
             for row in db.execute("PRAGMA table_info(crm_lesson_occurrences)")
         }
-        if "paid" not in columns:
+        if "paid" not in occurrence_columns:
             db.execute(
                 "ALTER TABLE crm_lesson_occurrences "
                 "ADD COLUMN paid INTEGER NOT NULL DEFAULT 0"
@@ -524,7 +532,7 @@ class CrmStore:
                 """
                 SELECT id, start_minute, duration_minutes, valid_from, valid_until
                 FROM crm_schedule_rules
-                WHERE (active=1 OR valid_until IS NOT NULL)
+                WHERE (active=1 OR ended_from IS NOT NULL)
                   AND weekday=? AND (? IS NULL OR id<>?)
                 """,
                 (rule.weekday, rule.id, rule.id),
@@ -601,13 +609,13 @@ class CrmStore:
                     ),
                 )
                 return int(cursor.lastrowid)
-            db.execute(
+            cursor = db.execute(
                 """
                 UPDATE crm_schedule_rules SET
                     student_id=?, weekday=?, start_minute=?, duration_minutes=?, subject=?,
                     topic=?, meeting_secret=?, valid_from=?, valid_until=?, rate_cents=?,
                     active=?, updated_at=?
-                WHERE id=?
+                WHERE id=? AND (ended_from IS NULL OR ?=0)
                 """,
                 (
                     rule.student_id,
@@ -623,8 +631,19 @@ class CrmStore:
                     int(rule.active),
                     now,
                     rule.id,
+                    int(rule.active),
                 ),
             )
+            if cursor.rowcount != 1:
+                existing = db.execute(
+                    "SELECT ended_from FROM crm_schedule_rules WHERE id=?",
+                    (rule.id,),
+                ).fetchone()
+                if existing is not None and rule.active and existing["ended_from"] is not None:
+                    raise ValueError(
+                        "Завершённую серию нельзя включить снова. Создайте новую серию."
+                    )
+                raise ValueError(f"Серия расписания {rule.id} не найдена")
             return rule.id
 
     def end_schedule_rule(self, rule_id: int, *, effective_from: date) -> None:
@@ -639,7 +658,7 @@ class CrmStore:
             now = self._now()
             with self.connect() as db:
                 row = db.execute(
-                    "SELECT valid_from, valid_until FROM crm_schedule_rules WHERE id=?",
+                    "SELECT valid_until, ended_from FROM crm_schedule_rules WHERE id=?",
                     (rule_id,),
                 ).fetchone()
                 if row is None:
@@ -647,17 +666,25 @@ class CrmStore:
                 current_until = (
                     date.fromisoformat(row["valid_until"]) if row["valid_until"] else None
                 )
-                cutoff_until = effective_from - timedelta(days=1)
+                current_ended_from = (
+                    date.fromisoformat(row["ended_from"]) if row["ended_from"] else None
+                )
+                new_ended_from = (
+                    min(current_ended_from, effective_from)
+                    if current_ended_from
+                    else effective_from
+                )
+                cutoff_until = new_ended_from - timedelta(days=1)
                 new_until = (
                     min(current_until, cutoff_until) if current_until else cutoff_until
                 )
                 db.execute(
                     """
                     UPDATE crm_schedule_rules
-                    SET active=0, valid_until=?, updated_at=?
+                    SET active=0, valid_until=?, ended_from=?, updated_at=?
                     WHERE id=?
                     """,
-                    (new_until.isoformat(), now, rule_id),
+                    (new_until.isoformat(), new_ended_from.isoformat(), now, rule_id),
                 )
                 db.execute(
                     """
@@ -667,7 +694,7 @@ class CrmStore:
                       AND COALESCE(original_date, substr(starts_at, 1, 10))>=?
                       AND status='planned'
                     """,
-                    (now, rule_id, effective_from.isoformat()),
+                    (now, rule_id, new_ended_from.isoformat()),
                 )
 
         self._retry(operation)
@@ -886,7 +913,7 @@ class CrmStore:
                 SELECT r.*, s.full_name AS student_name
                 FROM crm_schedule_rules r
                 JOIN crm_students s ON s.id=r.student_id
-                WHERE r.active=1 OR r.valid_until IS NOT NULL
+                WHERE r.active=1 OR r.ended_from IS NOT NULL
                 ORDER BY r.weekday, r.start_minute
                 """
             ).fetchall()
