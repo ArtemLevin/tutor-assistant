@@ -155,7 +155,8 @@ class SchedulePageStable(base_crm.SchedulePage):
         )
         self.lessons_stat.setToolTip(
             f"Всего записей на неделю: {summary.total_lessons}. "
-            "Отменённые занятия сохраняются в истории, но не занимают ячейки расписания."
+            "Отменённые занятия не входят в плановую выручку, сохраняются в истории "
+            "и не занимают ячейки расписания."
         )
 
     def _open_dialog(
