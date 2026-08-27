@@ -113,6 +113,21 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
 class SchedulePageStable(base_crm.SchedulePage):
     """Schedule page with explicit cancellation accounting and atomic status changes."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        self.cancelled_cell_lessons: dict[tuple[int, int], ScheduledLesson] = {}
+        super().__init__(*args, **kwargs)
+
+    def _cancelled_lesson_is_restorable(self, lesson: ScheduledLesson) -> bool:
+        if lesson.lesson_id is not None:
+            return False
+        if lesson.rule_id is None:
+            return True
+        rule = self.store.get_schedule_rule(lesson.rule_id)
+        if rule is None or not rule.active:
+            return False
+        original_date = lesson.original_date or lesson.starts_at.date()
+        return rule.valid_until is None or original_date <= rule.valid_until
+
     def _clear_cancelled_grid_cells(self) -> None:
         """Keep cancellation history without letting it occupy active schedule slots."""
 
@@ -124,12 +139,18 @@ class SchedulePageStable(base_crm.SchedulePage):
             return
 
         signal_blocker = QSignalBlocker(self.grid)
+        restoreable_cache: dict[int, bool] = {}
         self.grid.clearSpans()
         self.cell_lessons.clear()
         for (row, column), lesson in rendered.items():
             if lesson.status == ScheduledLessonStatus.CANCELLED.value:
                 if self.grid.item(row, column) is not None:
                     self.grid.takeItem(row, column)
+                lesson_key = id(lesson)
+                if lesson_key not in restoreable_cache:
+                    restoreable_cache[lesson_key] = self._cancelled_lesson_is_restorable(lesson)
+                if restoreable_cache[lesson_key]:
+                    self.cancelled_cell_lessons[(row, column)] = lesson
                 continue
 
             self.cell_lessons[(row, column)] = lesson
@@ -147,6 +168,7 @@ class SchedulePageStable(base_crm.SchedulePage):
         self._sync_schedule_action()
 
     def refresh(self) -> None:
+        self.cancelled_cell_lessons.clear()
         super().refresh()
         self._clear_cancelled_grid_cells()
         summary = summarize_schedule(self.store.lessons_for_week(self.week_start))
@@ -157,6 +179,32 @@ class SchedulePageStable(base_crm.SchedulePage):
             f"Всего записей на неделю: {summary.total_lessons}. "
             "Отменённые занятия не входят в плановую выручку, сохраняются в истории "
             "и не занимают ячейки расписания."
+        )
+
+    def _sync_schedule_action(self, *_args) -> None:
+        super()._sync_schedule_action(*_args)
+        row = self.grid.currentRow()
+        column = self.grid.currentColumn()
+        position = (row, column)
+        if position not in self.cell_lessons and position in self.cancelled_cell_lessons:
+            self.open_selected_button.setText("Вернуть отменённое")
+            self.open_selected_button.setToolTip(
+                "Открыть сохранённую отмену для восстановления занятия"
+            )
+        else:
+            self.open_selected_button.setToolTip("")
+
+    def _cell_opened(self, row: int, column: int) -> None:
+        selected_date = self.week_start + date.resolution * column
+        selected_hour, selected_minute = self._time_for_row(row)
+        lesson = self.cell_lessons.get((row, column)) or self.cancelled_cell_lessons.get(
+            (row, column)
+        )
+        self._open_dialog(
+            selected_date,
+            selected_hour,
+            selected_minute,
+            lesson,
         )
 
     def _open_dialog(
