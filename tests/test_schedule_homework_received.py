@@ -132,9 +132,16 @@ def test_schedule_slot_homework_checkbox_persists_without_breaking_payment(
     page.refresh()
     application.processEvents()
     controller.sync()
-    cancelled = controller.checkbox_for(row, 0)
-    assert cancelled is not None
-    assert not cancelled.isEnabled()
+
+    # A cancelled lesson remains durable history, but its active-grid overlays disappear
+    # together with the calendar cell instead of leaving a disabled visual ghost.
+    assert controller.checkbox_for(row, 0) is None
+    assert page.grid.item(row, 0) is None
+    assert (row, 0) not in page.cell_lessons
+    hidden = page.cancelled_cell_lessons[(row, 0)]
+    snapshot = controller.service.snapshot_homework(hidden)
+    assert snapshot.sent_at is not None
+    assert snapshot.received_at is None
     page.close()
 
 
