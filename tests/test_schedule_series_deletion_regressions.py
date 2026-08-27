@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime
 
 import pytest
@@ -42,6 +43,40 @@ def _save_series(
     )
 
 
+def test_schema_upgrade_adds_ended_from_marker_to_existing_schedule_table(tmp_path) -> None:
+    db_path = tmp_path / "assistant.sqlite3"
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """
+            CREATE TABLE crm_schedule_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id TEXT NOT NULL,
+                weekday INTEGER NOT NULL CHECK(weekday BETWEEN 0 AND 6),
+                start_minute INTEGER NOT NULL CHECK(start_minute BETWEEN 0 AND 1439),
+                duration_minutes INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                topic TEXT NOT NULL DEFAULT '',
+                meeting_secret TEXT,
+                valid_from TEXT NOT NULL,
+                valid_until TEXT,
+                rate_cents INTEGER NOT NULL DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    store = CrmStore(db_path)
+
+    with store.connect() as db:
+        columns = {
+            str(row["name"])
+            for row in db.execute("PRAGMA table_info(crm_schedule_rules)")
+        }
+    assert "ended_from" in columns
+
+
 def test_end_series_preserves_virtual_history_and_stops_selected_date_forward(tmp_path) -> None:
     store = _store(tmp_path)
     rule_id = _save_series(store)
@@ -61,6 +96,47 @@ def test_end_series_preserves_virtual_history_and_stops_selected_date_forward(tm
     assert rule is not None
     assert rule.active is False
     assert rule.valid_until == date(2026, 8, 11)
+    with store.connect() as db:
+        row = db.execute(
+            "SELECT ended_from FROM crm_schedule_rules WHERE id=?",
+            (rule_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["ended_from"] == "2026-08-12"
+
+
+def test_legacy_inactive_rule_with_valid_until_does_not_reappear(tmp_path) -> None:
+    store = _store(tmp_path)
+    legacy_rule_id = _save_series(store, valid_until=date(2026, 8, 31))
+    with store.connect() as db:
+        db.execute(
+            """
+            UPDATE crm_schedule_rules
+            SET active=0, ended_from=NULL
+            WHERE id=?
+            """,
+            (legacy_rule_id,),
+        )
+
+    assert store.lessons_for_week(date(2026, 8, 3)) == []
+
+    replacement_rule_id = _save_series(store, valid_until=date(2026, 8, 31))
+    assert replacement_rule_id != legacy_rule_id
+
+
+def test_ended_series_cannot_be_reactivated_through_store_save(tmp_path) -> None:
+    store = _store(tmp_path)
+    rule_id = _save_series(store)
+    store.end_schedule_rule(rule_id, effective_from=date(2026, 8, 12))
+    rule = store.get_schedule_rule(rule_id)
+    assert rule is not None
+
+    with pytest.raises(ValueError, match="Завершённую серию нельзя включить снова"):
+        store.save_schedule_rule(rule.model_copy(update={"active": True}))
+
+    stored = store.get_schedule_rule(rule_id)
+    assert stored is not None
+    assert stored.active is False
 
 
 def test_end_series_cancels_future_paid_occurrence_without_losing_payment(tmp_path) -> None:
