@@ -615,7 +615,7 @@ class CrmStore:
                     student_id=?, weekday=?, start_minute=?, duration_minutes=?, subject=?,
                     topic=?, meeting_secret=?, valid_from=?, valid_until=?, rate_cents=?,
                     active=?, updated_at=?
-                WHERE id=? AND (ended_from IS NULL OR ?=0)
+                WHERE id=? AND ended_from IS NULL
                 """,
                 (
                     rule.student_id,
@@ -631,7 +631,6 @@ class CrmStore:
                     int(rule.active),
                     now,
                     rule.id,
-                    int(rule.active),
                 ),
             )
             if cursor.rowcount != 1:
@@ -639,9 +638,9 @@ class CrmStore:
                     "SELECT ended_from FROM crm_schedule_rules WHERE id=?",
                     (rule.id,),
                 ).fetchone()
-                if existing is not None and rule.active and existing["ended_from"] is not None:
+                if existing is not None and existing["ended_from"] is not None:
                     raise ValueError(
-                        "Завершённую серию нельзя включить снова. Создайте новую серию."
+                        "Завершённую серию нельзя изменять. Создайте новую серию."
                     )
                 raise ValueError(f"Серия расписания {rule.id} не найдена")
             return rule.id
