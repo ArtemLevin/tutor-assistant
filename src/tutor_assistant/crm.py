@@ -509,17 +509,44 @@ class CrmStore:
     def _overlaps(start_a: int, duration_a: int, start_b: int, duration_b: int) -> bool:
         return start_a < start_b + duration_b and start_b < start_a + duration_a
 
+    @staticmethod
+    def _date_ranges_overlap(
+        start_a: date,
+        end_a: date | None,
+        start_b: date,
+        end_b: date | None,
+    ) -> bool:
+        return (end_a is None or start_b <= end_a) and (end_b is None or start_a <= end_b)
+
     def _check_rule_conflict(self, rule: ScheduleRule) -> None:
         with self.connect() as db:
-            rows = db.execute(
+            rule_rows = db.execute(
                 """
-                SELECT id, start_minute, duration_minutes
+                SELECT id, start_minute, duration_minutes, valid_from, valid_until
                 FROM crm_schedule_rules
                 WHERE active=1 AND weekday=? AND (? IS NULL OR id<>?)
                 """,
                 (rule.weekday, rule.id, rule.id),
             ).fetchall()
-        for row in rows:
+            occurrence_rows = db.execute(
+                """
+                SELECT rule_id, starts_at, duration_minutes
+                FROM crm_lesson_occurrences
+                WHERE status<>'cancelled'
+                  AND (rule_id IS NULL OR ? IS NULL OR rule_id<>?)
+                """,
+                (rule.id, rule.id),
+            ).fetchall()
+        for row in rule_rows:
+            other_from = date.fromisoformat(row["valid_from"])
+            other_until = date.fromisoformat(row["valid_until"]) if row["valid_until"] else None
+            if not self._date_ranges_overlap(
+                rule.valid_from,
+                rule.valid_until,
+                other_from,
+                other_until,
+            ):
+                continue
             if self._overlaps(
                 rule.start_minute,
                 rule.duration_minutes,
@@ -527,6 +554,21 @@ class CrmStore:
                 row["duration_minutes"],
             ):
                 raise ScheduleConflict("В выбранное время уже назначено повторяющееся занятие")
+        for row in occurrence_rows:
+            starts_at = datetime.fromisoformat(row["starts_at"])
+            occurrence_date = starts_at.date()
+            if starts_at.weekday() != rule.weekday or occurrence_date < rule.valid_from:
+                continue
+            if rule.valid_until and occurrence_date > rule.valid_until:
+                continue
+            occurrence_start_minute = starts_at.hour * 60 + starts_at.minute
+            if self._overlaps(
+                rule.start_minute,
+                rule.duration_minutes,
+                occurrence_start_minute,
+                row["duration_minutes"],
+            ):
+                raise ScheduleConflict("В выбранное время уже назначено конкретное занятие")
 
     def save_schedule_rule(self, rule: ScheduleRule) -> int:
         self._check_rule_conflict(rule)
@@ -584,9 +626,55 @@ class CrmStore:
             )
             return rule.id
 
+    def end_schedule_rule(self, rule_id: int, *, effective_from: date) -> None:
+        """End a recurring series from ``effective_from`` without erasing its history.
+
+        The rule keeps an explicit historical validity window. Future materialized
+        planned occurrences are retained as records but become cancelled, so payment,
+        homework and lesson links are never silently discarded.
+        """
+
+        def operation() -> None:
+            now = self._now()
+            with self.connect() as db:
+                row = db.execute(
+                    "SELECT valid_from, valid_until FROM crm_schedule_rules WHERE id=?",
+                    (rule_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Серия расписания {rule_id} не найдена")
+                current_until = (
+                    date.fromisoformat(row["valid_until"]) if row["valid_until"] else None
+                )
+                cutoff_until = effective_from - timedelta(days=1)
+                new_until = (
+                    min(current_until, cutoff_until) if current_until else cutoff_until
+                )
+                db.execute(
+                    """
+                    UPDATE crm_schedule_rules
+                    SET active=0, valid_until=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (new_until.isoformat(), now, rule_id),
+                )
+                db.execute(
+                    """
+                    UPDATE crm_lesson_occurrences
+                    SET status='cancelled', updated_at=?
+                    WHERE rule_id=?
+                      AND COALESCE(original_date, substr(starts_at, 1, 10))>=?
+                      AND status='planned'
+                    """,
+                    (now, rule_id, effective_from.isoformat()),
+                )
+
+        self._retry(operation)
+
     def delete_schedule_rule(self, rule_id: int) -> None:
-        with self.connect() as db:
-            db.execute("UPDATE crm_schedule_rules SET active=0 WHERE id=?", (rule_id,))
+        """Backward-compatible stop-now alias for callers without an explicit cutoff."""
+
+        self.end_schedule_rule(rule_id, effective_from=datetime.now().date())
 
     def _rule_from_row(self, row: sqlite3.Row) -> ScheduleRule:
         return ScheduleRule(
@@ -603,6 +691,11 @@ class CrmStore:
             rate_cents=row["rate_cents"],
             active=bool(row["active"]),
         )
+
+    def get_schedule_rule(self, rule_id: int) -> ScheduleRule | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM crm_schedule_rules WHERE id=?", (rule_id,)).fetchone()
+        return self._rule_from_row(row) if row else None
 
     def list_schedule_rules(self) -> list[ScheduleRule]:
         with self.connect() as db:
@@ -792,7 +885,7 @@ class CrmStore:
                 SELECT r.*, s.full_name AS student_name
                 FROM crm_schedule_rules r
                 JOIN crm_students s ON s.id=r.student_id
-                WHERE r.active=1
+                WHERE r.active=1 OR r.valid_until IS NOT NULL
                 ORDER BY r.weekday, r.start_minute
                 """
             ).fetchall()

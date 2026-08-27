@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
 from ..crm import ScheduleConflict, ScheduledLesson, ScheduleRule
 from ..schedule_status import (
     ScheduledLessonStatus,
+    delete_one_off_lesson,
     set_scheduled_lesson_status,
     summarize_schedule,
 )
@@ -21,38 +22,91 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
         super().__init__(*args, **kwargs)
         if self.lesson is None:
             return
+
+        rule = (
+            self.store.get_schedule_rule(self.lesson.rule_id)
+            if self.lesson.rule_id is not None
+            else None
+        )
+        active_series = bool(rule and rule.active)
+        if self.lesson.rule_id is not None and not active_series:
+            self.recurring.setChecked(False)
+            self.recurring.setEnabled(False)
+            self.recurring.setToolTip(
+                "Эта повторяющаяся серия завершена. Для нового повторения создайте новую серию."
+            )
+
         action_buttons = {button.text(): button for button in self.findChildren(QPushButton)}
         start = action_buttons.get("Начать запись")
         destructive = action_buttons.get("Удалить")
-        if start is not None and self.lesson.status == ScheduledLessonStatus.CANCELLED.value:
+        if start is not None and self.lesson.status != ScheduledLessonStatus.PLANNED.value:
             start.setEnabled(False)
-            start.setToolTip("Сначала верните отменённое занятие в расписание")
+            start.setToolTip(
+                "Запустить запись можно только для запланированного занятия"
+            )
         if destructive is None:
             return
         try:
             destructive.clicked.disconnect()
         except (RuntimeError, TypeError):
             pass
+
         if self.lesson.status == ScheduledLessonStatus.CANCELLED.value:
             destructive.setText("Вернуть занятие")
             destructive.setToolTip("Вернуть только это занятие; повторяющаяся серия не изменится")
             set_button_kind(destructive, "primary")
+            if rule is not None and rule.valid_until is not None:
+                original_date = self.lesson.original_date or self.lesson.starts_at.date()
+                if original_date > rule.valid_until:
+                    destructive.setEnabled(False)
+                    destructive.setToolTip(
+                        "Эта дата находится после завершения серии; создайте новое занятие"
+                    )
             destructive.clicked.connect(lambda: self._finish("restore"))
+        elif self.lesson.status in {
+            ScheduledLessonStatus.IN_PROGRESS.value,
+            ScheduledLessonStatus.COMPLETED.value,
+        }:
+            destructive.setText("Отмена недоступна")
+            destructive.setEnabled(False)
+            destructive.setToolTip("Начатое или завершённое занятие нельзя отменить как будущее")
+            set_button_kind(destructive, "ghost")
         else:
             destructive.setText("Отменить занятие")
             destructive.setToolTip("Отменить только выбранную дату; будущие занятия серии сохранятся")
             set_button_kind(destructive, "danger")
             destructive.clicked.connect(lambda: self._finish("cancel_lesson"))
 
-        if self.lesson.rule_id is not None:
+        root_layout = self.layout()
+        actions = root_layout.itemAt(root_layout.count() - 1).layout() if root_layout else None
+
+        if self.lesson.rule_id is not None and active_series:
             series_button = set_button_kind(QPushButton("Удалить серию"), "ghost")
-            series_button.setToolTip("Остановить всю повторяющуюся серию, включая будущие занятия")
+            series_button.setToolTip(
+                "Завершить повторяющуюся серию с выбранной даты, сохранив историю"
+            )
             series_button.clicked.connect(lambda: self._finish("delete_series"))
-            root_layout = self.layout()
-            actions = root_layout.itemAt(root_layout.count() - 1).layout() if root_layout else None
             if actions is not None:
                 index = actions.indexOf(destructive)
                 actions.insertWidget(index + 1 if index >= 0 else 0, series_button)
+
+        if (
+            self.lesson.rule_id is None
+            and self.lesson.occurrence_id is not None
+            and self.lesson.status
+            in {
+                ScheduledLessonStatus.PLANNED.value,
+                ScheduledLessonStatus.CANCELLED.value,
+            }
+        ):
+            delete_button = set_button_kind(QPushButton("Удалить запись"), "ghost")
+            delete_button.setToolTip(
+                "Безвозвратно удалить ошибочно созданное разовое занятие из расписания"
+            )
+            delete_button.clicked.connect(lambda: self._finish("delete_one_off"))
+            if actions is not None:
+                index = actions.indexOf(destructive)
+                actions.insertWidget(index + 1 if index >= 0 else 0, delete_button)
 
 
 class SchedulePageStable(base_crm.SchedulePage):
@@ -89,11 +143,11 @@ class SchedulePageStable(base_crm.SchedulePage):
         value = dialog.value()
         try:
             if dialog.action == "start":
-                if value.status == ScheduledLessonStatus.CANCELLED.value:
+                if value.status != ScheduledLessonStatus.PLANNED.value:
                     QMessageBox.warning(
                         self,
                         "Расписание",
-                        "Отменённое занятие нельзя начать. Сначала верните его в расписание.",
+                        "Запустить запись можно только для запланированного занятия.",
                     )
                     return
                 occurrence_id = self.store.ensure_occurrence(value)
@@ -116,25 +170,43 @@ class SchedulePageStable(base_crm.SchedulePage):
                     value,
                     ScheduledLessonStatus.PLANNED,
                 )
-            elif dialog.action == "delete_series":
-                if value.rule_id is None:
-                    return
+            elif dialog.action == "delete_one_off":
                 answer = QMessageBox.question(
                     self,
-                    "Удалить серию",
-                    "Остановить всю повторяющуюся серию? Будущие занятия этой серии исчезнут "
-                    "из расписания. Уже материализованные занятия и история сохранятся.",
+                    "Удалить разовое занятие",
+                    "Безвозвратно удалить эту запись расписания? Связанные отметки оплаты и ДЗ "
+                    "этой записи тоже будут удалены. Проведённые занятия удалить этим действием нельзя.",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No,
                 )
                 if answer != QMessageBox.Yes:
                     return
-                self.store.delete_schedule_rule(value.rule_id)
-            elif dialog.recurring.isChecked():
-                existing_rule = next(
-                    (item for item in self.store.list_schedule_rules() if item.id == value.rule_id),
-                    None,
+                delete_one_off_lesson(self.store, value)
+            elif dialog.action == "delete_series":
+                if value.rule_id is None:
+                    return
+                cutoff = value.original_date or value.starts_at.date()
+                answer = QMessageBox.question(
+                    self,
+                    "Удалить серию",
+                    "Завершить повторяющуюся серию с выбранной даты? Будущие запланированные "
+                    "занятия будут отменены, а прошлые занятия, оплата, ДЗ и история сохранятся.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
                 )
+                if answer != QMessageBox.Yes:
+                    return
+                self.store.end_schedule_rule(value.rule_id, effective_from=cutoff)
+            elif dialog.recurring.isChecked():
+                existing_rule = (
+                    self.store.get_schedule_rule(value.rule_id)
+                    if value.rule_id is not None
+                    else None
+                )
+                if existing_rule is not None and not existing_rule.active:
+                    raise ValueError(
+                        "Завершённую серию нельзя неявно включить снова. Создайте новую серию."
+                    )
                 self.store.save_schedule_rule(
                     ScheduleRule(
                         id=value.rule_id,
