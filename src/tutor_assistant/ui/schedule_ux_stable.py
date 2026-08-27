@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from PySide6.QtCore import QSignalBlocker
 from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
 
 from ..crm import ScheduleConflict, ScheduledLesson, ScheduleRule
@@ -112,15 +113,49 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
 class SchedulePageStable(base_crm.SchedulePage):
     """Schedule page with explicit cancellation accounting and atomic status changes."""
 
+    def _clear_cancelled_grid_cells(self) -> None:
+        """Keep cancellation history without letting it occupy active schedule slots."""
+
+        rendered = dict(self.cell_lessons)
+        if not any(
+            lesson.status == ScheduledLessonStatus.CANCELLED.value
+            for lesson in rendered.values()
+        ):
+            return
+
+        signal_blocker = QSignalBlocker(self.grid)
+        self.grid.clearSpans()
+        self.cell_lessons.clear()
+        for (row, column), lesson in rendered.items():
+            if lesson.status == ScheduledLessonStatus.CANCELLED.value:
+                if self.grid.item(row, column) is not None:
+                    self.grid.takeItem(row, column)
+                continue
+
+            self.cell_lessons[(row, column)] = lesson
+            top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+            if row != top_row:
+                continue
+            row_span = max(
+                1,
+                (lesson.duration_minutes + self.slot_minutes - 1) // self.slot_minutes,
+            )
+            row_span = min(row_span, self.grid.rowCount() - top_row)
+            if row_span > 1:
+                self.grid.setSpan(top_row, column, row_span, 1)
+        del signal_blocker
+        self._sync_schedule_action()
+
     def refresh(self) -> None:
         super().refresh()
+        self._clear_cancelled_grid_cells()
         summary = summarize_schedule(self.store.lessons_for_week(self.week_start))
         self.lessons_stat.setText(
             f"Занятия · {summary.active_lessons} · отменено {summary.cancelled_lessons}"
         )
         self.lessons_stat.setToolTip(
             f"Всего записей на неделю: {summary.total_lessons}. "
-            "Отменённые занятия не входят в плановую выручку."
+            "Отменённые занятия сохраняются в истории, но не занимают ячейки расписания."
         )
 
     def _open_dialog(
