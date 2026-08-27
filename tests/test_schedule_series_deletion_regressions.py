@@ -124,19 +124,31 @@ def test_legacy_inactive_rule_with_valid_until_does_not_reappear(tmp_path) -> No
     assert replacement_rule_id != legacy_rule_id
 
 
-def test_ended_series_cannot_be_reactivated_through_store_save(tmp_path) -> None:
+def test_ended_series_cannot_be_mutated_through_store_save(tmp_path) -> None:
     store = _store(tmp_path)
     rule_id = _save_series(store)
     store.end_schedule_rule(rule_id, effective_from=date(2026, 8, 12))
     rule = store.get_schedule_rule(rule_id)
     assert rule is not None
 
-    with pytest.raises(ValueError, match="Завершённую серию нельзя включить снова"):
+    with pytest.raises(ValueError, match="Завершённую серию нельзя изменять"):
+        store.save_schedule_rule(
+            rule.model_copy(
+                update={
+                    "topic": "Изменено",
+                    "valid_until": date(2026, 8, 31),
+                }
+            )
+        )
+    with pytest.raises(ValueError, match="Завершённую серию нельзя изменять"):
         store.save_schedule_rule(rule.model_copy(update={"active": True}))
 
     stored = store.get_schedule_rule(rule_id)
     assert stored is not None
     assert stored.active is False
+    assert stored.topic == "Серия"
+    assert stored.valid_until == date(2026, 8, 11)
+    assert store.lessons_for_week(date(2026, 8, 17)) == []
 
 
 def test_end_series_cancels_future_paid_occurrence_without_losing_payment(tmp_path) -> None:
