@@ -80,6 +80,10 @@ def test_cancelled_occurrence_clears_schedule_cell_but_keeps_history(
 
     assert page.grid.item(row, column) is None
     assert (row, column) not in page.cell_lessons
+    assert page.cancelled_cell_lessons[(row, column)].occurrence_id == occurrence_id
+    page.grid.setCurrentCell(row, column)
+    page._sync_schedule_action()
+    assert page.open_selected_button.text() == "Вернуть отменённое"
     persisted = store.lessons_for_week(week)
     assert len(persisted) == 1
     assert persisted[0].occurrence_id == occurrence_id
@@ -108,6 +112,10 @@ def test_ending_series_clears_materialized_future_cell_without_losing_metadata(
 
     assert page.grid.item(row, column) is None
     assert (row, column) not in page.cell_lessons
+    assert (row, column) not in page.cancelled_cell_lessons
+    page.grid.setCurrentCell(row, column)
+    page._sync_schedule_action()
+    assert page.open_selected_button.text() == "Создать в выбранное время"
     persisted = store.lessons_for_week(week)
     assert len(persisted) == 1
     assert persisted[0].occurrence_id == occurrence_id
@@ -144,6 +152,7 @@ def test_deleted_one_off_record_clears_schedule_cell(
 
     assert page.grid.item(row, column) is None
     assert (row, column) not in page.cell_lessons
+    assert (row, column) not in page.cancelled_cell_lessons
     assert store.lessons_for_week(week) == []
     page.close()
 
@@ -176,4 +185,7 @@ def test_cancelled_tombstone_does_not_hide_replacement_lesson(
     assert item is not None
     assert "Замена" in item.text()
     assert page.cell_lessons[(row, column)].student_id == "replacement"
+    page.grid.setCurrentCell(row, column)
+    page._sync_schedule_action()
+    assert page.open_selected_button.text() == "Открыть занятие"
     page.close()
