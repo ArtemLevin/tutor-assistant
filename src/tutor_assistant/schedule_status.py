@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .crm import CrmStore, ScheduledLesson
+from .crm import CrmStore, ScheduleConflict, ScheduledLesson
 
 
 class ScheduledLessonStatus(StrEnum):
@@ -33,6 +33,41 @@ def summarize_schedule(lessons: Iterable[ScheduledLesson]) -> ScheduleStatusSumm
     )
 
 
+def delete_one_off_lesson(store: CrmStore, lesson: ScheduledLesson) -> None:
+    """Physically remove an unstarted one-off schedule record after explicit confirmation.
+
+    Recurring occurrences and lessons linked to a real recording are deliberately
+    rejected. Database foreign keys remain authoritative for dependent metadata.
+    """
+
+    if lesson.rule_id is not None:
+        raise ValueError("Для занятия из серии используйте отмену или завершение серии")
+    if lesson.occurrence_id is None:
+        raise ValueError("Разовое занятие ещё не сохранено в расписании")
+
+    def operation() -> None:
+        with store.connect() as db:
+            row = db.execute(
+                "SELECT rule_id, status, lesson_id FROM crm_lesson_occurrences WHERE id=?",
+                (lesson.occurrence_id,),
+            ).fetchone()
+            if row is None:
+                return
+            if row["rule_id"] is not None:
+                raise ValueError("Нельзя удалить occurrence повторяющейся серии как разовый")
+            if row["lesson_id"] is not None or row["status"] in {
+                ScheduledLessonStatus.IN_PROGRESS.value,
+                ScheduledLessonStatus.COMPLETED.value,
+            }:
+                raise ValueError("Начатое или завершённое занятие нельзя удалить из истории")
+            db.execute(
+                "DELETE FROM crm_lesson_occurrences WHERE id=?",
+                (lesson.occurrence_id,),
+            )
+
+    store._retry(operation)
+
+
 def set_scheduled_lesson_status(
     store: CrmStore,
     lesson: ScheduledLesson,
@@ -47,10 +82,31 @@ def set_scheduled_lesson_status(
     """
 
     target = ScheduledLessonStatus(status)
+    if target == ScheduledLessonStatus.CANCELLED and lesson.status in {
+        ScheduledLessonStatus.IN_PROGRESS.value,
+        ScheduledLessonStatus.COMPLETED.value,
+    }:
+        raise ValueError("Начатое или завершённое занятие нельзя отменить как будущее")
+
     if (
         lesson.status == ScheduledLessonStatus.CANCELLED.value
-        and target != ScheduledLessonStatus.CANCELLED
+        and target == ScheduledLessonStatus.PLANNED
     ):
+        if lesson.lesson_id is not None:
+            raise ValueError(
+                "Занятие со связанной записью нельзя вернуть в статус запланированного"
+            )
+        if lesson.rule_id is not None:
+            rule = store.get_schedule_rule(lesson.rule_id)
+            original_date = lesson.original_date or lesson.starts_at.date()
+            if rule is None:
+                raise ScheduleConflict("Повторяющаяся серия занятия больше не существует")
+            if (not rule.active and rule.valid_until is None) or (
+                rule.valid_until is not None and original_date > rule.valid_until
+            ):
+                raise ScheduleConflict(
+                    "Эта дата находится за границей завершённой серии; создайте новое занятие"
+                )
         store._check_occurrence_conflict(
             lesson,
             exclude_occurrence_id=lesson.occurrence_id,
