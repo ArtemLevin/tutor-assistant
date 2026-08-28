@@ -129,15 +129,17 @@ def test_schedule_dialog_homework_checkbox_persists_without_grid_overlay(
     assert page.grid.item(row, 0) is None
     assert (row, 0) not in page.cell_lessons
     hidden = page.cancelled_cell_lessons[(row, 0)]
-    snapshot = ScheduleDialog(
+    hidden_dialog = ScheduleDialog(
         store,
         hidden.starts_at.date(),
         hidden.starts_at.hour,
         hidden.starts_at.minute,
         hidden,
-    )._homework_service.snapshot_homework(hidden)
+    )
+    snapshot = hidden_dialog._homework_service.snapshot_homework(hidden)
     assert snapshot.sent_at is not None
     assert snapshot.received_at is None
+    hidden_dialog.close()
     page.close()
 
 
