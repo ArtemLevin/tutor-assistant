@@ -283,8 +283,21 @@ def test_schedule_payment_checkbox_persists_and_isolates_recurring_dates(
     assert paid_lesson.occurrence_id is not None
     store.update_occurrence(paid_lesson.occurrence_id, status="cancelled")
     page.refresh()
-    cancelled = page.grid.item(row, 0)
-    assert cancelled is not None
-    assert not bool(cancelled.flags() & Qt.ItemFlag.ItemIsUserCheckable)
-    assert cancelled.background().color().name().upper() == "#F2F4F7"
+
+    # Cancellation removes the active-grid payment control while retaining the paid
+    # tombstone and restore path for the specific recurring date.
+    assert page.grid.item(row, 0) is None
+    assert (row, 0) not in page.cell_lessons
+    hidden = page.cancelled_cell_lessons[(row, 0)]
+    assert hidden.occurrence_id == paid_lesson.occurrence_id
+    assert hidden.paid is True
+    with sqlite3.connect(store.path) as db:
+        persisted = db.execute(
+            "SELECT status, paid FROM crm_lesson_occurrences WHERE id=?",
+            (paid_lesson.occurrence_id,),
+        ).fetchone()
+    assert persisted == ("cancelled", 1)
+    page.grid.setCurrentCell(row, 0)
+    page._sync_schedule_action()
+    assert page.open_selected_button.text() == "Вернуть отменённое"
     page.close()
