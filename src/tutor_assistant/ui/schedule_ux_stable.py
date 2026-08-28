@@ -176,6 +176,10 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
         rounded_hour = max(WORKDAY_FIRST_HOUR, min(WORKDAY_LAST_HOUR, rounded_hour))
         self.start_time.setTime(QTime(rounded_hour, 0))
 
+    def value(self) -> ScheduledLesson:
+        self._snap_start_time()
+        return super().value()
+
     def _payment_toggled(self, paid: bool) -> None:
         if self.lesson is None or paid == self.lesson.paid:
             return
