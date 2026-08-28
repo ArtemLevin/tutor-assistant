@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from PySide6.QtCore import QSignalBlocker, QTime, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTime, Signal
 from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QMessageBox, QPushButton
 
 from ..crm import ScheduleConflict, ScheduledLesson, ScheduleRule
