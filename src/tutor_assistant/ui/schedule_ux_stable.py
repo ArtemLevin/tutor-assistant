@@ -138,7 +138,7 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
         if self.lesson.rule_id is not None and active_series:
             series_button = set_button_kind(QPushButton("Удалить серию"), "ghost")
             series_button.setToolTip(
-                "Завершить повторяющуюся серию с выбранной даты, сохранив историю"
+                "Завершить повторяющуюся серию с выбранной даты, сохраняя историю"
             )
             series_button.clicked.connect(lambda: self._finish("delete_series"))
             if actions is not None:
@@ -242,6 +242,18 @@ class SchedulePageStable(base_crm.SchedulePage):
         offset = hour * 60 + minute - cls.first_hour * 60
         return offset // cls.slot_minutes
 
+    @classmethod
+    def _row_span_for_lesson(cls, lesson: ScheduledLesson) -> int:
+        row = cls._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+        row_start = cls.first_hour * 60 + row * cls.slot_minutes
+        lesson_start = lesson.starts_at.hour * 60 + lesson.starts_at.minute
+        start_offset = max(0, lesson_start - row_start)
+        return max(
+            1,
+            (start_offset + lesson.duration_minutes + cls.slot_minutes - 1)
+            // cls.slot_minutes,
+        )
+
     def _cancelled_lesson_is_restorable(self, lesson: ScheduledLesson) -> bool:
         if lesson.lesson_id is not None:
             return False
@@ -254,39 +266,47 @@ class SchedulePageStable(base_crm.SchedulePage):
         return rule.valid_until is None or original_date <= rule.valid_until
 
     def _clear_cancelled_grid_cells(self) -> None:
-        """Keep cancellation history without letting it occupy active schedule slots."""
+        """Rebuild hourly occupancy while keeping cancellation history outside the active grid."""
 
         rendered = dict(self.cell_lessons)
-        if not any(
-            lesson.status == ScheduledLessonStatus.CANCELLED.value
-            for lesson in rendered.values()
-        ):
+        if not rendered:
             return
+
+        unique_lessons: list[ScheduledLesson] = []
+        seen_lessons: set[int] = set()
+        for lesson in rendered.values():
+            lesson_key = id(lesson)
+            if lesson_key in seen_lessons:
+                continue
+            seen_lessons.add(lesson_key)
+            unique_lessons.append(lesson)
 
         signal_blocker = QSignalBlocker(self.grid)
         restoreable_cache: dict[int, bool] = {}
         self.grid.clearSpans()
         self.cell_lessons.clear()
-        for (row, column), lesson in rendered.items():
+        for lesson in unique_lessons:
+            top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+            column = lesson.starts_at.weekday()
+            if not (0 <= top_row < self.grid.rowCount()):
+                continue
+            row_span = min(
+                self._row_span_for_lesson(lesson),
+                self.grid.rowCount() - top_row,
+            )
             if lesson.status == ScheduledLessonStatus.CANCELLED.value:
-                if self.grid.item(row, column) is not None:
-                    self.grid.takeItem(row, column)
+                if self.grid.item(top_row, column) is not None:
+                    self.grid.takeItem(top_row, column)
                 lesson_key = id(lesson)
                 if lesson_key not in restoreable_cache:
                     restoreable_cache[lesson_key] = self._cancelled_lesson_is_restorable(lesson)
                 if restoreable_cache[lesson_key]:
-                    self.cancelled_cell_lessons[(row, column)] = lesson
+                    for occupied_row in range(top_row, top_row + row_span):
+                        self.cancelled_cell_lessons[(occupied_row, column)] = lesson
                 continue
 
-            self.cell_lessons[(row, column)] = lesson
-            top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
-            if row != top_row:
-                continue
-            row_span = max(
-                1,
-                (lesson.duration_minutes + self.slot_minutes - 1) // self.slot_minutes,
-            )
-            row_span = min(row_span, self.grid.rowCount() - top_row)
+            for occupied_row in range(top_row, top_row + row_span):
+                self.cell_lessons[(occupied_row, column)] = lesson
             if row_span > 1:
                 self.grid.setSpan(top_row, column, row_span, 1)
         del signal_blocker
