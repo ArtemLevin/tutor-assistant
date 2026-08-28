@@ -177,8 +177,8 @@ def test_schedule_grid_is_keyboard_focusable_and_textual(
     row = page._row_for_time(16, 30)
     item = page.grid.item(row, 0)
     assert item is not None
-    assert "16:30–18:00" in item.text()
-    assert "Запланировано" in item.text()
+    assert item.text() == "Ученик"
+    assert "Дважды щёлкните" in item.toolTip()
     assert page.grid.accessibleName() == "Недельное расписание"
     assert page.grid.focusPolicy() != Qt.FocusPolicy.NoFocus
     page.grid.setFocus()
