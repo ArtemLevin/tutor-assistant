@@ -8,16 +8,15 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTime, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from tutor_assistant.content import StudentContentService
 from tutor_assistant.crm import CrmStore, ScheduledLesson, ScheduleRule, StudentProfile
 from tutor_assistant.domain import Lesson, Student
 from tutor_assistant.playback import PlaybackController
-from tutor_assistant.ui.crm import SchedulePage, StudentsPage
+from tutor_assistant.ui.crm import ScheduleDialog, SchedulePage, StudentsPage
 from tutor_assistant.ui.student_content import StudentContentPage
 
 
@@ -179,7 +178,7 @@ def test_materials_are_embedded_in_split_view_with_maintenance_menu(
     page.close()
 
 
-def test_schedule_uses_half_hour_rows_and_duration_spans(
+def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -196,27 +195,67 @@ def test_schedule_uses_half_hour_rows_and_duration_spans(
             topic="Полуторачасовое занятие",
         )
     )
+    store.save_one_off(
+        ScheduledLesson(
+            student_id="student",
+            student_name="Ученик",
+            starts_at=datetime(2026, 7, 28, 16, 30),
+            duration_minutes=60,
+            subject="mathematics",
+            topic="Час со смещением",
+        )
+    )
     page = SchedulePage(store)
     page.week_start = week_start
     page.refresh()
     page.show()
     application.processEvents()
 
-    assert page.grid.rowCount() == 32
-    assert page.grid.verticalHeaderItem(0).text() == "08:00"
-    assert page.grid.verticalHeaderItem(31).text() == "23:30"
+    assert page.grid.rowCount() == 11
+    assert page.grid.verticalHeaderItem(0).text() == "10:00"
+    assert page.grid.verticalHeaderItem(10).text() == "20:00"
+    assert page._row_for_time(9, 30) < 0
+    assert page._row_for_time(21, 0) >= page.grid.rowCount()
+
     row = page._row_for_time(16, 30)
-    assert page.grid.verticalHeaderItem(row).text() == "16:30"
-    assert page.grid.rowSpan(row, 0) == 3
+    assert page.grid.verticalHeaderItem(row).text() == "16:00"
+    assert page.grid.rowSpan(row, 0) == 2
+    assert page.grid.rowSpan(row, 1) == 2
+    item = page.grid.item(row, 0)
+    assert item is not None
+    assert item.text() == "Ученик"
+    assert item.data(Qt.ItemDataRole.CheckStateRole) is None
+    assert "Дважды щёлкните" in item.toolTip()
+
     lesson = page.cell_lessons[(row, 0)]
     assert page.cell_lessons[(row + 1, 0)] is lesson
-    assert page.cell_lessons[(row + 2, 0)] is lesson
+    shifted_lesson = page.cell_lessons[(row, 1)]
+    assert page.cell_lessons[(row + 1, 1)] is shifted_lesson
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
+
+    legacy_dialog = ScheduleDialog(
+        store,
+        lesson.starts_at.date(),
+        lesson.starts_at.hour,
+        lesson.starts_at.minute,
+        lesson,
+    )
+    legacy_value = legacy_dialog.value()
+    assert (legacy_value.starts_at.hour, legacy_value.starts_at.minute) == (16, 30)
+    legacy_dialog.close()
+
+    new_dialog = ScheduleDialog(store, week_start, 16, 0)
+    assert new_dialog.start_time.minimumTime() == QTime(10, 0)
+    assert new_dialog.start_time.maximumTime() == QTime(20, 0)
+    new_dialog.start_time.setTime(QTime(16, 31))
+    snapped = new_dialog.value()
+    assert (snapped.starts_at.hour, snapped.starts_at.minute) == (17, 0)
+    new_dialog.close()
     page.close()
 
 
-def test_schedule_payment_checkbox_persists_and_isolates_recurring_dates(
+def test_schedule_payment_moves_to_details_dialog_and_isolates_recurring_dates(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -249,19 +288,31 @@ def test_schedule_payment_checkbox_persists_and_isolates_recurring_dates(
     row = page._row_for_time(16, 0)
     item = page.grid.item(row, 0)
     assert item is not None
-    assert item.checkState() == Qt.CheckState.Unchecked
-    assert "Не оплачено" in item.text()
-    assert item.background().color().name().upper() == "#FFF0F0"
-    assert page.grid.rowSpan(row, 0) == 3
+    assert item.text() == "Ученик"
+    assert item.data(Qt.ItemDataRole.CheckStateRole) is None
+    assert page.grid.rowSpan(row, 0) == 2
 
-    page.grid.setCurrentCell(row, 0)
-    QTest.keyClick(page.grid, Qt.Key.Key_Space)
+    lesson = page.cell_lessons[(row, 0)]
+    dialog = ScheduleDialog(
+        store,
+        lesson.starts_at.date(),
+        lesson.starts_at.hour,
+        lesson.starts_at.minute,
+        lesson,
+    )
+    assert not dialog.paid.isChecked()
+    dialog.paid.setChecked(True)
     application.processEvents()
+    assert dialog.metadata_changed
+    assert dialog.paid.isChecked()
+    dialog.close()
 
+    page.refresh()
+    assert page.cell_lessons[(row, 0)].paid
     paid_item = page.grid.item(row, 0)
     assert paid_item is not None
-    assert paid_item.checkState() == Qt.CheckState.Checked
-    assert "Оплачено" in paid_item.text()
+    assert paid_item.text() == "Ученик"
+    assert paid_item.data(Qt.ItemDataRole.CheckStateRole) is None
     with sqlite3.connect(store.path) as db:
         assert db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0] == 1
         assert db.execute("SELECT paid FROM crm_lesson_occurrences").fetchone()[0] == 1
@@ -269,32 +320,31 @@ def test_schedule_payment_checkbox_persists_and_isolates_recurring_dates(
     page.week_start = date(2026, 8, 10)
     page.refresh()
     next_row = page._row_for_time(16, 0)
+    next_lesson = page.cell_lessons[(next_row, 0)]
+    assert not next_lesson.paid
     next_item = page.grid.item(next_row, 0)
     assert next_item is not None
-    assert next_item.checkState() == Qt.CheckState.Unchecked
+    assert next_item.text() == "Ученик"
+    assert next_item.data(Qt.ItemDataRole.CheckStateRole) is None
 
     page.week_start = date(2026, 8, 3)
     page.refresh()
-    restored_item = page.grid.item(row, 0)
-    assert restored_item is not None
-    assert restored_item.checkState() == Qt.CheckState.Checked
+    restored_lesson = page.cell_lessons[(row, 0)]
+    assert restored_lesson.paid
 
-    paid_lesson = page.cell_lessons[(row, 0)]
-    assert paid_lesson.occurrence_id is not None
-    store.update_occurrence(paid_lesson.occurrence_id, status="cancelled")
+    assert restored_lesson.occurrence_id is not None
+    store.update_occurrence(restored_lesson.occurrence_id, status="cancelled")
     page.refresh()
 
-    # Cancellation removes the active-grid payment control while retaining the paid
-    # tombstone and restore path for the specific recurring date.
     assert page.grid.item(row, 0) is None
     assert (row, 0) not in page.cell_lessons
     hidden = page.cancelled_cell_lessons[(row, 0)]
-    assert hidden.occurrence_id == paid_lesson.occurrence_id
+    assert hidden.occurrence_id == restored_lesson.occurrence_id
     assert hidden.paid is True
     with sqlite3.connect(store.path) as db:
         persisted = db.execute(
             "SELECT status, paid FROM crm_lesson_occurrences WHERE id=?",
-            (paid_lesson.occurrence_id,),
+            (restored_lesson.occurrence_id,),
         ).fetchone()
     assert persisted == ("cancelled", 1)
     page.grid.setCurrentCell(row, 0)
