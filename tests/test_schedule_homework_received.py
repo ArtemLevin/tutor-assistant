@@ -8,12 +8,11 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication
 
 from tutor_assistant.crm import CrmStore, ScheduleRule, StudentProfile
-from tutor_assistant.ui.crm import SchedulePage
+from tutor_assistant.ui.crm import ScheduleDialog, SchedulePage
 from tutor_assistant.ui.schedule_homework import ScheduleHomeworkReceivedController
 
 
@@ -53,7 +52,7 @@ def _occurrence_count(store: CrmStore) -> int:
         return int(db.execute("SELECT COUNT(*) FROM crm_lesson_occurrences").fetchone()[0])
 
 
-def test_schedule_slot_homework_checkbox_persists_without_breaking_payment(
+def test_schedule_dialog_homework_checkbox_persists_without_grid_overlay(
     tmp_path: Path,
     application: QApplication,
 ) -> None:
@@ -61,85 +60,82 @@ def test_schedule_slot_homework_checkbox_persists_without_breaking_payment(
     page = SchedulePage(store)
     page.week_start = date(2026, 8, 3)
     page.refresh()
-    controller = ScheduleHomeworkReceivedController(page)
     page.show()
     application.processEvents()
-    controller.sync()
 
     row = page._row_for_time(16, 0)
-    payment_item = page.grid.item(row, 0)
-    homework = controller.checkbox_for(row, 0)
-    assert payment_item is not None
-    assert homework is not None
-    assert payment_item.checkState() == Qt.CheckState.Unchecked
-    assert not homework.isChecked()
-    assert homework.isEnabled()
-    assert "ДЗ получено" in homework.accessibleName()
+    lesson = page.cell_lessons[(row, 0)]
+    item = page.grid.item(row, 0)
+    assert item is not None and item.text() == "Ученик"
+    assert page.grid.cellWidget(row, 0) is None
     assert _occurrence_count(store) == 0
 
-    homework.setChecked(True)
+    dialog = ScheduleDialog(
+        store,
+        lesson.starts_at.date(),
+        lesson.starts_at.hour,
+        lesson.starts_at.minute,
+        lesson,
+    )
+    assert not dialog.homework_received.isChecked()
+    dialog.homework_received.setChecked(True)
     application.processEvents()
-    controller.sync()
 
-    lesson = page.cell_lessons[(row, 0)]
-    snapshot = controller.service.snapshot_homework(lesson)
-    homework = controller.checkbox_for(row, 0)
-    assert homework is not None and homework.isChecked()
+    snapshot = dialog._homework_service.snapshot_homework(lesson)
+    assert dialog.metadata_changed
     assert snapshot.assigned_at is not None
     assert snapshot.sent_at is not None
     assert snapshot.received_at is not None
     assert _occurrence_count(store) == 1
+    dialog.close()
 
-    # The original schedule payment checkbox remains an independent control.
-    page.grid.setCurrentCell(row, 0)
-    page.grid.setFocus()
-    QTest.keyClick(page.grid, Qt.Key.Key_Space)
-    application.processEvents()
-    controller.sync()
-    assert page.cell_lessons[(row, 0)].paid
-    assert controller.checkbox_for(row, 0) is not None
-    assert controller.checkbox_for(row, 0).isChecked()
-    assert _occurrence_count(store) == 1
-
-    # A recurring lesson on the following week must keep its own homework state.
     page.week_start = date(2026, 8, 10)
     page.refresh()
-    application.processEvents()
-    controller.sync()
     next_row = page._row_for_time(16, 0)
-    next_homework = controller.checkbox_for(next_row, 0)
-    assert next_homework is not None
-    assert not next_homework.isChecked()
+    next_lesson = page.cell_lessons[(next_row, 0)]
+    next_dialog = ScheduleDialog(
+        store,
+        next_lesson.starts_at.date(),
+        next_lesson.starts_at.hour,
+        next_lesson.starts_at.minute,
+        next_lesson,
+    )
+    assert not next_dialog.homework_received.isChecked()
+    next_dialog.close()
     assert _occurrence_count(store) == 1
 
     page.week_start = date(2026, 8, 3)
     page.refresh()
+    restored_lesson = page.cell_lessons[(row, 0)]
+    restored_dialog = ScheduleDialog(
+        store,
+        restored_lesson.starts_at.date(),
+        restored_lesson.starts_at.hour,
+        restored_lesson.starts_at.minute,
+        restored_lesson,
+    )
+    assert restored_dialog.homework_received.isChecked()
+    restored_dialog.homework_received.setChecked(False)
     application.processEvents()
-    controller.sync()
-    restored = controller.checkbox_for(row, 0)
-    assert restored is not None and restored.isChecked()
-
-    restored.setChecked(False)
-    application.processEvents()
-    controller.sync()
-    lesson = page.cell_lessons[(row, 0)]
-    snapshot = controller.service.snapshot_homework(lesson)
+    snapshot = restored_dialog._homework_service.snapshot_homework(restored_lesson)
     assert snapshot.sent_at is not None
     assert snapshot.received_at is None
+    restored_dialog.close()
 
-    assert lesson.occurrence_id is not None
-    store.update_occurrence(lesson.occurrence_id, status="cancelled")
+    assert restored_lesson.occurrence_id is not None
+    store.update_occurrence(restored_lesson.occurrence_id, status="cancelled")
     page.refresh()
-    application.processEvents()
-    controller.sync()
 
-    # A cancelled lesson remains durable history, but its active-grid overlays disappear
-    # together with the calendar cell instead of leaving a disabled visual ghost.
-    assert controller.checkbox_for(row, 0) is None
     assert page.grid.item(row, 0) is None
     assert (row, 0) not in page.cell_lessons
     hidden = page.cancelled_cell_lessons[(row, 0)]
-    snapshot = controller.service.snapshot_homework(hidden)
+    snapshot = ScheduleDialog(
+        store,
+        hidden.starts_at.date(),
+        hidden.starts_at.hour,
+        hidden.starts_at.minute,
+        hidden,
+    )._homework_service.snapshot_homework(hidden)
     assert snapshot.sent_at is not None
     assert snapshot.received_at is None
     page.close()
@@ -158,8 +154,6 @@ def test_schedule_controller_ignores_queued_sync_after_grid_destroy(
     application.processEvents()
     controller.sync()
 
-    # Reproduce the production teardown race: a resize/data event queues a sync,
-    # then Qt destroys the table before the zero-delay callback is dispatched.
     controller.schedule_sync()
     grid = page.grid
     grid.deleteLater()
@@ -169,8 +163,6 @@ def test_schedule_controller_ignores_queued_sync_after_grid_destroy(
     assert not controller._active
     assert controller.checkbox_for(0, 0) is None
 
-    # These calls used to reach self.grid.viewport() and raise
-    # "Internal C++ object ... already deleted" from eventFilter/singleShot.
     controller.schedule_sync()
     controller.sync()
     controller.eventFilter(page, QEvent(QEvent.Type.Resize))
