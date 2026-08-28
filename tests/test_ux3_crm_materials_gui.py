@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QTime, Qt, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -220,6 +220,25 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     assert page.cell_lessons[(row + 1, 0)] is lesson
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
+
+    legacy_dialog = ScheduleDialog(
+        store,
+        lesson.starts_at.date(),
+        lesson.starts_at.hour,
+        lesson.starts_at.minute,
+        lesson,
+    )
+    legacy_value = legacy_dialog.value()
+    assert (legacy_value.starts_at.hour, legacy_value.starts_at.minute) == (16, 30)
+    legacy_dialog.close()
+
+    new_dialog = ScheduleDialog(store, week_start, 16, 0)
+    assert new_dialog.start_time.minimumTime() == QTime(10, 0)
+    assert new_dialog.start_time.maximumTime() == QTime(20, 0)
+    new_dialog.start_time.setTime(QTime(16, 31))
+    snapped = new_dialog.value()
+    assert (snapped.starts_at.hour, snapped.starts_at.minute) == (17, 0)
+    new_dialog.close()
     page.close()
 
 
