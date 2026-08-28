@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QObject, QTime, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTime, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QApplication, QMessageBox
 
