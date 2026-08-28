@@ -291,21 +291,25 @@ class SchedulePageStable(base_crm.SchedulePage):
     def _compact_lesson_cells(self) -> None:
         """Render only the student name in calendar cells; all metadata lives in the dialog."""
 
-        seen: set[tuple[int, int]] = set()
-        for (row, column), lesson in self.cell_lessons.items():
-            top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
-            position = (top_row, column)
-            if position in seen or row != top_row:
-                continue
-            seen.add(position)
-            item = self.grid.item(top_row, column)
-            if item is None:
-                continue
-            item.setText(lesson.student_name)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setData(Qt.ItemDataRole.CheckStateRole, None)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
-            item.setToolTip("Дважды щёлкните левой кнопкой, чтобы открыть занятие")
+        signal_blocker = QSignalBlocker(self.grid)
+        try:
+            seen: set[tuple[int, int]] = set()
+            for (row, column), lesson in self.cell_lessons.items():
+                top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+                position = (top_row, column)
+                if position in seen or row != top_row:
+                    continue
+                seen.add(position)
+                item = self.grid.item(top_row, column)
+                if item is None:
+                    continue
+                item.setText(lesson.student_name)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setData(Qt.ItemDataRole.CheckStateRole, None)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                item.setToolTip("Дважды щёлкните левой кнопкой, чтобы открыть занятие")
+        finally:
+            del signal_blocker
 
     def refresh(self) -> None:
         self.cancelled_cell_lessons.clear()
