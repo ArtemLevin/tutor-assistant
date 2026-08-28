@@ -195,6 +195,16 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
             topic="Полуторачасовое занятие",
         )
     )
+    store.save_one_off(
+        ScheduledLesson(
+            student_id="student",
+            student_name="Ученик",
+            starts_at=datetime(2026, 7, 28, 16, 30),
+            duration_minutes=60,
+            subject="mathematics",
+            topic="Час со смещением",
+        )
+    )
     page = SchedulePage(store)
     page.week_start = week_start
     page.refresh()
@@ -210,6 +220,7 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     row = page._row_for_time(16, 30)
     assert page.grid.verticalHeaderItem(row).text() == "16:00"
     assert page.grid.rowSpan(row, 0) == 2
+    assert page.grid.rowSpan(row, 1) == 2
     item = page.grid.item(row, 0)
     assert item is not None
     assert item.text() == "Ученик"
@@ -218,6 +229,8 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
 
     lesson = page.cell_lessons[(row, 0)]
     assert page.cell_lessons[(row + 1, 0)] is lesson
+    shifted_lesson = page.cell_lessons[(row, 1)]
+    assert page.cell_lessons[(row + 1, 1)] is shifted_lesson
     page.grid.setCurrentCell(row + 1, 0)
     assert page.open_selected_button.text() == "Открыть занятие"
 
