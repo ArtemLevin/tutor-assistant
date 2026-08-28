@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
-from PySide6.QtCore import QSignalBlocker
-from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
+from PySide6.QtCore import QSignalBlocker, QTime, Qt, Signal
+from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QMessageBox, QPushButton
 
 from ..crm import ScheduleConflict, ScheduledLesson, ScheduleRule
+from ..lesson_journal import HomeworkStatus
 from ..schedule_status import (
     ScheduledLessonStatus,
     delete_one_off_lesson,
@@ -13,16 +15,69 @@ from ..schedule_status import (
     summarize_schedule,
 )
 from . import crm as base_crm
+from .journal_interactions import ReversibleLessonJournalService
 from .theme import set_button_kind
+
+WORKDAY_FIRST_HOUR = 10
+WORKDAY_LAST_HOUR = 20
+SCHEDULE_SLOT_MINUTES = 60
 
 
 class ScheduleDialogStable(base_crm.ScheduleDialog):
-    """Make occurrence cancellation explicit while preserving series management."""
+    """Stable schedule editor with explicit status and detail-only metadata controls."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.metadata_changed = False
+        self.start_time.setToolTip("Шаг расписания — один час")
         if self.lesson is None:
+            self.start_time.setTimeRange(
+                QTime(WORKDAY_FIRST_HOUR, 0),
+                QTime(WORKDAY_LAST_HOUR, 0),
+            )
             return
+
+        self.paid = QCheckBox("Оплачено")
+        self.paid.setChecked(self.lesson.paid)
+        self.paid.setToolTip("Изменение сохраняется сразу для выбранного занятия")
+        self.paid.toggled.connect(self._payment_toggled)
+
+        self.homework_received = QCheckBox("ДЗ получено")
+        self.homework_received.setToolTip(
+            "Изменение сохраняется сразу и синхронизируется с Журналом занятий"
+        )
+        self._homework_service = ReversibleLessonJournalService(self.store)
+        self._homework_received = False
+        try:
+            homework = self._homework_service.snapshot_homework(self.lesson)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Schedule lesson details failed to read homework state"
+            )
+            self.homework_received.setEnabled(False)
+            self.homework_received.setToolTip(
+                "Состояние ДЗ временно недоступно; повторите после обновления расписания"
+            )
+        else:
+            self._homework_received = homework.received_at is not None
+            self.homework_received.setChecked(self._homework_received)
+            self.homework_received.toggled.connect(self._homework_toggled)
+
+        if self.lesson.status == ScheduledLessonStatus.CANCELLED.value:
+            self.paid.setEnabled(False)
+            self.homework_received.setEnabled(False)
+            self.paid.setToolTip("Для отменённого занятия оплата доступна после восстановления")
+            self.homework_received.setToolTip(
+                "Для отменённого занятия отметка ДЗ доступна после восстановления"
+            )
+
+        root_layout = self.layout()
+        if root_layout is not None:
+            details = QHBoxLayout()
+            details.addWidget(self.paid)
+            details.addWidget(self.homework_received)
+            details.addStretch(1)
+            root_layout.insertLayout(max(0, root_layout.count() - 1), details)
 
         rule = (
             self.store.get_schedule_rule(self.lesson.rule_id)
@@ -78,7 +133,6 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
             set_button_kind(destructive, "danger")
             destructive.clicked.connect(lambda: self._finish("cancel_lesson"))
 
-        root_layout = self.layout()
         actions = root_layout.itemAt(root_layout.count() - 1).layout() if root_layout else None
 
         if self.lesson.rule_id is not None and active_series:
@@ -109,13 +163,80 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
                 index = actions.indexOf(destructive)
                 actions.insertWidget(index + 1 if index >= 0 else 0, delete_button)
 
+    def _snap_start_time(self) -> None:
+        clock = self.start_time.time()
+        if (
+            self.lesson is not None
+            and clock.hour() == self.lesson.starts_at.hour
+            and clock.minute() == self.lesson.starts_at.minute
+        ):
+            return
+        total = clock.hour() * 60 + clock.minute()
+        rounded_hour = (total + 30) // 60
+        rounded_hour = max(WORKDAY_FIRST_HOUR, min(WORKDAY_LAST_HOUR, rounded_hour))
+        self.start_time.setTime(QTime(rounded_hour, 0))
+
+    def _payment_toggled(self, paid: bool) -> None:
+        if self.lesson is None or paid == self.lesson.paid:
+            return
+        previous = self.lesson.paid
+        try:
+            occurrence_id = self.store.set_lesson_paid(self.lesson, paid)
+        except Exception as exc:
+            blocker = QSignalBlocker(self.paid)
+            self.paid.setChecked(previous)
+            del blocker
+            QMessageBox.critical(
+                self,
+                "Оплата занятия",
+                f"Не удалось сохранить состояние оплаты: {exc}",
+            )
+            return
+        self.lesson.occurrence_id = occurrence_id
+        self.lesson.paid = paid
+        self.metadata_changed = True
+
+    def _homework_toggled(self, received: bool) -> None:
+        if self.lesson is None or received == self._homework_received:
+            return
+        previous = self._homework_received
+        target = HomeworkStatus.RECEIVED if received else HomeworkStatus.SENT
+        try:
+            occurrence_id = self._homework_service.set_homework_status(self.lesson, target)
+        except Exception as exc:
+            blocker = QSignalBlocker(self.homework_received)
+            self.homework_received.setChecked(previous)
+            del blocker
+            QMessageBox.critical(
+                self,
+                "Домашняя работа",
+                f"Не удалось сохранить отметку о получении ДЗ: {exc}",
+            )
+            return
+        self.lesson.occurrence_id = occurrence_id
+        self._homework_received = received
+        self.metadata_changed = True
+
 
 class SchedulePageStable(base_crm.SchedulePage):
-    """Schedule page with explicit cancellation accounting and atomic status changes."""
+    """Compact workday schedule with durable history and explicit detail editing."""
+
+    metadata_changed = Signal()
+
+    first_hour = WORKDAY_FIRST_HOUR
+    last_hour = WORKDAY_LAST_HOUR
+    slot_minutes = SCHEDULE_SLOT_MINUTES
 
     def __init__(self, *args, **kwargs) -> None:
         self.cancelled_cell_lessons: dict[tuple[int, int], ScheduledLesson] = {}
         super().__init__(*args, **kwargs)
+
+    @classmethod
+    def _row_for_time(cls, hour: int, minute: int) -> int:
+        """Map legacy half-hour starts into their containing hourly row without clamping."""
+
+        offset = hour * 60 + minute - cls.first_hour * 60
+        return offset // cls.slot_minutes
 
     def _cancelled_lesson_is_restorable(self, lesson: ScheduledLesson) -> bool:
         if lesson.lesson_id is not None:
@@ -167,10 +288,30 @@ class SchedulePageStable(base_crm.SchedulePage):
         del signal_blocker
         self._sync_schedule_action()
 
+    def _compact_lesson_cells(self) -> None:
+        """Render only the student name in calendar cells; all metadata lives in the dialog."""
+
+        seen: set[tuple[int, int]] = set()
+        for (row, column), lesson in self.cell_lessons.items():
+            top_row = self._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+            position = (top_row, column)
+            if position in seen or row != top_row:
+                continue
+            seen.add(position)
+            item = self.grid.item(top_row, column)
+            if item is None:
+                continue
+            item.setText(lesson.student_name)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item.setData(Qt.ItemDataRole.CheckStateRole, None)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+            item.setToolTip("Дважды щёлкните левой кнопкой, чтобы открыть занятие")
+
     def refresh(self) -> None:
         self.cancelled_cell_lessons.clear()
         super().refresh()
         self._clear_cancelled_grid_cells()
+        self._compact_lesson_cells()
         summary = summarize_schedule(self.store.lessons_for_week(self.week_start))
         self.lessons_stat.setText(
             f"Занятия · {summary.active_lessons} · отменено {summary.cancelled_lessons}"
@@ -222,7 +363,11 @@ class SchedulePageStable(base_crm.SchedulePage):
             lesson,
             self,
         )
-        if dialog.exec() != QDialog.Accepted:
+        accepted = dialog.exec() == QDialog.Accepted
+        if dialog.metadata_changed:
+            self.refresh()
+            self.metadata_changed.emit()
+        if not accepted:
             return
         value = dialog.value()
         try:
