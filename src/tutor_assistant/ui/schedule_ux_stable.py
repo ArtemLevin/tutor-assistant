@@ -18,7 +18,7 @@ from . import crm as base_crm
 from .journal_interactions import ReversibleLessonJournalService
 from .theme import set_button_kind
 
-WORKDAY_FIRST_HOUR = 10
+WORKDAY_FIRST_HOUR = 9
 WORKDAY_LAST_HOUR = 20
 SCHEDULE_SLOT_MINUTES = 60
 
@@ -235,6 +235,22 @@ class SchedulePageStable(base_crm.SchedulePage):
         self.cancelled_cell_lessons: dict[tuple[int, int], ScheduledLesson] = {}
         super().__init__(*args, **kwargs)
 
+    def _build(self) -> None:
+        super()._build()
+        self.restore_cancelled_button = set_button_kind(
+            QPushButton("Вернуть отменённое"),
+            "ghost",
+        )
+        self.restore_cancelled_button.setVisible(False)
+        self.restore_cancelled_button.setToolTip(
+            "Открыть отменённое занятие отдельно от создания нового в свободном слоте"
+        )
+        self.restore_cancelled_button.clicked.connect(self._restore_selected_cancelled)
+        root_layout = self.layout()
+        header = root_layout.itemAt(0).layout() if root_layout is not None else None
+        if header is not None:
+            header.addWidget(self.restore_cancelled_button)
+
     @classmethod
     def _row_for_time(cls, hour: int, minute: int) -> int:
         """Map legacy half-hour starts into their containing hourly row without clamping."""
@@ -355,10 +371,17 @@ class SchedulePageStable(base_crm.SchedulePage):
         row = self.grid.currentRow()
         column = self.grid.currentColumn()
         position = (row, column)
-        if position not in self.cell_lessons and position in self.cancelled_cell_lessons:
-            self.open_selected_button.setText("Вернуть отменённое")
+        can_restore = (
+            row >= 0
+            and column >= 0
+            and position not in self.cell_lessons
+            and position in self.cancelled_cell_lessons
+        )
+        self.restore_cancelled_button.setVisible(can_restore)
+        self.restore_cancelled_button.setEnabled(can_restore)
+        if can_restore:
             self.open_selected_button.setToolTip(
-                "Открыть сохранённую отмену для восстановления занятия"
+                "Создать новое занятие в свободном слоте; старую отмену можно вернуть отдельно"
             )
         else:
             self.open_selected_button.setToolTip("")
@@ -366,15 +389,41 @@ class SchedulePageStable(base_crm.SchedulePage):
     def _cell_opened(self, row: int, column: int) -> None:
         selected_date = self.week_start + date.resolution * column
         selected_hour, selected_minute = self._time_for_row(row)
-        lesson = self.cell_lessons.get((row, column)) or self.cancelled_cell_lessons.get(
-            (row, column)
+        self._open_dialog(
+            selected_date,
+            selected_hour,
+            selected_minute,
+            self.cell_lessons.get((row, column)),
         )
+
+    def _restore_selected_cancelled(self) -> None:
+        row = self.grid.currentRow()
+        column = self.grid.currentColumn()
+        if row < 0 or column < 0:
+            return
+        lesson = self.cancelled_cell_lessons.get((row, column))
+        if lesson is None or (row, column) in self.cell_lessons:
+            return
+        selected_date = self.week_start + date.resolution * column
+        selected_hour, selected_minute = self._time_for_row(row)
         self._open_dialog(
             selected_date,
             selected_hour,
             selected_minute,
             lesson,
         )
+
+    def _cancelled_lesson_for_slot(
+        self,
+        selected_date: date,
+        selected_hour: int,
+        selected_minute: int,
+    ) -> ScheduledLesson | None:
+        row = self._row_for_time(selected_hour, selected_minute)
+        position = (row, selected_date.weekday())
+        if position in self.cell_lessons:
+            return None
+        return self.cancelled_cell_lessons.get(position)
 
     def _open_dialog(
         self,
@@ -383,6 +432,15 @@ class SchedulePageStable(base_crm.SchedulePage):
         selected_minute: int = 0,
         lesson: ScheduledLesson | None = None,
     ) -> None:
+        replacing_cancelled = (
+            lesson is None
+            and self._cancelled_lesson_for_slot(
+                selected_date,
+                selected_hour,
+                selected_minute,
+            )
+            is not None
+        )
         dialog = ScheduleDialogStable(
             self.store,
             selected_date,
@@ -391,6 +449,12 @@ class SchedulePageStable(base_crm.SchedulePage):
             lesson,
             self,
         )
+        if replacing_cancelled:
+            dialog.recurring.setChecked(False)
+            dialog.recurring.setToolTip(
+                "Свободный слот после отмены по умолчанию создаёт разовое занятие, "
+                "чтобы не конфликтовать с исходной серией"
+            )
         accepted = dialog.exec() == QDialog.Accepted
         if dialog.metadata_changed:
             self.refresh()
