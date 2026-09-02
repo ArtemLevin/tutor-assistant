@@ -237,6 +237,9 @@ class SchedulePageStable(base_crm.SchedulePage):
 
     def _build(self) -> None:
         super()._build()
+        self.open_selected_button.setAccessibleDescription(
+            "Открыть существующее занятие или создать новое в выбранном свободном слоте"
+        )
         self.restore_cancelled_button = set_button_kind(
             QPushButton("Вернуть отменённое"),
             "ghost",
