@@ -211,10 +211,10 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     page.show()
     application.processEvents()
 
-    assert page.grid.rowCount() == 11
-    assert page.grid.verticalHeaderItem(0).text() == "10:00"
-    assert page.grid.verticalHeaderItem(10).text() == "20:00"
-    assert page._row_for_time(9, 30) < 0
+    assert page.grid.rowCount() == 12
+    assert page.grid.verticalHeaderItem(0).text() == "09:00"
+    assert page.grid.verticalHeaderItem(11).text() == "20:00"
+    assert page._row_for_time(8, 30) < 0
     assert page._row_for_time(21, 0) >= page.grid.rowCount()
 
     row = page._row_for_time(16, 30)
@@ -246,7 +246,7 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     legacy_dialog.close()
 
     new_dialog = ScheduleDialog(store, week_start, 16, 0)
-    assert new_dialog.start_time.minimumTime() == QTime(10, 0)
+    assert new_dialog.start_time.minimumTime() == QTime(9, 0)
     assert new_dialog.start_time.maximumTime() == QTime(20, 0)
     new_dialog.start_time.setTime(QTime(16, 31))
     snapped = new_dialog.value()
@@ -349,5 +349,6 @@ def test_schedule_payment_moves_to_details_dialog_and_isolates_recurring_dates(
     assert persisted == ("cancelled", 1)
     page.grid.setCurrentCell(row, 0)
     page._sync_schedule_action()
-    assert page.open_selected_button.text() == "Вернуть отменённое"
+    assert page.open_selected_button.text() == "Создать в выбранное время"
+    assert page.restore_cancelled_button.isEnabled()
     page.close()
