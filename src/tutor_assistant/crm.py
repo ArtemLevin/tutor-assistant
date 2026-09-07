@@ -526,27 +526,38 @@ class CrmStore:
     ) -> bool:
         return (end_a is None or start_b <= end_a) and (end_b is None or start_a <= end_b)
 
-    def _check_rule_conflict(self, rule: ScheduleRule) -> None:
-        with self.connect() as db:
-            rule_rows = db.execute(
-                """
-                SELECT id, start_minute, duration_minutes, valid_from, valid_until
-                FROM crm_schedule_rules
-                WHERE (active=1 OR ended_from IS NOT NULL)
-                  AND weekday=? AND (? IS NULL OR id<>?)
-                """,
-                (rule.weekday, rule.id, rule.id),
-            ).fetchall()
-            occurrence_rows = db.execute(
-                """
-                SELECT rule_id, starts_at, duration_minutes
-                FROM crm_lesson_occurrences
-                WHERE status<>'cancelled'
-                  AND (rule_id IS NULL OR ? IS NULL OR rule_id<>?)
-                """,
-                (rule.id, rule.id),
-            ).fetchall()
+    def _check_rule_conflict_in_db(
+        self,
+        db: sqlite3.Connection,
+        rule: ScheduleRule,
+        *,
+        exclude_rule_ids: set[int] | None = None,
+        exclude_occurrence_ids: set[int] | None = None,
+    ) -> None:
+        excluded_rules = set(exclude_rule_ids or ())
+        if rule.id is not None:
+            excluded_rules.add(rule.id)
+        excluded_occurrences = set(exclude_occurrence_ids or ())
+
+        rule_rows = db.execute(
+            """
+            SELECT id, start_minute, duration_minutes, valid_from, valid_until
+            FROM crm_schedule_rules
+            WHERE (active=1 OR ended_from IS NOT NULL)
+              AND weekday=?
+            """,
+            (rule.weekday,),
+        ).fetchall()
+        occurrence_rows = db.execute(
+            """
+            SELECT id, rule_id, original_date, starts_at, duration_minutes
+            FROM crm_lesson_occurrences
+            WHERE status<>'cancelled'
+            """
+        ).fetchall()
         for row in rule_rows:
+            if int(row["id"]) in excluded_rules:
+                continue
             other_from = date.fromisoformat(row["valid_from"])
             other_until = date.fromisoformat(row["valid_until"]) if row["valid_until"] else None
             if not self._date_ranges_overlap(
@@ -564,6 +575,10 @@ class CrmStore:
             ):
                 raise ScheduleConflict("В выбранное время уже назначено повторяющееся занятие")
         for row in occurrence_rows:
+            if int(row["id"]) in excluded_occurrences:
+                continue
+            if row["rule_id"] is not None and int(row["rule_id"]) in excluded_rules:
+                continue
             starts_at = datetime.fromisoformat(row["starts_at"])
             occurrence_date = starts_at.date()
             if starts_at.weekday() != rule.weekday or occurrence_date < rule.valid_from:
@@ -579,18 +594,49 @@ class CrmStore:
             ):
                 raise ScheduleConflict("В выбранное время уже назначено конкретное занятие")
 
-    def save_schedule_rule(self, rule: ScheduleRule) -> int:
-        self._check_rule_conflict(rule)
-        now = self._now()
+    def _check_rule_conflict(self, rule: ScheduleRule) -> None:
         with self.connect() as db:
-            if rule.id is None:
+            self._check_rule_conflict_in_db(db, rule)
+
+    def save_schedule_rule(self, rule: ScheduleRule) -> int:
+        def operation() -> int:
+            now = self._now()
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self._check_rule_conflict_in_db(db, rule)
+                if rule.id is None:
+                    cursor = db.execute(
+                        """
+                        INSERT INTO crm_schedule_rules (
+                            student_id, weekday, start_minute, duration_minutes, subject, topic,
+                            meeting_secret, valid_from, valid_until, rate_cents, active,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rule.student_id,
+                            rule.weekday,
+                            rule.start_minute,
+                            rule.duration_minutes,
+                            rule.subject,
+                            rule.topic,
+                            self.codec.encrypt(rule.meeting_url),
+                            rule.valid_from.isoformat(),
+                            rule.valid_until.isoformat() if rule.valid_until else None,
+                            rule.rate_cents,
+                            int(rule.active),
+                            now,
+                            now,
+                        ),
+                    )
+                    return int(cursor.lastrowid)
                 cursor = db.execute(
                     """
-                    INSERT INTO crm_schedule_rules (
-                        student_id, weekday, start_minute, duration_minutes, subject, topic,
-                        meeting_secret, valid_from, valid_until, rate_cents, active,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    UPDATE crm_schedule_rules SET
+                        student_id=?, weekday=?, start_minute=?, duration_minutes=?, subject=?,
+                        topic=?, meeting_secret=?, valid_from=?, valid_until=?, rate_cents=?,
+                        active=?, updated_at=?
+                    WHERE id=? AND ended_from IS NULL
                     """,
                     (
                         rule.student_id,
@@ -605,45 +651,276 @@ class CrmStore:
                         rule.rate_cents,
                         int(rule.active),
                         now,
-                        now,
+                        rule.id,
                     ),
                 )
-                return int(cursor.lastrowid)
-            cursor = db.execute(
-                """
-                UPDATE crm_schedule_rules SET
-                    student_id=?, weekday=?, start_minute=?, duration_minutes=?, subject=?,
-                    topic=?, meeting_secret=?, valid_from=?, valid_until=?, rate_cents=?,
-                    active=?, updated_at=?
-                WHERE id=? AND ended_from IS NULL
-                """,
-                (
-                    rule.student_id,
-                    rule.weekday,
-                    rule.start_minute,
-                    rule.duration_minutes,
-                    rule.subject,
-                    rule.topic,
-                    self.codec.encrypt(rule.meeting_url),
-                    rule.valid_from.isoformat(),
-                    rule.valid_until.isoformat() if rule.valid_until else None,
-                    rule.rate_cents,
-                    int(rule.active),
-                    now,
-                    rule.id,
-                ),
-            )
-            if cursor.rowcount != 1:
-                existing = db.execute(
-                    "SELECT ended_from FROM crm_schedule_rules WHERE id=?",
-                    (rule.id,),
+                if cursor.rowcount != 1:
+                    existing = db.execute(
+                        "SELECT ended_from FROM crm_schedule_rules WHERE id=?",
+                        (rule.id,),
+                    ).fetchone()
+                    if existing is not None and existing["ended_from"] is not None:
+                        raise ValueError(
+                            "Завершённую серию нельзя изменять. Создайте новую серию."
+                        )
+                    raise ValueError(f"Серия расписания {rule.id} не найдена")
+                return rule.id
+
+        return self._retry(operation)
+
+    @staticmethod
+    def _rule_occurrence_matches_baseline(
+        row: sqlite3.Row,
+        rule: ScheduleRule,
+        *,
+        codec: SecretCodec,
+    ) -> bool:
+        if not row["original_date"]:
+            return False
+        original_date = date.fromisoformat(row["original_date"])
+        expected_start = datetime.combine(
+            original_date,
+            time(hour=rule.start_minute // 60, minute=rule.start_minute % 60),
+        )
+        return (
+            datetime.fromisoformat(row["starts_at"]) == expected_start
+            and row["student_id"] == rule.student_id
+            and int(row["duration_minutes"]) == rule.duration_minutes
+            and row["subject"] == rule.subject
+            and row["topic"] == rule.topic
+            and (codec.decrypt(row["meeting_secret"]) or "") == rule.meeting_url
+            and int(row["rate_cents"]) == rule.rate_cents
+        )
+
+    def replace_schedule_rule_from(
+        self,
+        rule_id: int,
+        replacement: ScheduleRule,
+        *,
+        effective_from: date,
+    ) -> int:
+        """Replace an active series from one date forward without rewriting history.
+
+        The historical part keeps the original rule. Existing materialized occurrences
+        are re-parented to the replacement rule so payment, homework, closeout and lesson
+        links retain their occurrence ids. Plain materializations that still match the old
+        rule inherit the new schedule details; explicit per-date exceptions keep their
+        custom values and continue suppressing the generated occurrence for that date.
+        """
+
+        def operation() -> int:
+            now = self._now()
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM crm_schedule_rules WHERE id=?",
+                    (rule_id,),
                 ).fetchone()
-                if existing is not None and existing["ended_from"] is not None:
+                if row is None:
+                    raise ValueError(f"Серия расписания {rule_id} не найдена")
+                if not bool(row["active"]) or row["ended_from"] is not None:
                     raise ValueError(
                         "Завершённую серию нельзя изменять. Создайте новую серию."
                     )
-                raise ValueError(f"Серия расписания {rule.id} не найдена")
-            return rule.id
+
+                current = self._rule_from_row(row)
+                if current.valid_until is not None and effective_from > current.valid_until:
+                    raise ValueError("Дата изменения находится после завершения серии")
+                effective_date = max(effective_from, current.valid_from)
+                candidate = replacement.model_copy(
+                    update={
+                        "id": None,
+                        "valid_from": effective_date,
+                        "valid_until": current.valid_until,
+                        "active": True,
+                    }
+                )
+                unchanged = (
+                    candidate.student_id == current.student_id
+                    and candidate.weekday == current.weekday
+                    and candidate.start_minute == current.start_minute
+                    and candidate.duration_minutes == current.duration_minutes
+                    and candidate.subject == current.subject
+                    and candidate.topic == current.topic
+                    and candidate.meeting_url == current.meeting_url
+                    and candidate.rate_cents == current.rate_cents
+                )
+                if unchanged:
+                    return rule_id
+
+                future_rows = db.execute(
+                    """
+                    SELECT *
+                    FROM crm_lesson_occurrences
+                    WHERE rule_id=?
+                      AND COALESCE(original_date, substr(starts_at, 1, 10))>=?
+                    ORDER BY id
+                    """,
+                    (rule_id, effective_date.isoformat()),
+                ).fetchall()
+                future_ids = {int(item["id"]) for item in future_rows}
+
+                self._check_rule_conflict_in_db(
+                    db,
+                    candidate,
+                    exclude_rule_ids={rule_id},
+                    exclude_occurrence_ids=future_ids,
+                )
+
+                for occurrence in future_rows:
+                    if occurrence["status"] == "cancelled" or not occurrence["original_date"]:
+                        continue
+                    original_date = date.fromisoformat(occurrence["original_date"])
+                    starts_at = datetime.fromisoformat(occurrence["starts_at"])
+                    if starts_at.date() == original_date:
+                        continue
+                    if starts_at.date() < candidate.valid_from:
+                        continue
+                    if candidate.valid_until is not None and starts_at.date() > candidate.valid_until:
+                        continue
+                    if starts_at.weekday() != candidate.weekday:
+                        continue
+                    occurrence_start_minute = starts_at.hour * 60 + starts_at.minute
+                    if self._overlaps(
+                        candidate.start_minute,
+                        candidate.duration_minutes,
+                        occurrence_start_minute,
+                        int(occurrence["duration_minutes"]),
+                    ):
+                        raise ScheduleConflict(
+                            "Перенесённое занятие серии конфликтует с новым временем серии"
+                        )
+
+                if effective_date <= current.valid_from:
+                    in_place = candidate.model_copy(update={"id": rule_id})
+                    self._check_rule_conflict_in_db(
+                        db,
+                        in_place,
+                        exclude_rule_ids={rule_id},
+                        exclude_occurrence_ids=future_ids,
+                    )
+                    db.execute(
+                        """
+                        UPDATE crm_schedule_rules SET
+                            student_id=?, weekday=?, start_minute=?, duration_minutes=?,
+                            subject=?, topic=?, meeting_secret=?, valid_from=?, valid_until=?,
+                            rate_cents=?, active=1, updated_at=?
+                        WHERE id=? AND ended_from IS NULL
+                        """,
+                        (
+                            in_place.student_id,
+                            in_place.weekday,
+                            in_place.start_minute,
+                            in_place.duration_minutes,
+                            in_place.subject,
+                            in_place.topic,
+                            self.codec.encrypt(in_place.meeting_url),
+                            in_place.valid_from.isoformat(),
+                            in_place.valid_until.isoformat() if in_place.valid_until else None,
+                            in_place.rate_cents,
+                            now,
+                            rule_id,
+                        ),
+                    )
+                    new_rule_id = rule_id
+                else:
+                    cutoff = effective_date - timedelta(days=1)
+                    historical_until = (
+                        min(current.valid_until, cutoff) if current.valid_until else cutoff
+                    )
+                    db.execute(
+                        """
+                        UPDATE crm_schedule_rules
+                        SET active=0, valid_until=?, ended_from=?, updated_at=?
+                        WHERE id=?
+                        """,
+                        (
+                            historical_until.isoformat(),
+                            effective_date.isoformat(),
+                            now,
+                            rule_id,
+                        ),
+                    )
+                    cursor = db.execute(
+                        """
+                        INSERT INTO crm_schedule_rules (
+                            student_id, weekday, start_minute, duration_minutes, subject,
+                            topic, meeting_secret, valid_from, valid_until, rate_cents,
+                            active, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        """,
+                        (
+                            candidate.student_id,
+                            candidate.weekday,
+                            candidate.start_minute,
+                            candidate.duration_minutes,
+                            candidate.subject,
+                            candidate.topic,
+                            self.codec.encrypt(candidate.meeting_url),
+                            candidate.valid_from.isoformat(),
+                            candidate.valid_until.isoformat() if candidate.valid_until else None,
+                            candidate.rate_cents,
+                            now,
+                            now,
+                        ),
+                    )
+                    new_rule_id = int(cursor.lastrowid)
+
+                for occurrence in future_rows:
+                    occurrence_id = int(occurrence["id"])
+                    baseline = self._rule_occurrence_matches_baseline(
+                        occurrence,
+                        current,
+                        codec=self.codec,
+                    )
+                    should_follow_replacement = (
+                        baseline
+                        and occurrence["status"] in {"planned", "cancelled"}
+                        and occurrence["lesson_id"] is None
+                        and occurrence["original_date"] is not None
+                    )
+                    if should_follow_replacement:
+                        original_date = date.fromisoformat(occurrence["original_date"])
+                        starts_at = datetime.combine(
+                            original_date,
+                            time(
+                                hour=candidate.start_minute // 60,
+                                minute=candidate.start_minute % 60,
+                            ),
+                        )
+                        db.execute(
+                            """
+                            UPDATE crm_lesson_occurrences SET
+                                rule_id=?, student_id=?, starts_at=?, duration_minutes=?,
+                                subject=?, topic=?, meeting_secret=?, rate_cents=?, updated_at=?
+                            WHERE id=?
+                            """,
+                            (
+                                new_rule_id,
+                                candidate.student_id,
+                                starts_at.isoformat(),
+                                candidate.duration_minutes,
+                                candidate.subject,
+                                candidate.topic,
+                                self.codec.encrypt(candidate.meeting_url),
+                                candidate.rate_cents,
+                                now,
+                                occurrence_id,
+                            ),
+                        )
+                    else:
+                        db.execute(
+                            """
+                            UPDATE crm_lesson_occurrences
+                            SET rule_id=?, updated_at=?
+                            WHERE id=?
+                            """,
+                            (new_rule_id, now, occurrence_id),
+                        )
+
+                return new_rule_id
+
+        return self._retry(operation)
 
     def end_schedule_rule(self, rule_id: int, *, effective_from: date) -> None:
         """End a recurring series from ``effective_from`` without erasing its history.
@@ -656,6 +933,7 @@ class CrmStore:
         def operation() -> None:
             now = self._now()
             with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     "SELECT valid_until, ended_from FROM crm_schedule_rules WHERE id=?",
                     (rule_id,),
@@ -732,38 +1010,56 @@ class CrmStore:
         return [self._rule_from_row(row) for row in rows]
 
     def save_one_off(self, lesson: ScheduledLesson) -> int:
-        self._check_occurrence_conflict(lesson)
-        now = self._now()
-        with self.connect() as db:
-            cursor = db.execute(
-                """
-                INSERT INTO crm_lesson_occurrences (
-                    rule_id, original_date, student_id, starts_at, duration_minutes, subject,
-                    topic, meeting_secret, status, rate_cents, paid, lesson_id, created_at, updated_at
-                ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    lesson.student_id,
-                    lesson.starts_at.isoformat(),
-                    lesson.duration_minutes,
-                    lesson.subject,
-                    lesson.topic,
-                    self.codec.encrypt(lesson.meeting_url),
-                    lesson.status,
-                    lesson.rate_cents,
-                    int(lesson.paid),
-                    lesson.lesson_id,
-                    now,
-                    now,
-                ),
-            )
-            return int(cursor.lastrowid)
+        def operation() -> int:
+            now = self._now()
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self._check_occurrence_conflict_in_db(db, lesson)
+                cursor = db.execute(
+                    """
+                    INSERT INTO crm_lesson_occurrences (
+                        rule_id, original_date, student_id, starts_at, duration_minutes, subject,
+                        topic, meeting_secret, status, rate_cents, paid, lesson_id, created_at, updated_at
+                    ) VALUES (NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        lesson.student_id,
+                        lesson.starts_at.isoformat(),
+                        lesson.duration_minutes,
+                        lesson.subject,
+                        lesson.topic,
+                        self.codec.encrypt(lesson.meeting_url),
+                        lesson.status,
+                        lesson.rate_cents,
+                        int(lesson.paid),
+                        lesson.lesson_id,
+                        now,
+                        now,
+                    ),
+                )
+                return int(cursor.lastrowid)
+
+        return self._retry(operation)
 
     def _check_occurrence_conflict(
         self, lesson: ScheduledLesson, *, exclude_occurrence_id: int | None = None
     ) -> None:
+        with self.connect() as db:
+            self._check_occurrence_conflict_in_db(
+                db,
+                lesson,
+                exclude_occurrence_id=exclude_occurrence_id,
+            )
+
+    def _check_occurrence_conflict_in_db(
+        self,
+        db: sqlite3.Connection,
+        lesson: ScheduledLesson,
+        *,
+        exclude_occurrence_id: int | None = None,
+    ) -> None:
         monday = lesson.starts_at.date() - timedelta(days=lesson.starts_at.weekday())
-        for existing in self.lessons_for_week(monday):
+        for existing in self._lessons_for_week_in_db(db, monday):
             if existing.status == "cancelled" or existing.occurrence_id == exclude_occurrence_id:
                 continue
             if lesson.starts_at < existing.ends_at and existing.starts_at < lesson.ends_at:
@@ -772,27 +1068,37 @@ class CrmStore:
                 )
 
     def update_occurrence_details(self, occurrence_id: int, lesson: ScheduledLesson) -> None:
-        self._check_occurrence_conflict(lesson, exclude_occurrence_id=occurrence_id)
-        with self.connect() as db:
-            db.execute(
-                """
-                UPDATE crm_lesson_occurrences SET
-                    student_id=?, starts_at=?, duration_minutes=?, subject=?, topic=?,
-                    meeting_secret=?, rate_cents=?, updated_at=?
-                WHERE id=?
-                """,
-                (
-                    lesson.student_id,
-                    lesson.starts_at.isoformat(),
-                    lesson.duration_minutes,
-                    lesson.subject,
-                    lesson.topic,
-                    self.codec.encrypt(lesson.meeting_url),
-                    lesson.rate_cents,
-                    self._now(),
-                    occurrence_id,
-                ),
-            )
+        def operation() -> None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self._check_occurrence_conflict_in_db(
+                    db,
+                    lesson,
+                    exclude_occurrence_id=occurrence_id,
+                )
+                cursor = db.execute(
+                    """
+                    UPDATE crm_lesson_occurrences SET
+                        student_id=?, starts_at=?, duration_minutes=?, subject=?, topic=?,
+                        meeting_secret=?, rate_cents=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        lesson.student_id,
+                        lesson.starts_at.isoformat(),
+                        lesson.duration_minutes,
+                        lesson.subject,
+                        lesson.topic,
+                        self.codec.encrypt(lesson.meeting_url),
+                        lesson.rate_cents,
+                        self._now(),
+                        occurrence_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError(f"Занятие расписания {occurrence_id} не найдено")
+
+        self._retry(operation)
 
     def ensure_occurrence(self, lesson: ScheduledLesson) -> int:
         if lesson.occurrence_id is not None:
@@ -892,35 +1198,47 @@ class CrmStore:
             lesson_id=row["lesson_id"],
         )
 
-    def lessons_for_week(self, week_start: date) -> list[ScheduledLesson]:
+    def _lessons_for_week_in_db(
+        self,
+        db: sqlite3.Connection,
+        week_start: date,
+    ) -> list[ScheduledLesson]:
         week_end = week_start + timedelta(days=7)
-        with self.connect() as db:
-            occurrence_rows = db.execute(
-                """
-                SELECT o.*, s.full_name AS student_name
-                FROM crm_lesson_occurrences o
-                JOIN crm_students s ON s.id=o.student_id
-                WHERE o.starts_at>=? AND o.starts_at<?
-                """,
-                (
-                    datetime.combine(week_start, time()).isoformat(),
-                    datetime.combine(week_end, time()).isoformat(),
-                ),
-            ).fetchall()
-            rule_rows = db.execute(
-                """
-                SELECT r.*, s.full_name AS student_name
-                FROM crm_schedule_rules r
-                JOIN crm_students s ON s.id=r.student_id
-                WHERE r.active=1 OR r.ended_from IS NOT NULL
-                ORDER BY r.weekday, r.start_minute
-                """
-            ).fetchall()
+        occurrence_rows = db.execute(
+            """
+            SELECT o.*, s.full_name AS student_name
+            FROM crm_lesson_occurrences o
+            JOIN crm_students s ON s.id=o.student_id
+            WHERE o.starts_at>=? AND o.starts_at<?
+            """,
+            (
+                datetime.combine(week_start, time()).isoformat(),
+                datetime.combine(week_end, time()).isoformat(),
+            ),
+        ).fetchall()
+        exception_rows = db.execute(
+            """
+            SELECT rule_id, original_date
+            FROM crm_lesson_occurrences
+            WHERE rule_id IS NOT NULL
+              AND original_date>=? AND original_date<?
+            """,
+            (week_start.isoformat(), week_end.isoformat()),
+        ).fetchall()
+        rule_rows = db.execute(
+            """
+            SELECT r.*, s.full_name AS student_name
+            FROM crm_schedule_rules r
+            JOIN crm_students s ON s.id=r.student_id
+            WHERE r.active=1 OR r.ended_from IS NOT NULL
+            ORDER BY r.weekday, r.start_minute
+            """
+        ).fetchall()
         occurrences = [self._occurrence_from_row(row) for row in occurrence_rows]
         exception_keys = {
-            (item.rule_id, item.original_date)
-            for item in occurrences
-            if item.rule_id is not None and item.original_date is not None
+            (int(row["rule_id"]), date.fromisoformat(row["original_date"]))
+            for row in exception_rows
+            if row["rule_id"] is not None and row["original_date"]
         }
         for row in rule_rows:
             rule = self._rule_from_row(row)
@@ -950,6 +1268,10 @@ class CrmStore:
                 )
             )
         return sorted(occurrences, key=lambda item: item.starts_at)
+
+    def lessons_for_week(self, week_start: date) -> list[ScheduledLesson]:
+        with self.connect() as db:
+            return self._lessons_for_week_in_db(db, week_start)
 
     def stats(self, week_start: date) -> CrmStats:
         lessons = [item for item in self.lessons_for_week(week_start) if item.status != "cancelled"]

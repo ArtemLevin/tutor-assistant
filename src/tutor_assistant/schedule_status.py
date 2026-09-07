@@ -11,6 +11,7 @@ class ScheduledLessonStatus(StrEnum):
     PLANNED = "planned"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    RECORDING_FAILED = "recording_failed"
     CANCELLED = "cancelled"
 
 
@@ -47,6 +48,7 @@ def delete_one_off_lesson(store: CrmStore, lesson: ScheduledLesson) -> None:
 
     def operation() -> None:
         with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT rule_id, status, lesson_id FROM crm_lesson_occurrences WHERE id=?",
                 (lesson.occurrence_id,),
@@ -58,8 +60,12 @@ def delete_one_off_lesson(store: CrmStore, lesson: ScheduledLesson) -> None:
             if row["lesson_id"] is not None or row["status"] in {
                 ScheduledLessonStatus.IN_PROGRESS.value,
                 ScheduledLessonStatus.COMPLETED.value,
+                ScheduledLessonStatus.RECORDING_FAILED.value,
             }:
-                raise ValueError("Начатое или завершённое занятие нельзя удалить из истории")
+                raise ValueError(
+                    "Начатое, завершённое или связанное с записью занятие "
+                    "нельзя удалить из истории"
+                )
             db.execute(
                 "DELETE FROM crm_lesson_occurrences WHERE id=?",
                 (lesson.occurrence_id,),
@@ -82,11 +88,18 @@ def set_scheduled_lesson_status(
     """
 
     target = ScheduledLessonStatus(status)
-    if target == ScheduledLessonStatus.CANCELLED and lesson.status in {
-        ScheduledLessonStatus.IN_PROGRESS.value,
-        ScheduledLessonStatus.COMPLETED.value,
-    }:
-        raise ValueError("Начатое или завершённое занятие нельзя отменить как будущее")
+    if target == ScheduledLessonStatus.CANCELLED and (
+        lesson.lesson_id is not None
+        or lesson.status
+        in {
+            ScheduledLessonStatus.IN_PROGRESS.value,
+            ScheduledLessonStatus.COMPLETED.value,
+            ScheduledLessonStatus.RECORDING_FAILED.value,
+        }
+    ):
+        raise ValueError(
+            "Начатое, завершённое или связанное с записью занятие нельзя отменить как будущее"
+        )
 
     if (
         lesson.status == ScheduledLessonStatus.CANCELLED.value
@@ -96,25 +109,59 @@ def set_scheduled_lesson_status(
             raise ValueError(
                 "Занятие со связанной записью нельзя вернуть в статус запланированного"
             )
-        if lesson.rule_id is not None:
-            rule = store.get_schedule_rule(lesson.rule_id)
-            original_date = lesson.original_date or lesson.starts_at.date()
-            if rule is None:
-                raise ScheduleConflict("Повторяющаяся серия занятия больше не существует")
-            if (not rule.active and rule.valid_until is None) or (
-                rule.valid_until is not None and original_date > rule.valid_until
-            ):
-                raise ScheduleConflict(
-                    "Эта дата находится за границей завершённой серии; создайте новое занятие"
-                )
-        store._check_occurrence_conflict(
-            lesson,
-            exclude_occurrence_id=lesson.occurrence_id,
-        )
 
     def operation() -> int:
         now = store._now()
         with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            persisted = None
+            if lesson.occurrence_id is not None:
+                persisted = db.execute(
+                    "SELECT status, lesson_id FROM crm_lesson_occurrences WHERE id=?",
+                    (lesson.occurrence_id,),
+                ).fetchone()
+            if target == ScheduledLessonStatus.CANCELLED and persisted is not None:
+                if persisted["lesson_id"] is not None or persisted["status"] in {
+                    ScheduledLessonStatus.IN_PROGRESS.value,
+                    ScheduledLessonStatus.COMPLETED.value,
+                    ScheduledLessonStatus.RECORDING_FAILED.value,
+                }:
+                    raise ValueError(
+                        "Начатое, завершённое или связанное с записью занятие "
+                        "нельзя отменить как будущее"
+                    )
+            if (
+                lesson.status == ScheduledLessonStatus.CANCELLED.value
+                and target == ScheduledLessonStatus.PLANNED
+            ):
+                if persisted is not None and persisted["lesson_id"] is not None:
+                    raise ValueError(
+                        "Занятие со связанной записью нельзя вернуть в статус запланированного"
+                    )
+                if lesson.rule_id is not None:
+                    row = db.execute(
+                        "SELECT * FROM crm_schedule_rules WHERE id=?",
+                        (lesson.rule_id,),
+                    ).fetchone()
+                    original_date = lesson.original_date or lesson.starts_at.date()
+                    if row is None:
+                        raise ScheduleConflict(
+                            "Повторяющаяся серия занятия больше не существует"
+                        )
+                    rule = store._rule_from_row(row)
+                    if not rule.active or (
+                        rule.valid_until is not None and original_date > rule.valid_until
+                    ):
+                        raise ScheduleConflict(
+                            "Эта дата находится за границей завершённой серии; "
+                            "создайте новое занятие"
+                        )
+                store._check_occurrence_conflict_in_db(
+                    db,
+                    lesson,
+                    exclude_occurrence_id=lesson.occurrence_id,
+                )
+
             occurrence_id = lesson.occurrence_id
             if occurrence_id is None and lesson.rule_id is None:
                 cursor = db.execute(
