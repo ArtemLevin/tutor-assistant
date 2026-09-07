@@ -21,6 +21,7 @@ from .theme import set_button_kind
 WORKDAY_FIRST_HOUR = 9
 WORKDAY_LAST_HOUR = 20
 SCHEDULE_SLOT_MINUTES = 60
+WORKDAY_END_MINUTE = (WORKDAY_LAST_HOUR + 1) * 60
 
 
 class ScheduleDialogStable(base_crm.ScheduleDialog):
@@ -95,11 +96,12 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
         action_buttons = {button.text(): button for button in self.findChildren(QPushButton)}
         start = action_buttons.get("Начать запись")
         destructive = action_buttons.get("Удалить")
-        if start is not None and self.lesson.status != ScheduledLessonStatus.PLANNED.value:
+        if start is not None and (
+            self.lesson.status != ScheduledLessonStatus.PLANNED.value
+            or (self.lesson.rule_id is not None and not active_series)
+        ):
             start.setEnabled(False)
-            start.setToolTip(
-                "Запустить запись можно только для запланированного занятия"
-            )
+            start.setToolTip("Запустить запись можно только для активного запланированного занятия")
         if destructive is None:
             return
         try:
@@ -111,7 +113,17 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
             destructive.setText("Вернуть занятие")
             destructive.setToolTip("Вернуть только это занятие; повторяющаяся серия не изменится")
             set_button_kind(destructive, "primary")
-            if rule is not None and rule.valid_until is not None:
+            if self.lesson.lesson_id is not None:
+                destructive.setEnabled(False)
+                destructive.setToolTip(
+                    "Занятие со связанной записью нельзя вернуть в запланированное"
+                )
+            elif rule is not None and not rule.active:
+                destructive.setEnabled(False)
+                destructive.setToolTip(
+                    "Завершённая серия не восстанавливается; создайте новое занятие"
+                )
+            elif rule is not None and rule.valid_until is not None:
                 original_date = self.lesson.original_date or self.lesson.starts_at.date()
                 if original_date > rule.valid_until:
                     destructive.setEnabled(False)
@@ -122,10 +134,13 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
         elif self.lesson.status in {
             ScheduledLessonStatus.IN_PROGRESS.value,
             ScheduledLessonStatus.COMPLETED.value,
+            ScheduledLessonStatus.RECORDING_FAILED.value,
         }:
             destructive.setText("Отмена недоступна")
             destructive.setEnabled(False)
-            destructive.setToolTip("Начатое или завершённое занятие нельзя отменить как будущее")
+            destructive.setToolTip(
+                "Начатое, завершённое или связанное с записью занятие нельзя отменить как будущее"
+            )
             set_button_kind(destructive, "ghost")
         else:
             destructive.setText("Отменить занятие")
@@ -179,6 +194,49 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
     def value(self) -> ScheduledLesson:
         self._snap_start_time()
         return super().value()
+
+    def _timing_matches_existing(self) -> bool:
+        if self.lesson is None:
+            return False
+        selected_date = self.lesson_date.date()
+        clock = self.start_time.time()
+        return (
+            (selected_date.year(), selected_date.month(), selected_date.day())
+            == (
+                self.lesson.starts_at.year,
+                self.lesson.starts_at.month,
+                self.lesson.starts_at.day,
+            )
+            and (clock.hour(), clock.minute())
+            == (self.lesson.starts_at.hour, self.lesson.starts_at.minute)
+            and int(self.duration.currentData()) == self.lesson.duration_minutes
+        )
+
+    def _timing_fits_workday(self) -> bool:
+        clock = self.start_time.time()
+        start_minute = clock.hour() * 60 + clock.minute()
+        duration = int(self.duration.currentData())
+        return (
+            start_minute >= WORKDAY_FIRST_HOUR * 60
+            and start_minute <= WORKDAY_LAST_HOUR * 60
+            and start_minute + duration <= WORKDAY_END_MINUTE
+        )
+
+    def _finish(self, action: str) -> None:
+        if action in {"save", "start", "restore"}:
+            self._snap_start_time()
+            legacy_unchanged = self.lesson is not None and self._timing_matches_existing()
+            if not self._timing_fits_workday() and not (
+                legacy_unchanged and action in {"save", "start"}
+            ):
+                QMessageBox.warning(
+                    self,
+                    "Расписание",
+                    "Старт занятия должен быть в сетке 09:00–20:00, а окончание — не позже 21:00. "
+                    "Последний допустимый старт зависит от длительности занятия.",
+                )
+                return
+        super()._finish(action)
 
     def _payment_toggled(self, paid: bool) -> None:
         if self.lesson is None or paid == self.lesson.paid:
@@ -354,19 +412,40 @@ class SchedulePageStable(base_crm.SchedulePage):
         finally:
             del signal_blocker
 
+    @classmethod
+    def _lesson_fits_visible_grid(cls, lesson: ScheduledLesson) -> bool:
+        row = cls._row_for_time(lesson.starts_at.hour, lesson.starts_at.minute)
+        if not (0 <= row < cls._row_count()):
+            return False
+        return row + cls._row_span_for_lesson(lesson) <= cls._row_count()
+
     def refresh(self) -> None:
         self.cancelled_cell_lessons.clear()
         super().refresh()
         self._clear_cancelled_grid_cells()
         self._compact_lesson_cells()
-        summary = summarize_schedule(self.store.lessons_for_week(self.week_start))
+        lessons = self.store.lessons_for_week(self.week_start)
+        summary = summarize_schedule(lessons)
+        outside_grid = sum(
+            item.status != ScheduledLessonStatus.CANCELLED.value
+            and not self._lesson_fits_visible_grid(item)
+            for item in lessons
+        )
+        outside_suffix = f" · вне сетки {outside_grid}" if outside_grid else ""
         self.lessons_stat.setText(
             f"Занятия · {summary.active_lessons} · отменено {summary.cancelled_lessons}"
+            f"{outside_suffix}"
         )
         self.lessons_stat.setToolTip(
             f"Всего записей на неделю: {summary.total_lessons}. "
             "Отменённые занятия не входят в плановую выручку, сохраняются в истории "
-            "и не занимают ячейки расписания."
+            "и не занимают ячейки расписания. "
+            + (
+                f"Активных legacy-занятий, которые не полностью помещаются в сетку: "
+                f"{outside_grid}."
+                if outside_grid
+                else "Все активные занятия полностью помещаются в рабочую сетку."
+            )
         )
 
     def _sync_schedule_action(self, *_args) -> None:
@@ -527,27 +606,34 @@ class SchedulePageStable(base_crm.SchedulePage):
                     if value.rule_id is not None
                     else None
                 )
+                if value.rule_id is not None and existing_rule is None:
+                    raise ValueError(
+                        f"Серия расписания {value.rule_id} больше не существует"
+                    )
                 if existing_rule is not None and not existing_rule.active:
                     raise ValueError(
                         "Завершённую серию нельзя неявно включить снова. Создайте новую серию."
                     )
-                self.store.save_schedule_rule(
-                    ScheduleRule(
-                        id=value.rule_id,
-                        student_id=value.student_id,
-                        weekday=value.starts_at.weekday(),
-                        start_minute=value.starts_at.hour * 60 + value.starts_at.minute,
-                        duration_minutes=value.duration_minutes,
-                        subject=value.subject,
-                        topic=value.topic,
-                        meeting_url=value.meeting_url,
-                        valid_from=(
-                            existing_rule.valid_from if existing_rule else value.starts_at.date()
-                        ),
-                        valid_until=existing_rule.valid_until if existing_rule else None,
-                        rate_cents=value.rate_cents,
-                    )
+                replacement = ScheduleRule(
+                    student_id=value.student_id,
+                    weekday=value.starts_at.weekday(),
+                    start_minute=value.starts_at.hour * 60 + value.starts_at.minute,
+                    duration_minutes=value.duration_minutes,
+                    subject=value.subject,
+                    topic=value.topic,
+                    meeting_url=value.meeting_url,
+                    valid_from=value.starts_at.date(),
+                    valid_until=existing_rule.valid_until if existing_rule else None,
+                    rate_cents=value.rate_cents,
                 )
+                if existing_rule is not None and existing_rule.id is not None:
+                    self.store.replace_schedule_rule_from(
+                        existing_rule.id,
+                        replacement,
+                        effective_from=value.original_date or value.starts_at.date(),
+                    )
+                else:
+                    self.store.save_schedule_rule(replacement)
             elif lesson:
                 occurrence_id = self.store.ensure_occurrence(value)
                 self.store.update_occurrence_details(occurrence_id, value)
