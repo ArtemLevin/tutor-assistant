@@ -36,6 +36,11 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
                 QTime(WORKDAY_FIRST_HOUR, 0),
                 QTime(WORKDAY_LAST_HOUR, 0),
             )
+            self.recurring.setChecked(False)
+            self.recurring.setToolTip(
+                "Новое занятие создаётся разовым; включите повторение вручную, "
+                "если нужна еженедельная серия"
+            )
             return
 
         self.paid = QCheckBox("Оплачено")
