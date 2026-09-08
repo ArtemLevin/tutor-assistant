@@ -14,21 +14,6 @@ from tutor_assistant.schedule_status import delete_one_off_lesson  # noqa: E402
 from tutor_assistant.ui import schedule_ux_stable as schedule_ui  # noqa: E402
 
 
-class _RecurringControl:
-    def __init__(self) -> None:
-        self.checked = True
-        self.tooltip = ""
-
-    def isChecked(self) -> bool:
-        return self.checked
-
-    def setChecked(self, checked: bool) -> None:
-        self.checked = checked
-
-    def setToolTip(self, tooltip: str) -> None:
-        self.tooltip = tooltip
-
-
 @pytest.fixture(scope="module")
 def application() -> QApplication:
     return QApplication.instance() or QApplication([])
@@ -90,7 +75,9 @@ def test_physically_deleted_empty_cell_creates_one_off_not_weekly_series(
     assert (row, column) not in page.cell_lessons
     assert (row, column) not in page.cancelled_cell_lessons
 
-    class FakeScheduleDialog:
+    real_dialog = schedule_ui.ScheduleDialogStable
+
+    class FakeScheduleDialog(real_dialog):
         recurring_seen_on_exec: bool | None = None
 
         def __init__(
@@ -102,10 +89,16 @@ def test_physically_deleted_empty_cell_creates_one_off_not_weekly_series(
             lesson_arg,
             _parent,
         ) -> None:
+            super().__init__(
+                _store,
+                selected_date,
+                selected_hour,
+                selected_minute,
+                lesson_arg,
+                _parent,
+            )
             assert lesson_arg is None
-            self.metadata_changed = False
             self.action = "save"
-            self.recurring = _RecurringControl()
             self._value = ScheduledLesson(
                 student_id="replacement",
                 student_name="Замена",
