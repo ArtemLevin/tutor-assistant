@@ -351,6 +351,28 @@ class CrmStore:
                 "ADD COLUMN paid INTEGER NOT NULL DEFAULT 0"
             )
 
+        # Before ``ended_from`` existed, deleting a recurring series only set
+        # ``active=0``. Materialized planned occurrences were left behind and
+        # later looked like real concrete bookings to conflict checks even though
+        # the deleted series no longer rendered in the schedule. Normalize those
+        # legacy ghosts to durable cancellation tombstones. Keep started/recorded
+        # lessons untouched and preserve the occurrence row/FK metadata.
+        now = datetime.now(UTC).isoformat()
+        db.execute(
+            """
+            UPDATE crm_lesson_occurrences
+            SET status='cancelled', updated_at=?
+            WHERE status='planned'
+              AND lesson_id IS NULL
+              AND rule_id IN (
+                  SELECT id
+                  FROM crm_schedule_rules
+                  WHERE active=0 AND ended_from IS NULL
+              )
+            """,
+            (now,),
+        )
+
     @staticmethod
     def _now() -> str:
         return datetime.now(UTC).isoformat()
