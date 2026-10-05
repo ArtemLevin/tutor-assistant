@@ -30,6 +30,8 @@ class MainWindow(ConcurrentMainWindow):
             workers_running=any(worker.isRunning() for worker in self.workers),
             transcription_busy=self.transcription_worker.busy,
             transcription_running=self.transcription_worker.isRunning(),
+            publication_busy=self.publication_worker.busy,
+            publication_running=self.publication_worker.isRunning(),
             normalization_cancellable=self._normalization_cancellation is not None,
         )
 
@@ -38,6 +40,8 @@ class MainWindow(ConcurrentMainWindow):
             self.backup_coordinator.request_shutdown()
         if hasattr(self, "backup_maintenance_timer"):
             self.backup_maintenance_timer.stop()
+        if hasattr(self, "publication_retry_timer"):
+            self.publication_retry_timer.stop()
         if hasattr(self, "background_tasks"):
             self.background_tasks.begin_shutdown()
 
@@ -56,6 +60,8 @@ class MainWindow(ConcurrentMainWindow):
             self._normalization_cancellation.cancel()
         if plan.shutdown_transcription:
             self.transcription_worker.shutdown()
+        if plan.shutdown_publication:
+            self.publication_worker.shutdown()
         if plan.quiesce_runtime:
             self.timer.stop()
             self.latex_poll_timer.stop()
@@ -84,11 +90,18 @@ class MainWindow(ConcurrentMainWindow):
         if decision.action == ShutdownCloseAction.TRY_IMMEDIATE:
             self._begin_background_shutdown()
             self.transcription_worker.shutdown()
-            stopped = self.transcription_worker.wait(decision.transcription_wait_ms or 0)
-            self.shutdown_coordinator.complete_immediate_shutdown(
-                transcription_stopped=stopped
+            self.publication_worker.shutdown()
+            transcription_stopped = self.transcription_worker.wait(
+                decision.transcription_wait_ms or 0
             )
-            if stopped:
+            publication_stopped = self.publication_worker.wait(
+                decision.transcription_wait_ms or 0
+            )
+            self.shutdown_coordinator.complete_immediate_shutdown(
+                transcription_stopped=transcription_stopped,
+                publication_stopped=publication_stopped,
+            )
+            if transcription_stopped and publication_stopped:
                 self._shutdown_ready = True
                 event.accept()
             else:
@@ -103,7 +116,8 @@ class MainWindow(ConcurrentMainWindow):
             self,
             "Безопасное завершение",
             "Сначала завершить запись и дождаться текущих фоновых операций? "
-            "Ожидающие транскрибации сохранятся и продолжатся при следующем запуске.",
+            "Ожидающие транскрибации и публикации сохранятся и продолжатся "
+            "при следующем запуске.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Yes,
         )
