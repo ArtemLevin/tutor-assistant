@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from threading import RLock
 
 from .atomic_io import atomic_write_text
 from .config import RepositoryConfig
@@ -28,6 +29,10 @@ class GitError(RuntimeError):
     pass
 
 
+class PublicationBlockedError(GitError):
+    """Publication cannot proceed until configuration or authorization changes."""
+
+
 class PublicationConflictError(GitError):
     pass
 
@@ -40,6 +45,7 @@ GIT_TIMEOUT_SECONDS = 120
 GH_TIMEOUT_SECONDS = 30
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _CANONICAL_LESSON_ID = re.compile(r"^[0-9a-f]{32}$")
+_PUBLICATION_LOCK = RLock()
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,17 @@ TRANSCRIPT_ONLY_POLICY = PublicationPolicy()
 class ApprovedTranscriptPayload:
     """Immutable transcript revision approved by the teacher in SQLite."""
 
+    content: str
+    content_sha256: str
+    revision_number: int | None = None
+
+
+@dataclass(frozen=True)
+class TranscriptPublicationPayload:
+    """Immutable, pre-authorized transcript bytes handed to verified Git transport."""
+
+    lesson_id: str
+    repository_path: str
     content: str
     content_sha256: str
     revision_number: int | None = None
@@ -185,7 +202,9 @@ def ensure_private_repository(
     gateway: GitHubRepositoryGateway | None = None,
 ) -> None:
     if not config.repository_full_name.strip():
-        raise GitError("Укажите repository.repository_full_name перед публикацией")
+        raise PublicationBlockedError(
+            "Укажите repository.repository_full_name перед публикацией"
+        )
     if shutil.which("gh") is None:
         try:
             (gateway or GitHubRestGateway(config)).ensure_private_repository()
@@ -213,7 +232,7 @@ def ensure_private_repository(
         )
     visibility = result.stdout.strip().upper()
     if visibility != "PRIVATE":
-        raise GitError(
+        raise PublicationBlockedError(
             f"Публикация заблокирована: {config.repository_full_name} имеет visibility "
             f"{visibility or 'UNKNOWN'}, требуется PRIVATE"
         )
@@ -370,6 +389,38 @@ def _verified_transcript(
     return source, text, content_sha256, len(payload)
 
 
+def _validated_publication_payload(
+    payload: TranscriptPublicationPayload,
+    policy: PublicationPolicy,
+) -> tuple[str, int]:
+    path = PurePosixPath(payload.repository_path)
+    if (
+        not payload.lesson_id
+        or path.is_absolute()
+        or ".." in path.parts
+        or path.suffix.casefold() != ".txt"
+    ):
+        raise PublicationBlockedError(
+            "Путь publication payload выходит за разрешённые границы"
+        )
+    canonical = _canonical_transcript_text(payload.content)
+    if canonical != payload.content:
+        raise PublicationBlockedError(
+            "Publication payload должен использовать canonical LF UTF-8 text"
+        )
+    encoded = canonical.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    if digest != payload.content_sha256:
+        raise PublicationBlockedError(
+            "Publication payload содержит некорректный SHA-256"
+        )
+    if len(encoded) > policy.maximum_file_size_bytes:
+        raise GitError(
+            f"Транскрипт превышает {policy.maximum_file_size_bytes} байт"
+        )
+    return canonical, len(encoded)
+
+
 def _git_paths(checkout: Path, *args: str) -> tuple[str, ...]:
     output = run_git(checkout, "-c", "core.quotepath=false", *args)
     return tuple(line.strip() for line in output.splitlines() if line.strip())
@@ -386,6 +437,23 @@ def _assert_transcript_only_egress(paths: tuple[str, ...], expected: str) -> Non
 
 def _git_blob_sha256(repo: Path, object_spec: str) -> str:
     return hashlib.sha256(_run_git_bytes(repo, "show", object_spec)).hexdigest()
+
+
+def _git_blob_sha256_if_exists(repo: Path, object_spec: str) -> str | None:
+    probe = _run_command_bytes(
+        ["git", "cat-file", "-e", object_spec],
+        cwd=repo,
+        timeout=GIT_TIMEOUT_SECONDS,
+    )
+    if probe.returncode == 0:
+        return _git_blob_sha256(repo, object_spec)
+    if probe.returncode == 128:
+        return None
+    details = (probe.stderr or probe.stdout).decode(
+        "utf-8",
+        errors="replace",
+    ).strip()
+    raise GitError(details or "Не удалось проверить существующий Git blob")
 
 
 def _assert_git_blob_matches(
@@ -413,6 +481,11 @@ def _journal_path(lesson_dir: Path) -> Path:
     resolved = lesson_dir.resolve()
     workspace = resolved.parent.parent if resolved.parent.name == "lessons" else resolved
     return workspace / "publication.sqlite3"
+
+
+def _transition_published(lesson: Lesson) -> None:
+    if lesson.status != JobStatus.PUBLISHED:
+        lesson.transition(JobStatus.PUBLISHED)
 
 
 def _result(
@@ -447,11 +520,21 @@ class LessonPublisher:
         self.github_gateway = github_gateway
         self.policy = policy
 
-    def _write_transcript(self, lesson: Lesson, checkout: Path, text: str) -> Path:
-        relative = publication_repository_path(lesson, self.policy)
-        checkout = checkout.resolve()
-        target = (checkout / Path(relative.as_posix())).resolve()
-        if not target.is_relative_to(checkout):
+    def _write_transcript(
+        self,
+        checkout: Path | Lesson,
+        repository_path: str | Path,
+        text: str,
+    ) -> Path:
+        if isinstance(checkout, Lesson):
+            lesson = checkout
+            checkout_path = Path(repository_path).resolve()
+            relative = publication_repository_path(lesson, self.policy)
+        else:
+            checkout_path = checkout.resolve()
+            relative = PurePosixPath(repository_path)
+        target = (checkout_path / Path(relative.as_posix())).resolve()
+        if not target.is_relative_to(checkout_path):
             raise GitError("Путь публикации транскрипта выходит за пределы Git-репозитория")
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target, text)
@@ -463,7 +546,7 @@ class LessonPublisher:
             descriptor = describe_push_remote(self.config.remote, raw_url)
             assert_expected_repository(descriptor.identity, self.config.repository_full_name)
         except RemoteIdentityError as exc:
-            raise GitError(str(exc)) from exc
+            raise PublicationBlockedError(str(exc)) from exc
         return descriptor
 
     def preview(
@@ -474,7 +557,7 @@ class LessonPublisher:
         approved: ApprovedTranscriptPayload | None = None,
     ) -> PublicationPlan:
         if not self.config.push:
-            raise GitError(
+            raise PublicationBlockedError(
                 "Публикация отключена параметром repository.push=false. "
                 "Production publish требует реальной отправки в remote."
             )
@@ -487,7 +570,7 @@ class LessonPublisher:
         _assert_transcript_only_egress(publication_payload_files(lesson), expected_path)
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
-            raise GitError(f"Git-репозиторий не найден: {repo}")
+            raise PublicationBlockedError(f"Git-репозиторий не найден: {repo}")
         descriptor = self._descriptor(repo)
         if self.policy.require_private_repository:
             ensure_private_repository(self.config, repo, self.github_gateway)
@@ -511,15 +594,83 @@ class LessonPublisher:
             expected_remote_sha=expected_remote_sha,
         )
 
+    def _preview_payload(
+        self,
+        lesson: Lesson,
+        payload: TranscriptPublicationPayload,
+    ) -> PublicationPlan:
+        if payload.lesson_id != lesson.lesson_id:
+            raise PublicationBlockedError(
+                "Publication payload относится к другому занятию"
+            )
+        _text, size = _validated_publication_payload(payload, self.policy)
+        _assert_transcript_only_egress(
+            (payload.repository_path,),
+            payload.repository_path,
+        )
+        if not self.config.push:
+            raise PublicationBlockedError(
+                "Публикация отключена параметром repository.push=false. "
+                "Production publish требует реальной отправки в remote."
+            )
+        repo = self.config.students_repo.resolve()
+        if not (repo / ".git").exists():
+            raise PublicationBlockedError(f"Git-репозиторий не найден: {repo}")
+        descriptor = self._descriptor(repo)
+        if self.policy.require_private_repository:
+            ensure_private_repository(self.config, repo, self.github_gateway)
+        run_git(repo, "fetch", self.config.remote, self.policy.target_branch)
+        expected_remote_sha = run_git(
+            repo,
+            "rev-parse",
+            f"{self.config.remote}/{self.policy.target_branch}",
+        )
+        if not _SHA1.fullmatch(expected_remote_sha):
+            raise GitError("Git fetch не вернул корректный SHA целевой ветки")
+        return PublicationPlan(
+            lesson_id=lesson.lesson_id,
+            repository_full_name=descriptor.identity.full_name,
+            remote_name=descriptor.remote_name,
+            branch=self.policy.target_branch,
+            repository_path=payload.repository_path,
+            content_sha256=payload.content_sha256,
+            content_size_bytes=size,
+            expected_remote_sha=expected_remote_sha,
+        )
+
+    def preview_payload(
+        self,
+        lesson: Lesson,
+        payload: TranscriptPublicationPayload,
+    ) -> PublicationPlan:
+        with _PUBLICATION_LOCK:
+            return self._preview_payload(lesson, payload)
+
     def _reconcile_active(
         self,
         lesson: Lesson,
         store: PublicationOperationStore,
         repo: Path,
+        *,
+        repository_path: str,
+        content_sha256: str,
     ) -> PublicationResult | None:
         operation = store.active_for_lesson(lesson.lesson_id)
         if operation is None:
             return None
+        if (
+            operation.repository_path != repository_path
+            or operation.content_sha256 != content_sha256
+        ):
+            store.mark_conflict(
+                operation.id,
+                remote_commit_sha=None,
+                error_code="payload_mismatch",
+                details="Active publication operation has a different immutable payload",
+            )
+            raise PublicationConflictError(
+                "Незавершённая publication operation относится к другому payload"
+            )
         remote_sha = _remote_head(repo, operation.remote_name, operation.branch)
         if operation.status == PublicationOperationStatus.REMOTE_VERIFIED:
             if remote_sha != operation.remote_commit_sha:
@@ -530,12 +681,12 @@ class LessonPublisher:
                 )
                 raise PublicationConflictError("Удалённая ветка изменилась после публикации")
             completed = store.mark_completed(operation.id)
-            lesson.transition(JobStatus.PUBLISHED)
+            _transition_published(lesson)
             return _result(completed, commit=remote_sha, idempotent=True)
         if operation.local_commit_sha and remote_sha == operation.local_commit_sha:
             verified = store.mark_remote_verified(operation.id, remote_sha)
             completed = store.mark_completed(verified.id)
-            lesson.transition(JobStatus.PUBLISHED)
+            _transition_published(lesson)
             return _result(completed, commit=remote_sha, idempotent=True)
         if remote_sha == operation.expected_remote_sha:
             store.mark_failed(
@@ -560,15 +711,67 @@ class LessonPublisher:
         *,
         approved: ApprovedTranscriptPayload | None = None,
     ) -> PublicationResult:
-        plan = self.preview(lesson, lesson_dir, approved=approved)
-        _source, text, _sha256, _size = _verified_transcript(
+        _source, text, content_sha256, _size = _verified_transcript(
             lesson,
             self.policy,
             approved,
         )
+        payload = TranscriptPublicationPayload(
+            lesson_id=lesson.lesson_id,
+            repository_path=publication_repository_path(
+                lesson,
+                self.policy,
+            ).as_posix(),
+            content=text,
+            content_sha256=content_sha256,
+            revision_number=(
+                approved.revision_number if approved is not None else None
+            ),
+        )
+        return self.publish_payload(
+            lesson,
+            lesson_dir,
+            payload,
+            reject_existing_mismatch=False,
+        )
+
+    def publish_payload(
+        self,
+        lesson: Lesson,
+        lesson_dir: Path,
+        payload: TranscriptPublicationPayload,
+        *,
+        reject_existing_mismatch: bool,
+    ) -> PublicationResult:
+        with _PUBLICATION_LOCK:
+            plan = self._preview_payload(lesson, payload)
+            text, _size = _validated_publication_payload(payload, self.policy)
+            return self._publish_payload(
+                lesson,
+                lesson_dir,
+                plan,
+                text=text,
+                reject_existing_mismatch=reject_existing_mismatch,
+            )
+
+    def _publish_payload(
+        self,
+        lesson: Lesson,
+        lesson_dir: Path,
+        plan: PublicationPlan,
+        *,
+        text: str,
+        reject_existing_mismatch: bool,
+    ) -> PublicationResult:
         repo = self.config.students_repo.resolve()
         store = PublicationOperationStore(_journal_path(lesson_dir))
-        reconciled = self._reconcile_active(lesson, store, repo)
+        reconciled = self._reconcile_active(
+            lesson,
+            store,
+            repo,
+            repository_path=plan.repository_path,
+            content_sha256=plan.content_sha256,
+        )
         if reconciled is not None:
             return reconciled
 
@@ -585,13 +788,10 @@ class LessonPublisher:
             expected_remote_sha=plan.expected_remote_sha,
         )
 
-        try:
-            existing_sha256 = _git_blob_sha256(
-                repo,
-                f"{self.config.remote}/{plan.branch}:{plan.repository_path}",
-            )
-        except GitError:
-            existing_sha256 = None
+        existing_sha256 = _git_blob_sha256_if_exists(
+            repo,
+            f"{self.config.remote}/{plan.branch}:{plan.repository_path}",
+        )
         if existing_sha256 == plan.content_sha256:
             verified = store.mark_remote_verified(
                 operation.id,
@@ -599,8 +799,25 @@ class LessonPublisher:
                 allow_prepared=True,
             )
             completed = store.mark_completed(verified.id)
-            lesson.transition(JobStatus.PUBLISHED)
-            return _result(completed, commit=plan.expected_remote_sha, idempotent=True)
+            _transition_published(lesson)
+            return _result(
+                completed,
+                commit=plan.expected_remote_sha,
+                idempotent=True,
+            )
+        if reject_existing_mismatch and existing_sha256 is not None:
+            store.mark_conflict(
+                operation.id,
+                remote_commit_sha=plan.expected_remote_sha,
+                error_code="target_content_conflict",
+                details=(
+                    f"{plan.repository_path} already exists with a different "
+                    "content SHA-256"
+                ),
+            )
+            raise PublicationConflictError(
+                f"{plan.repository_path} уже существует с другим содержимым"
+            )
 
         root = repo.parent / ".tutor-assistant-worktrees"
         root.mkdir(parents=True, exist_ok=True)
@@ -610,13 +827,31 @@ class LessonPublisher:
         worktree_path.rmdir()
         local_commit: str | None = None
         try:
-            run_git(repo, "worktree", "add", "--detach", str(worktree_path), plan.expected_remote_sha)
-            target = self._write_transcript(lesson, worktree_path, text)
+            run_git(
+                repo,
+                "worktree",
+                "add",
+                "--detach",
+                str(worktree_path),
+                plan.expected_remote_sha,
+            )
+            target = self._write_transcript(
+                worktree_path,
+                plan.repository_path,
+                text,
+            )
             relative_target = target.relative_to(worktree_path).as_posix()
             if relative_target != plan.repository_path:
-                raise GitError("Публикация заблокирована: итоговый путь transcript.txt изменился")
+                raise GitError(
+                    "Публикация заблокирована: итоговый transcript path изменился"
+                )
             run_git(worktree_path, "add", "--", relative_target)
-            staged = _git_paths(worktree_path, "diff", "--cached", "--name-only")
+            staged = _git_paths(
+                worktree_path,
+                "diff",
+                "--cached",
+                "--name-only",
+            )
             _assert_transcript_only_egress(staged, plan.repository_path)
             if not staged:
                 raise GitError("Git не обнаружил изменений для публикации")
@@ -637,7 +872,9 @@ class LessonPublisher:
             local_commit = run_git(worktree_path, "rev-parse", "HEAD")
             parent = run_git(worktree_path, "rev-parse", "HEAD^")
             if parent != plan.expected_remote_sha:
-                raise GitError("Publication commit построен не от зафиксированного remote SHA")
+                raise GitError(
+                    "Publication commit построен не от зафиксированного remote SHA"
+                )
             _assert_git_blob_matches(
                 worktree_path,
                 f"HEAD:{plan.repository_path}",
@@ -665,30 +902,51 @@ class LessonPublisher:
                 worktree_path,
                 "push",
                 "--porcelain",
-                f"--force-with-lease=refs/heads/{plan.branch}:{plan.expected_remote_sha}",
+                (
+                    f"--force-with-lease=refs/heads/{plan.branch}:"
+                    f"{plan.expected_remote_sha}"
+                ),
                 self.config.remote,
                 f"HEAD:refs/heads/{plan.branch}",
                 allow_push=True,
             )
-            remote_sha = _remote_head(repo, self.config.remote, plan.branch)
+            remote_sha = _remote_head(
+                repo,
+                self.config.remote,
+                plan.branch,
+            )
             if remote_sha != local_commit:
                 store.mark_indeterminate(
                     operation.id,
                     error_code="verification_failed",
-                    details=f"Remote SHA {remote_sha} не совпал с local commit {local_commit}",
+                    details=(
+                        f"Remote SHA {remote_sha} не совпал "
+                        f"с local commit {local_commit}"
+                    ),
                 )
                 raise PublicationIndeterminateError(
                     "Git push завершён, однако remote commit не подтверждён"
                 )
-            verified = store.mark_remote_verified(operation.id, remote_sha)
+            verified = store.mark_remote_verified(
+                operation.id,
+                remote_sha,
+            )
             completed = store.mark_completed(verified.id)
-            lesson.transition(JobStatus.PUBLISHED)
-            return _result(completed, commit=remote_sha, idempotent=False)
+            _transition_published(lesson)
+            return _result(
+                completed,
+                commit=remote_sha,
+                idempotent=False,
+            )
         except Exception as exc:
             current = store.get(operation.id)
             if current.status == PublicationOperationStatus.PUSHING and local_commit:
                 try:
-                    remote_sha = _remote_head(repo, self.config.remote, plan.branch)
+                    remote_sha = _remote_head(
+                        repo,
+                        self.config.remote,
+                        plan.branch,
+                    )
                 except Exception:
                     store.mark_indeterminate(
                         operation.id,
@@ -699,10 +957,17 @@ class LessonPublisher:
                         "Результат публикации неизвестен; требуется reconciliation"
                     ) from exc
                 if remote_sha == local_commit:
-                    verified = store.mark_remote_verified(operation.id, remote_sha)
+                    verified = store.mark_remote_verified(
+                        operation.id,
+                        remote_sha,
+                    )
                     completed = store.mark_completed(verified.id)
-                    lesson.transition(JobStatus.PUBLISHED)
-                    return _result(completed, commit=remote_sha, idempotent=True)
+                    _transition_published(lesson)
+                    return _result(
+                        completed,
+                        commit=remote_sha,
+                        idempotent=True,
+                    )
                 if remote_sha == plan.expected_remote_sha:
                     store.mark_failed(
                         operation.id,
@@ -725,7 +990,13 @@ class LessonPublisher:
         finally:
             if worktree_path.exists():
                 try:
-                    run_git(repo, "worktree", "remove", "--force", str(worktree_path))
+                    run_git(
+                        repo,
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(worktree_path),
+                    )
                 finally:
                     if worktree_path.exists():
                         shutil.rmtree(worktree_path, ignore_errors=True)

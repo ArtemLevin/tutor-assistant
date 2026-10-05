@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Iterator
@@ -10,17 +11,29 @@ from pathlib import Path
 from uuid import uuid4
 
 from .atomic_io import atomic_write_text
+from .automatic_publication import automatic_publication_repository_path
 from .config import AppConfig
-from .content import ActivityLease, StudentContentService
-from .domain import ArtifactPaths, JobStatus, Lesson, PublicationInfo
+from .content import ActivityLease, StudentContentService, TranscriptRevision
+from .domain import (
+    ArtifactPaths,
+    JobStatus,
+    Lesson,
+    LessonProcessingMode,
+    PublicationInfo,
+)
 from .latex.remote import (
     LatexCompilationReservation,
     RemoteCompilationResult,
     RemoteLatexService,
     RemoteTexProbe,
 )
-from .publisher import ApprovedTranscriptPayload, LessonPublisher, PublicationResult
-from .store import LessonStore
+from .publisher import (
+    ApprovedTranscriptPayload,
+    LessonPublisher,
+    PublicationResult,
+    TranscriptPublicationPayload,
+)
+from .store import AutomaticPublicationJobConflictError, LessonStore
 from .transcription import TranscriptionResult, WhisperTranscriber
 
 
@@ -349,6 +362,48 @@ class LessonPipeline:
             student_transcript=student if student.is_file() else None,
         )
 
+    def _ensure_automatic_transcript_revision(
+        self,
+        lesson: Lesson,
+    ) -> TranscriptRevision | None:
+        if lesson.pipeline.processing_mode != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB:
+            return None
+        if not lesson.artifacts.cleaned_transcript or not lesson.artifacts.verified_transcript:
+            raise RuntimeError("Automatic transcription artifacts are incomplete")
+
+        cleaned_text = Path(lesson.artifacts.cleaned_transcript).read_text(encoding="utf-8")
+        if cleaned_text.startswith("\ufeff") or "\x00" in cleaned_text:
+            raise RuntimeError("Automatic transcript contains invalid text markers")
+        canonical_text = (
+            cleaned_text.replace("\r\n", "\n").replace("\r", "\n").rstrip() + "\n"
+        )
+        revisions = self.content_service.repository.list_transcript_revisions(lesson.lesson_id)
+        existing = next(
+            (
+                revision
+                for revision in revisions
+                if revision.created_by == "automatic-transcription"
+                and revision.content == canonical_text
+            ),
+            None,
+        )
+        if existing is None:
+            existing = self.content_service.save_transcript(
+                lesson.lesson_id,
+                canonical_text,
+                path=lesson.artifacts.verified_transcript,
+                created_by="automatic-transcription",
+            )
+
+        repository_path = automatic_publication_repository_path(lesson).as_posix()
+        self.store.ensure_automatic_publication_job(
+            lesson.lesson_id,
+            existing.revision_number,
+            existing.content_sha256,
+            repository_path,
+        )
+        return existing
+
     @staticmethod
     def _apply_transcription_result(
         lesson: Lesson,
@@ -389,6 +444,7 @@ class LessonPipeline:
                     lesson.lesson_id,
                 )
                 self._apply_transcription_result(lesson, audio, directory, existing)
+                self._ensure_automatic_transcript_revision(lesson)
                 lesson.transition(JobStatus.REVIEW_REQUIRED)
                 return self.save_state(
                     lesson,
@@ -425,6 +481,15 @@ class LessonPipeline:
                 lesson = self.save_state(lesson, "status", "error")
             except Exception:
                 logging.exception("Не удалось сохранить состояние ошибки транскрибации")
+            raise
+
+        try:
+            self._ensure_automatic_transcript_revision(lesson)
+        except Exception:
+            logging.exception(
+                "ASR artifacts persisted, but automatic transcript revision was not committed; "
+                "retry will reconcile without rerunning ASR"
+            )
             raise
 
         lesson.transition(JobStatus.REVIEW_REQUIRED)
@@ -464,6 +529,164 @@ class LessonPipeline:
     def publish(self, lesson: Lesson) -> PublicationResult:
         with self.content_service.activity("publication", lesson_id=lesson.lesson_id):
             return self._publish(lesson)
+
+    def reconcile_automatic_publication_intents(self) -> int:
+        stored_jobs = {
+            job.lesson_id: job
+            for job in self.store.list_automatic_publication_jobs()
+        }
+        reconciled = 0
+        for lesson in self.store.list(limit=1000):
+            if (
+                lesson.pipeline.processing_mode
+                != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+            ):
+                continue
+            revision = next(
+                (
+                    item
+                    for item in self.content_service.repository.list_transcript_revisions(
+                        lesson.lesson_id
+                    )
+                    if item.created_by == "automatic-transcription"
+                ),
+                None,
+            )
+            if revision is None:
+                continue
+            repository_path = automatic_publication_repository_path(lesson).as_posix()
+            existing = stored_jobs.get(lesson.lesson_id)
+            try:
+                job = self.store.ensure_automatic_publication_job(
+                    lesson.lesson_id,
+                    revision.revision_number,
+                    revision.content_sha256,
+                    repository_path,
+                )
+            except AutomaticPublicationJobConflictError as exc:
+                if existing is not None and existing.status != "published":
+                    self.store.update_automatic_publication_job(
+                        lesson.lesson_id,
+                        "conflict",
+                        error=str(exc),
+                    )
+                    reconciled += 1
+                continue
+
+            publication = lesson.publication
+            publication_matches = (
+                lesson.status == JobStatus.PUBLISHED
+                and publication is not None
+                and publication.remote_verified
+                and publication.repository_path == repository_path
+                and publication.content_sha256 == revision.content_sha256
+            )
+            if publication_matches and job.status != "published":
+                self.store.update_automatic_publication_job(
+                    lesson.lesson_id,
+                    "published",
+                    error=None,
+                    next_attempt_at=None,
+                )
+                reconciled += 1
+            elif existing is None:
+                reconciled += 1
+        return reconciled
+
+    def publish_automatic_transcript(
+        self,
+        lesson: Lesson,
+        *,
+        revision_number: int,
+        content_sha256: str,
+        repository_path: str,
+    ) -> PublicationResult:
+        with self.content_service.activity(
+            "automatic-publication",
+            lesson_id=lesson.lesson_id,
+        ):
+            content = self.content_service.get_lesson(lesson.lesson_id)
+            current = content.lesson
+            if (
+                current.pipeline.processing_mode
+                != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+            ):
+                raise RuntimeError(
+                    "Automatic publication requires AUTO_TRANSCRIPT_GITHUB mode"
+                )
+            if current.status not in {
+                JobStatus.REVIEW_REQUIRED,
+                JobStatus.PUBLISHED,
+            }:
+                raise RuntimeError(
+                    "Automatic publication requires a completed automatic transcript"
+                )
+            expected_path = automatic_publication_repository_path(current).as_posix()
+            if repository_path != expected_path:
+                raise RuntimeError("Automatic publication path does not match lesson policy")
+
+            revision = next(
+                (
+                    item
+                    for item in self.content_service.repository.list_transcript_revisions(
+                        current.lesson_id
+                    )
+                    if item.revision_number == revision_number
+                ),
+                None,
+            )
+            if revision is None or revision.lesson_id != current.lesson_id:
+                raise RuntimeError("Automatic transcript revision was not found")
+            if revision.created_by != "automatic-transcription":
+                raise RuntimeError(
+                    "Automatic publication requires an automatic-transcription revision"
+                )
+            calculated_sha = hashlib.sha256(
+                revision.content.encode("utf-8")
+            ).hexdigest()
+            if (
+                calculated_sha != revision.content_sha256
+                or content_sha256 != revision.content_sha256
+            ):
+                raise RuntimeError("Automatic transcript revision SHA-256 mismatch")
+
+            payload = TranscriptPublicationPayload(
+                lesson_id=current.lesson_id,
+                repository_path=repository_path,
+                content=revision.content,
+                content_sha256=revision.content_sha256,
+                revision_number=revision.revision_number,
+            )
+            target = LessonPublisher(self.config.repository).publish_payload(
+                current,
+                self.lesson_dir(current),
+                payload,
+                reject_existing_mismatch=True,
+            )
+            current.publication = PublicationInfo(
+                branch=target.branch,
+                repository_path=target.repository_path,
+                commit=target.commit,
+                operation_id=target.operation_id,
+                repository_full_name=target.repository_full_name,
+                remote_name=target.remote_name,
+                previous_remote_commit=target.previous_remote_commit,
+                content_sha256=target.content_sha256,
+                remote_verified=target.remote_verified,
+                idempotent=target.idempotent,
+                published_at=target.published_at,
+                pr_url=target.pr_url,
+                warnings=list(target.warnings),
+            )
+            stored = self.save_state(
+                current,
+                "publication",
+                "status",
+                "error",
+                expected_row_version=content.row_version,
+            )
+            self._replace_lesson(lesson, stored)
+            return target
 
     def _publish(self, lesson: Lesson) -> PublicationResult:
         content = self.content_service.get_lesson(lesson.lesson_id)

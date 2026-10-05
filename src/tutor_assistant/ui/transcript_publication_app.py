@@ -295,6 +295,21 @@ class MainWindow(ConcurrentMainWindow):
         self.student_content_page.refresh_if_loaded()
         self._refresh_teacher_cockpit()
 
+    def _background_publication_ready(self, job_id: str, result) -> None:
+        super()._background_publication_ready(job_id, result)
+        self.student_content_page.refresh_if_loaded()
+        self._refresh_teacher_cockpit()
+
+    def _background_publication_failed(
+        self,
+        job_id: str,
+        error: BaseException,
+        details: str,
+    ) -> None:
+        super()._background_publication_failed(job_id, error, details)
+        self.student_content_page.refresh_if_loaded()
+        self._refresh_teacher_cockpit()
+
     def approve_transcript(self) -> None:
         super().approve_transcript()
         if not self.lesson or self.lesson.status != JobStatus.READY:

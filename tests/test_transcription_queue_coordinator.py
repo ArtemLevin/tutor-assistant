@@ -10,8 +10,9 @@ from tutor_assistant.application.transcription_queue import (
     TranscriptionAudioMissingError,
     TranscriptionPumpContext,
     TranscriptionQueueCoordinator,
+    should_enqueue_transcription,
 )
-from tutor_assistant.domain import JobStatus, Lesson, Student
+from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 
 
 def lesson(identifier: str, *, status: JobStatus = JobStatus.DRAFT) -> Lesson:
@@ -176,3 +177,17 @@ def test_snapshot_contains_ui_neutral_queue_state(tmp_path: Path) -> None:
         ("waiting", "ready"),
         ("ready", "waiting"),
     ]
+
+
+def test_auto_processing_mode_requires_transcription_even_when_profile_disables_it() -> None:
+    source = lesson("automatic", status=JobStatus.RECORDED)
+    source.pipeline.processing_mode = LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+
+    assert should_enqueue_transcription(source, profile_auto_transcribe=False)
+
+
+def test_manual_processing_preserves_profile_auto_transcribe_behavior() -> None:
+    source = lesson("manual", status=JobStatus.RECORDED)
+
+    assert should_enqueue_transcription(source, profile_auto_transcribe=True)
+    assert not should_enqueue_transcription(source, profile_auto_transcribe=False)

@@ -11,6 +11,7 @@ from ..application.recording_stop import (
     RecordingStopState,
     StopRecordingUseCase,
 )
+from ..application.transcription_queue import should_enqueue_transcription
 from ..audio_files import finalize_readable_audio
 from ..domain import Lesson
 from ..recording import RecordingResult
@@ -149,6 +150,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self.quick_start_button.setText("Начать занятие")
+        self._reset_quick_processing_selection(clear_selection=True)
         self._set_recording_panel_phase(RecordingPanelPhase.SAVED)
 
         warnings: list[str] = []
@@ -178,7 +180,10 @@ class MainWindow(AudioResilientMainWindow):
         self._recording_stop_started = False
         self.recorder = None
         self.recording_lesson = None
-        if self._quick_auto_transcribe_active:
+        if should_enqueue_transcription(
+            recorded_lesson,
+            profile_auto_transcribe=self._quick_auto_transcribe_active,
+        ):
             self._quick_auto_transcribe_active = False
             self._enqueue_transcription(recorded_lesson, result.mixed_file)
             self._prepare_next_lesson()
@@ -206,6 +211,7 @@ class MainWindow(AudioResilientMainWindow):
         self.test_devices_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=True)
         self._refresh_quick_readiness()
         self._set_recording_panel_phase(RecordingPanelPhase.RECOVERY_REQUIRED)
         self._set_status("Запись сохранена частично; доступно восстановление", "error")
@@ -230,6 +236,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=True)
         self._refresh_quick_readiness()
         self._set_recording_panel_phase(RecordingPanelPhase.FAILED)
         self._set_status("Аудио сохранено, оформление занятия завершилось с ошибкой", "error")

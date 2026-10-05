@@ -404,6 +404,36 @@ def _cloud_processing_privacy(db: sqlite3.Connection) -> None:
     )
 
 
+def _automatic_publication_jobs(db: sqlite3.Connection) -> None:
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS automatic_publication_jobs (
+            lesson_id TEXT PRIMARY KEY,
+            revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+            content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+            repository_path TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'waiting',
+                'running',
+                'retry_required',
+                'published',
+                'conflict',
+                'blocked'
+            )),
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            error TEXT,
+            next_attempt_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(lesson_id) REFERENCES lessons(lesson_id) ON DELETE CASCADE
+        )
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS automatic_publication_jobs_status_due "
+        "ON automatic_publication_jobs(status, next_attempt_at, updated_at)"
+    )
+
+
 MIGRATIONS = (
     Migration(1, "student_content_domain", _content_domain),
     Migration(2, "student_content_indexes", _content_indexes),
@@ -415,6 +445,7 @@ MIGRATIONS = (
     Migration(8, "transcript_normalization", _transcript_normalization),
     Migration(9, "resumable_normalization_chunks", _resumable_normalization_chunks),
     Migration(10, "cloud_processing_privacy", _cloud_processing_privacy),
+    Migration(11, "automatic_publication_jobs", _automatic_publication_jobs),
 )
 
 

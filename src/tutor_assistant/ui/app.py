@@ -51,6 +51,9 @@ from ..application import (
     NormalizationCoordinator,
     NormalizationManualStartContext,
     NormalizationStartBlock,
+    PublicationFailureDisposition,
+    PublicationPumpContext,
+    PublicationQueueCoordinator,
     RecordingHealthAction,
     RecordingHealthMonitor,
     RecordingHealthPolicy,
@@ -66,7 +69,7 @@ from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
 from ..crash import read_crash_marker
 from ..crm import CrmStore
-from ..domain import JobStatus, Lesson
+from ..domain import JobStatus, Lesson, LessonProcessingMode
 from ..logging_config import (
     configure_logging,
     enable_native_fault_handler,
@@ -125,6 +128,7 @@ from .normalization_provider import (
 from .normalization_worker import NormalizationWorker
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
+from .publication_worker import PublicationWorker
 from .recording_presentation import (
     RecordingPanelPhase,
     RecordingTickPresentation,
@@ -209,6 +213,7 @@ class MainWindow(QMainWindow):
         self._recording_stop_started = False
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
+        self._quick_launch_active = False
         self._quick_countdown_remaining = 0
         self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
@@ -216,6 +221,9 @@ class MainWindow(QMainWindow):
         self.transcription_queue_coordinator = TranscriptionQueueCoordinator(
             self.pipeline.store,
             retry_state_writer=self._persist_transcription_retry_state,
+        )
+        self.publication_queue_coordinator = PublicationQueueCoordinator(
+            self.pipeline.store,
         )
         self._loading_segments = False
         self._summary_dirty = False
@@ -227,6 +235,15 @@ class MainWindow(QMainWindow):
         self.transcription_worker.became_idle.connect(self._maybe_finish_shutdown)
         self.transcription_worker.became_idle.connect(self._pump_auto_normalization)
         self.transcription_worker.finished.connect(self._maybe_finish_shutdown)
+        self.publication_worker = PublicationWorker(self.pipeline)
+        self.publication_worker.succeeded.connect(self._background_publication_ready)
+        self.publication_worker.failed.connect(self._background_publication_failed)
+        self.publication_worker.became_idle.connect(self._maybe_finish_shutdown)
+        self.publication_worker.became_idle.connect(self._pump_publication_queue)
+        self.publication_worker.finished.connect(self._maybe_finish_shutdown)
+        self.publication_retry_timer = QTimer(self)
+        self.publication_retry_timer.setSingleShot(True)
+        self.publication_retry_timer.timeout.connect(self._pump_publication_queue)
         self.playback_backend = QtPlaybackBackend(self)
         self.playback_scheduler = QtStopScheduler(self)
         self.playback_controller = PlaybackController(
@@ -249,6 +266,7 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
         self._build()
         self.transcription_worker.start()
+        self.publication_worker.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.draft_timer = QTimer(self)
@@ -721,15 +739,36 @@ class MainWindow(QMainWindow):
             force_status=True,
         )
 
+    def _restore_automatic_publication_jobs(self) -> int:
+        reconciled = self.pipeline.reconcile_automatic_publication_intents()
+        lessons = self.pipeline.store.list(limit=1000)
+        restored = self.publication_queue_coordinator.restore_history(
+            lessons,
+            self.pipeline.store.list_automatic_publication_jobs(),
+        )
+        if reconciled:
+            logging.info(
+                "event=automatic_publication_reconciled count=%d",
+                reconciled,
+            )
+        return restored
+
     def _restore_background_jobs(self) -> None:
-        restored = self.transcription_queue_coordinator.restore_history(
-            self.pipeline.store.list(limit=1000),
+        lessons = self.pipeline.store.list(limit=1000)
+        restored_transcriptions = self.transcription_queue_coordinator.restore_history(
+            lessons,
             self.pipeline.store.list_transcription_jobs(),
         )
+        restored_publications = self._restore_automatic_publication_jobs()
+        restored = restored_transcriptions + restored_publications
         if restored:
             self._update_transcription_queue_ui()
-            self._pump_transcription_queue()
-            self._set_status(f"Восстановлена история обработки · {restored}", "working")
+            self._set_status(
+                f"Восстановлена история фоновой обработки · {restored}",
+                "working",
+            )
+        self._pump_transcription_queue()
+        self._pump_publication_queue()
 
     def _load_lesson(self, lesson: Lesson) -> None:
         self.lesson = lesson
@@ -816,6 +855,14 @@ class MainWindow(QMainWindow):
         self.quick_topic = QLineEdit(self.config.quick_start.last_topic)
         self.quick_topic.setPlaceholderText("Тема занятия")
         self.quick_topic.setToolTip("Кратко укажите тему — она попадёт в карточку занятия")
+        self.quick_automatic_pipeline = QCheckBox(
+            "Автоматически транскрибировать и отправить на GitHub"
+        )
+        self.quick_automatic_pipeline.setChecked(False)
+        self.quick_automatic_pipeline.setToolTip(
+            "После завершения записи сервис автоматически транскрибирует занятие "
+            "и отправит транскрипт в приватный GitHub-репозиторий."
+        )
 
         surface = QFrame()
         surface.setObjectName("quickSurface")
@@ -865,6 +912,7 @@ class MainWindow(QMainWindow):
         surface_layout.addWidget(self.quick_readiness_text)
         surface_layout.addWidget(self.quick_student)
         surface_layout.addWidget(self.quick_topic)
+        surface_layout.addWidget(self.quick_automatic_pipeline)
 
         self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
         self.quick_start_button.setObjectName("quickStartButton")
@@ -1041,6 +1089,14 @@ class MainWindow(QMainWindow):
         self.config.quick_start.last_topic = self.quick_topic.text().strip()
         self.config.save(self.config_path)
 
+    def _reset_quick_processing_selection(self, *, clear_selection: bool) -> None:
+        self._quick_launch_active = False
+        if not hasattr(self, "quick_automatic_pipeline"):
+            return
+        self.quick_automatic_pipeline.setEnabled(True)
+        if clear_selection:
+            self.quick_automatic_pipeline.setChecked(False)
+
     def _quick_start_clicked(self) -> None:
         if self.quick_countdown_timer.isActive():
             self._cancel_quick_countdown()
@@ -1064,6 +1120,7 @@ class MainWindow(QMainWindow):
                 "\n".join(item.detail for item in readiness.blockers),
             )
             return
+        self._quick_launch_active = True
         self._sync_quick_to_lesson()
         profile = selected_profile(self.config, self.quick_profile.currentData())
         self._quick_auto_transcribe_active = profile.auto_transcribe
@@ -1097,6 +1154,7 @@ class MainWindow(QMainWindow):
         self.quick_countdown_timer.stop()
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=False)
         self._update_scheduled_occurrence("planned", clear=True)
         self._set_status("Быстрый запуск отменён", "warning")
         self._refresh_quick_readiness()
@@ -1407,7 +1465,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             self._page_heading(
                 "Фоновая обработка",
-                "Записывайте следующие занятия, пока Whisper последовательно обрабатывает очередь.",
+                "Записывайте следующие занятия, пока транскрибация и GitHub-публикация "
+                "последовательно обрабатывают durable очереди.",
             )
         )
         summary = QFrame()
@@ -1428,7 +1487,10 @@ class MainWindow(QMainWindow):
         self.processing_list.itemDoubleClicked.connect(self._open_processing_item)
         layout.addWidget(self.processing_list, 1)
         processing_actions = QHBoxLayout()
-        hint = QLabel("Выберите задание, затем откройте готовый транскрипт или повторите ошибку")
+        hint = QLabel(
+            "Выберите задание: откройте готовый результат или повторите "
+            "остановленную транскрибацию/публикацию"
+        )
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         processing_actions.addWidget(hint, 1)
@@ -1542,12 +1604,19 @@ class MainWindow(QMainWindow):
             raise ValueError("Укажите тему занятия")
         selected = next(item for item in self.students if item.id == self.student.currentData())
         value = self.lesson_date.date()
-        return Lesson(
+        lesson = Lesson(
             student=selected,
             subject=subject_value(self.subject.currentData() or self.subject.currentText()),
             topic=self.topic.text().strip(),
             lesson_date=date(value.year(), value.month(), value.day()),
         )
+        if self._quick_launch_active:
+            lesson.pipeline.processing_mode = (
+                LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+                if self.quick_automatic_pipeline.isChecked()
+                else LessonProcessingMode.MANUAL
+            )
+        return lesson
 
     def _create_lesson_from_form(self) -> Lesson:
         """Persist a form-backed Lesson for non-recording workflows such as import."""
@@ -1661,6 +1730,8 @@ class MainWindow(QMainWindow):
         self._update_transcription_queue_ui()
         self._set_status(f"Транскрипт готов · {lesson.student.full_name}", "warning")
         logging.info("Фоновая транскрибация завершена: lesson=%s", lesson.lesson_id)
+        self._restore_automatic_publication_jobs()
+        self._pump_publication_queue()
         self._pump_transcription_queue()
         QTimer.singleShot(0, self._pump_auto_normalization)
 
@@ -1671,22 +1742,146 @@ class MainWindow(QMainWindow):
         self._set_status(f"Ошибка транскрибации · {job.lesson.student.full_name}", "error")
         self._pump_transcription_queue()
 
+    def _pump_publication_queue(self) -> None:
+        if self._shutdown_requested:
+            return
+        submission = self.publication_queue_coordinator.pump(
+            PublicationPumpContext(shutdown_requested=self._shutdown_requested)
+        )
+        if submission is None:
+            self._schedule_publication_retry()
+            return
+        self.publication_retry_timer.stop()
+        self._update_transcription_queue_ui()
+        self.publication_worker.submit(submission)
+
+    def _schedule_publication_retry(self) -> None:
+        if self._shutdown_requested:
+            self.publication_retry_timer.stop()
+            return
+        delay_ms = self.publication_queue_coordinator.next_retry_delay_ms()
+        if delay_ms is None:
+            self.publication_retry_timer.stop()
+            return
+        self.publication_retry_timer.start(delay_ms)
+
+    def _background_publication_ready(self, job_id: str, result) -> None:
+        job = self.publication_queue_coordinator.published(job_id)
+        self._update_transcription_queue_ui()
+        self._set_status(
+            f"Транскрипт опубликован · {job.lesson.student.full_name}",
+            "success",
+        )
+        logging.info(
+            "Automatic transcript publication completed: lesson=%s commit=%s path=%s",
+            job_id,
+            result.commit,
+            result.repository_path,
+        )
+        self._pump_publication_queue()
+
+    def _background_publication_failed(
+        self,
+        job_id: str,
+        error: BaseException,
+        details: str,
+    ) -> None:
+        job = self.publication_queue_coordinator.get(job_id)
+        if job is None:
+            logging.error(
+                "Automatic publication failed for unknown job: lesson=%s\n%s",
+                job_id,
+                details,
+            )
+            return
+        decision = self.publication_queue_coordinator.resolve_failure(
+            job_id,
+            error,
+            details,
+        )
+        if decision.disposition == PublicationFailureDisposition.RETRY_REQUIRED:
+            delay = decision.retry_after_seconds
+            self._set_status(
+                f"GitHub временно недоступен · повтор через {delay} с",
+                "warning",
+            )
+        elif decision.disposition == PublicationFailureDisposition.CONFLICT:
+            self._set_status(
+                "Автопубликация остановлена: удалённый transcript отличается",
+                "error",
+            )
+        else:
+            self._set_status(
+                "Автопубликация заблокирована; исправьте настройку и повторите",
+                "error",
+            )
+        logging.error(
+            "Automatic transcript publication failed: lesson=%s disposition=%s\n%s",
+            job_id,
+            decision.disposition.value,
+            details,
+        )
+        self._update_transcription_queue_ui()
+        self._schedule_publication_retry()
+        self._pump_publication_queue()
+
     def _update_transcription_queue_ui(self) -> None:
         if not hasattr(self, "processing_list"):
             return
+        transcription_snapshot = self.transcription_queue_coordinator.snapshot()
         presentation = build_transcription_queue_presentation(
-            self.transcription_queue_coordinator.snapshot()
+            transcription_snapshot
         )
+        publication_snapshot = self.publication_queue_coordinator.snapshot()
+        publication_labels = {
+            "waiting": "Ожидает публикации",
+            "running": "Публикуется",
+            "retry_required": "Повтор публикации",
+            "published": "Опубликован",
+            "conflict": "Конфликт",
+            "blocked": "Заблокирован",
+        }
         self.processing_list.clear()
         for row in presentation.rows:
             item = QListWidgetItem(row.text)
             item.setData(256, row.job_id)
+            item.setData(257, "transcription")
             if row.tooltip:
                 item.setToolTip(row.tooltip)
             self.processing_list.addItem(item)
-        self.processing_summary.setText(presentation.summary_text)
-        self.quick_queue_button.setText(presentation.badge_text)
-        self.quick_queue_button.setToolTip(presentation.badge_tooltip)
+        for entry in reversed(publication_snapshot.entries):
+            item = QListWidgetItem(
+                f"{publication_labels.get(entry.status, entry.status)}  ·  "
+                f"{entry.student_name}  ·  {entry.topic}"
+            )
+            item.setData(256, entry.job_id)
+            item.setData(257, "publication")
+            if entry.error:
+                item.setToolTip(entry.error[-1500:])
+            self.processing_list.addItem(item)
+
+        attention = sum(
+            entry.status in {"blocked", "conflict"}
+            for entry in publication_snapshot.entries
+        )
+        publication_done = sum(
+            entry.status == "published"
+            for entry in publication_snapshot.entries
+        )
+        self.processing_summary.setText(
+            f"Транскрипции в обработке: {transcription_snapshot.unfinished_count} · "
+            f"готовы к проверке: {transcription_snapshot.ready_count} · "
+            f"публикации в обработке: {publication_snapshot.unfinished_count} · "
+            f"опубликованы: {publication_done} · требуют внимания: {attention}"
+        )
+        visible_count = len(presentation.rows) + len(publication_snapshot.entries)
+        self.quick_queue_button.setText(f"≡ {visible_count}")
+        self.quick_queue_button.setToolTip(
+            f"Транскрипции в обработке: {transcription_snapshot.unfinished_count}\n"
+            f"Публикации в обработке: {publication_snapshot.unfinished_count}\n"
+            f"Требуют внимания: {attention}\n"
+            "Нажмите, чтобы открыть очередь"
+        )
 
     def _show_processing_queue(self) -> None:
         self._set_mode("detailed")
@@ -1711,8 +1906,53 @@ class MainWindow(QMainWindow):
         self._pump_transcription_queue()
         return True
 
+    def _retry_automatic_publication_job(self, job_id: str) -> bool:
+        try:
+            self.publication_queue_coordinator.retry(job_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Автопубликация", str(exc))
+            return False
+        self._update_transcription_queue_ui()
+        self._pump_publication_queue()
+        return True
+
+    def _open_automatic_publication_item(self, job_id: str) -> None:
+        job = self.publication_queue_coordinator.get(job_id)
+        if job is None:
+            return
+        status = job.status.value
+        if status == "published":
+            persisted = self.pipeline.store.get(job_id)
+            if persisted is not None:
+                self._load_lesson(persisted)
+            return
+        if status == "conflict":
+            QMessageBox.warning(
+                self,
+                "Конфликт автопубликации",
+                "В целевом GitHub-пути уже находится другой транскрипт. "
+                "Автоматическая перезапись запрещена. Разрешите конфликт вручную.",
+            )
+            return
+        if status in {"blocked", "retry_required"}:
+            answer = QMessageBox.question(
+                self,
+                "Автопубликация",
+                f"{job.error or 'Публикация остановлена'}\n\nПовторить публикацию сейчас?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Yes:
+                self._retry_automatic_publication_job(job_id)
+            return
+        self._set_status("Автопубликация ещё выполняется", "working")
+
     def _open_processing_item(self, item: QListWidgetItem) -> None:
-        job = self.transcription_queue_coordinator.get(str(item.data(256)))
+        job_id = str(item.data(256))
+        if item.data(257) == "publication":
+            self._open_automatic_publication_item(job_id)
+            return
+        job = self.transcription_queue_coordinator.get(job_id)
         if job is None:
             return
         if (self.recorder and self.recorder.active) or self._recording_stop_started:
@@ -2927,6 +3167,7 @@ class MainWindow(QMainWindow):
             self.test_devices_button.setEnabled(True)
             self._quick_start_pending = False
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self.quick_countdown_timer.stop()
             self._refresh_quick_readiness()
         elif purpose == "publish":
@@ -2943,10 +3184,17 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         has_recording = bool(self.recorder and self.recorder.active) or self._recording_stop_started
-        has_workers = any(worker.isRunning() for worker in self.workers) or self.transcription_worker.busy
+        has_workers = (
+            any(worker.isRunning() for worker in self.workers)
+            or self.transcription_worker.busy
+            or self.publication_worker.busy
+        )
         if not has_recording and not has_workers:
             self.transcription_worker.shutdown()
-            if self.transcription_worker.wait(1000):
+            self.publication_worker.shutdown()
+            transcription_stopped = self.transcription_worker.wait(1000)
+            publication_stopped = self.publication_worker.wait(1000)
+            if transcription_stopped and publication_stopped:
                 event.accept()
             else:
                 self._shutdown_requested = True
@@ -2956,7 +3204,8 @@ class MainWindow(QMainWindow):
             self,
             "Безопасное завершение",
             "Сначала завершить запись и дождаться текущих фоновых операций? "
-            "Ожидающие транскрибации сохранятся и продолжатся при следующем запуске.",
+            "Ожидающие транскрибации и публикации сохранятся и продолжатся "
+            "при следующем запуске.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Yes,
         )
@@ -2968,6 +3217,8 @@ class MainWindow(QMainWindow):
         if self._normalization_cancellation is not None:
             self._normalization_cancellation.cancel()
         self.transcription_worker.shutdown()
+        self.publication_worker.shutdown()
+        self.publication_retry_timer.stop()
         self.timer.stop()
         self.latex_poll_timer.stop()
         self.content_maintenance_timer.stop()
@@ -2984,7 +3235,12 @@ class MainWindow(QMainWindow):
             return
         recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
         workers_busy = any(worker.isRunning() for worker in self.workers)
-        if recording_busy or workers_busy or self.transcription_worker.isRunning():
+        if (
+            recording_busy
+            or workers_busy
+            or self.transcription_worker.isRunning()
+            or self.publication_worker.isRunning()
+        ):
             return
         self._shutdown_ready = True
         QTimer.singleShot(0, self.close)
