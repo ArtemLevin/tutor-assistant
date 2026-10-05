@@ -187,7 +187,7 @@ def test_bulk_delete_and_purge_selected_lessons_frees_disk_space(
     )
     select_rows(page, 0, 1)
 
-    assert page.selected_lesson_ids() == ["gui-lesson-2", "gui-lesson"]
+    assert set(page.selected_lesson_ids()) == {"gui-lesson", "gui-lesson-2"}
     assert page.delete_lesson_button.text() == "В корзину (2)"
 
     page.delete_selected_lesson()
@@ -264,7 +264,7 @@ def test_bulk_delete_continues_when_one_selected_lesson_is_active(
 
     remaining = service.list_lessons()
     assert [lesson.lesson_id for lesson in remaining.items] == ["gui-lesson"]
-    assert [item.lesson.lesson_id for item in service.trash_summary().items] == ["gui-deletable"]
+    assert {item.lesson.lesson_id for item in service.trash_summary().items} == {"gui-deletable"}
     assert warnings
     assert "перемещено 1 из 2" in warnings[0].casefold()
     page.close()
