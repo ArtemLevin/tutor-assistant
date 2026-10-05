@@ -8,6 +8,7 @@ from tutor_assistant.application.publication_queue import (
     PublicationFailureDisposition,
     PublicationPumpContext,
     PublicationQueueCoordinator,
+    PublicationSubmission,
     classify_publication_failure,
 )
 from tutor_assistant.domain import Lesson, Student
@@ -17,6 +18,7 @@ from tutor_assistant.publisher import (
     PublicationBlockedError,
     PublicationConflictError,
 )
+from tutor_assistant.ui.publication_worker import PublicationWorker
 
 
 def lesson(identifier: str) -> Lesson:
@@ -153,3 +155,86 @@ def test_publication_failure_backoff_is_bounded() -> None:
     ]
 
     assert delays == [30, 120, 600, 1800]
+
+
+def test_publication_worker_executes_exact_immutable_submission() -> None:
+    observed = {}
+    results = []
+    source = lesson("worker")
+    item = PublicationSubmission(
+        job_id=source.lesson_id,
+        lesson=source,
+        revision_number=3,
+        content_sha256="a" * 64,
+        repository_path="students/worker/transcript/04.10.26.txt",
+        attempts=1,
+    )
+
+    class Pipeline:
+        def publish_automatic_transcript(
+            self,
+            current,
+            *,
+            revision_number,
+            content_sha256,
+            repository_path,
+        ):
+            observed.update(
+                lesson=current,
+                revision_number=revision_number,
+                content_sha256=content_sha256,
+                repository_path=repository_path,
+            )
+            return "published"
+
+    worker = PublicationWorker(Pipeline())
+    worker.succeeded.connect(
+        lambda job_id, result: results.append((job_id, result))
+    )
+    worker.submit(item)
+    worker.shutdown()
+
+    worker.run()
+
+    assert observed == {
+        "lesson": item.lesson,
+        "revision_number": item.revision_number,
+        "content_sha256": item.content_sha256,
+        "repository_path": item.repository_path,
+    }
+    assert results == [(item.job_id, "published")]
+    assert not worker.busy
+
+
+def test_publication_worker_preserves_exception_type_for_failure_policy() -> None:
+    failures = []
+    source = lesson("worker-failure")
+    item = PublicationSubmission(
+        job_id=source.lesson_id,
+        lesson=source,
+        revision_number=1,
+        content_sha256="b" * 64,
+        repository_path="students/worker-failure/transcript/04.10.26.txt",
+        attempts=1,
+    )
+
+    class Pipeline:
+        def publish_automatic_transcript(self, *_args, **_kwargs):
+            raise RuntimeError("invalid publication configuration")
+
+    worker = PublicationWorker(Pipeline())
+    worker.failed.connect(
+        lambda job_id, error, details: failures.append((job_id, error, details))
+    )
+    worker.submit(item)
+    worker.shutdown()
+
+    worker.run()
+
+    assert len(failures) == 1
+    job_id, error, details = failures[0]
+    assert job_id == item.job_id
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "invalid publication configuration"
+    assert "RuntimeError: invalid publication configuration" in details
+    assert not worker.busy
