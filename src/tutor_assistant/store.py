@@ -188,6 +188,96 @@ class LessonStore:
 
         return self._retry(operation)
 
+    def repair_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        revision_number: int,
+        content_sha256: str,
+        repository_path: str,
+    ) -> StoredAutomaticPublicationJob:
+        """Replace a legacy invalid immutable payload before publication starts."""
+
+        def operation() -> StoredAutomaticPublicationJob:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(lesson_id)
+                expected = (
+                    expected_revision_number,
+                    expected_content_sha256,
+                    expected_repository_path,
+                )
+                actual = (
+                    int(row["revision_number"]),
+                    str(row["content_sha256"]),
+                    str(row["repository_path"]),
+                )
+                if actual != expected:
+                    raise AutomaticPublicationJobConflictError(
+                        "Automatic publication intent changed before repair"
+                    )
+                if str(row["status"]) in {"running", "published"}:
+                    raise AutomaticPublicationJobConflictError(
+                        "Automatic publication intent cannot be repaired after publication starts"
+                    )
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET revision_number=?,
+                        content_sha256=?,
+                        repository_path=?,
+                        status='waiting',
+                        attempts=0,
+                        error=NULL,
+                        next_attempt_at=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status NOT IN ('running', 'published')
+                    """,
+                    (
+                        revision_number,
+                        content_sha256,
+                        repository_path,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise AutomaticPublicationJobConflictError(
+                        "Automatic publication intent changed before repair"
+                    )
+                repaired = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert repaired is not None
+                return StoredAutomaticPublicationJob(**dict(repaired))
+
+        return self._retry(operation)
+
     def update_automatic_publication_job(
         self,
         lesson_id: str,
