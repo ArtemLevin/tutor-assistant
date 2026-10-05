@@ -400,6 +400,70 @@ class LessonStore:
 
         return self._retry(operation)
 
+    def update_inactive_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        status: str,
+        error: str | None,
+        next_attempt_at: str | None = None,
+    ) -> StoredAutomaticPublicationJob | None:
+        """CAS-update an inactive publication job without stealing a live owner."""
+
+        if status not in {"waiting", "retry_required", "conflict", "blocked"}:
+            raise ValueError("Inactive publication update requires an inactive target status")
+
+        def operation() -> StoredAutomaticPublicationJob | None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status=?,
+                        error=?,
+                        next_attempt_at=?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status NOT IN ('running', 'published')
+                    """,
+                    (
+                        status,
+                        error,
+                        next_attempt_at,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    exists = db.execute(
+                        "SELECT 1 FROM automatic_publication_jobs WHERE lesson_id=?",
+                        (lesson_id,),
+                    ).fetchone()
+                    if exists is None:
+                        raise KeyError(lesson_id)
+                    return None
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert row is not None
+                return StoredAutomaticPublicationJob(**dict(row))
+
+        return self._retry(operation)
+
     def update_automatic_publication_job(
         self,
         lesson_id: str,
