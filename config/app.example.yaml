@@ -25,15 +25,10 @@ repository:
   repository_full_name: owner/students-pages
 
 # Optional dedicated target for AUTO_TRANSCRIPT_GITHUB.
-# If omitted, automatic publication falls back to "repository" and still
+# Leave null until a separate PRIVATE repository is cloned and configured.
+# If null/omitted, automatic publication falls back to "repository" and still
 # requires that target to be PRIVATE.
-automatic_transcript_repository:
-  students_repo: ../students-transcripts
-  remote: origin
-  base_branch: main
-  push: true
-  use_worktree: true
-  repository_full_name: owner/private-students-transcripts
+automatic_transcript_repository: null
 
 latex:
   enabled: true
