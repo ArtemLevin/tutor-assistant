@@ -530,3 +530,53 @@ def test_startup_reconciliation_recreates_missing_publication_intent(
     assert restored is not None
     assert restored.status == "waiting"
     assert restored.repository_path == "students/student/transcript/13.07.26.txt"
+
+
+def test_startup_reconciliation_does_not_create_job_for_empty_revision(tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    empty_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt",
+        created_by="automatic-transcription",
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    assert empty_revision.content == "\n"
+    assert reconciled == 0
+    assert pipeline.store.get_automatic_publication_job(lesson.lesson_id) is None
+
+
+def test_startup_reconciliation_blocks_existing_empty_publication_job(tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    empty_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt",
+        created_by="automatic-transcription",
+    )
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        empty_revision.revision_number,
+        empty_revision.content_sha256,
+        "students/student/transcript/13.07.26.txt",
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    stored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 1
+    assert stored is not None
+    assert stored.status == "blocked"
+    assert "транскрипт пуст" in (stored.error or "")
