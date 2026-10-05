@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 import tutor_assistant.pipeline as pipeline_module
-from tutor_assistant.config import AppConfig
+from tutor_assistant.config import AppConfig, RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.publisher import PublicationResult
@@ -233,6 +233,16 @@ def test_automatic_publication_uses_exact_durable_revision(
     tmp_path,
 ) -> None:
     config = AppConfig(workspace=tmp_path)
+    config.repository = RepositoryConfig(
+        students_repo=tmp_path / "public-pages",
+        repository_full_name="ArtemLevin/students-26-27",
+        push=True,
+    )
+    config.automatic_transcript_repository = RepositoryConfig(
+        students_repo=tmp_path / "private-transcripts",
+        repository_full_name="ArtemLevin/private-student-transcripts",
+        push=True,
+    )
     config.recording.dual_channel_transcription = False
     pipeline = LessonPipeline(config)
     lesson = _recorded_lesson(
@@ -247,8 +257,8 @@ def test_automatic_publication_uses_exact_durable_revision(
     observed = {}
 
     class FakePublisher:
-        def __init__(self, _config) -> None:
-            pass
+        def __init__(self, publisher_config) -> None:
+            observed["publisher_config"] = publisher_config
 
         def publish_payload(
             self,
@@ -280,6 +290,11 @@ def test_automatic_publication_uses_exact_durable_revision(
     )
 
     payload = observed["payload"]
+    assert observed["publisher_config"] is config.automatic_transcript_repository
+    assert (
+        observed["publisher_config"].repository_full_name
+        == "ArtemLevin/private-student-transcripts"
+    )
     assert observed["reject_existing_mismatch"] is True
     assert payload.revision_number == job.revision_number
     assert payload.content_sha256 == job.content_sha256
