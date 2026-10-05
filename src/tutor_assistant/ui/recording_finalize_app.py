@@ -129,6 +129,24 @@ class MainWindow(AudioResilientMainWindow):
             self._sync_parallel_review_ui()
             self._maybe_finish_shutdown()
 
+    def _prepare_next_lesson(self) -> None:
+        """Reset recording controls after a completed background-processing lesson."""
+
+        self.recording_lesson = None
+        if self.lesson is None:
+            self.audio_path.clear()
+        self.topic.clear()
+        self.quick_topic.clear()
+        self.config.quick_start.last_topic = ""
+        self.config.save(self.config_path)
+        self.duration.setText("00:00:00")
+        self._set_recording_panel_phase(RecordingPanelPhase.READY)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.transcribe_button.setEnabled(True)
+        self.quick_start_button.setText("Начать занятие")
+        self._refresh_quick_readiness()
+
     def _present_recording_completed(
         self,
         outcome: RecordingStopOutcome,
@@ -180,6 +198,10 @@ class MainWindow(AudioResilientMainWindow):
         self._recording_stop_started = False
         self.recorder = None
         self.recording_lesson = None
+        # The recording is already durably finalized at this point. Release the
+        # application workflow before optional queue/presentation work so a later
+        # UI failure cannot leave the next recording permanently blocked.
+        self.recording_workflow.mark_completed()
         if should_enqueue_transcription(
             recorded_lesson,
             profile_auto_transcribe=self._quick_auto_transcribe_active,
@@ -197,8 +219,6 @@ class MainWindow(AudioResilientMainWindow):
             self._refresh_quick_readiness()
             if review_before is not None:
                 self.review_lesson = review_before
-
-        self.recording_workflow.mark_completed()
 
     def _present_recording_recovery_required(self, details: str) -> None:
         logging.error(details)
