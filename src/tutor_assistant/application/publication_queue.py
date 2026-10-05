@@ -3,8 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 
 from ..domain import Lesson
+from ..publisher import (
+    GitError,
+    PublicationBlockedError,
+    PublicationConflictError,
+)
 from ..publication_queue import (
     AutomaticPublicationJob,
     AutomaticPublicationQueue,
@@ -12,6 +18,41 @@ from ..publication_queue import (
     PublicationQueueStorage,
     StoredPublicationJobLike,
 )
+
+
+AUTOMATIC_PUBLICATION_BACKOFF_SECONDS = (30, 120, 600, 1800)
+
+
+class PublicationFailureDisposition(StrEnum):
+    RETRY_REQUIRED = "retry_required"
+    CONFLICT = "conflict"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationFailureDecision:
+    disposition: PublicationFailureDisposition
+    retry_after_seconds: int | None = None
+
+
+def classify_publication_failure(
+    error: BaseException,
+    *,
+    attempts: int,
+) -> PublicationFailureDecision:
+    if isinstance(error, PublicationConflictError):
+        return PublicationFailureDecision(PublicationFailureDisposition.CONFLICT)
+    if isinstance(error, (PublicationBlockedError, RuntimeError)):
+        return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
+    if isinstance(error, GitError):
+        retry_index = max(attempts - 1, 0)
+        if retry_index < len(AUTOMATIC_PUBLICATION_BACKOFF_SECONDS):
+            return PublicationFailureDecision(
+                PublicationFailureDisposition.RETRY_REQUIRED,
+                AUTOMATIC_PUBLICATION_BACKOFF_SECONDS[retry_index],
+            )
+        return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
+    return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
 
 
 @dataclass(frozen=True, slots=True)

@@ -33,7 +33,7 @@ from .publisher import (
     PublicationResult,
     TranscriptPublicationPayload,
 )
-from .store import LessonStore
+from .store import AutomaticPublicationJobConflictError, LessonStore
 from .transcription import TranscriptionResult, WhisperTranscriber
 
 
@@ -529,6 +529,69 @@ class LessonPipeline:
     def publish(self, lesson: Lesson) -> PublicationResult:
         with self.content_service.activity("publication", lesson_id=lesson.lesson_id):
             return self._publish(lesson)
+
+    def reconcile_automatic_publication_intents(self) -> int:
+        stored_jobs = {
+            job.lesson_id: job
+            for job in self.store.list_automatic_publication_jobs()
+        }
+        reconciled = 0
+        for lesson in self.store.list(limit=1000):
+            if (
+                lesson.pipeline.processing_mode
+                != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+            ):
+                continue
+            revision = next(
+                (
+                    item
+                    for item in self.content_service.repository.list_transcript_revisions(
+                        lesson.lesson_id
+                    )
+                    if item.created_by == "automatic-transcription"
+                ),
+                None,
+            )
+            if revision is None:
+                continue
+            repository_path = automatic_publication_repository_path(lesson).as_posix()
+            existing = stored_jobs.get(lesson.lesson_id)
+            try:
+                job = self.store.ensure_automatic_publication_job(
+                    lesson.lesson_id,
+                    revision.revision_number,
+                    revision.content_sha256,
+                    repository_path,
+                )
+            except AutomaticPublicationJobConflictError as exc:
+                if existing is not None and existing.status != "published":
+                    self.store.update_automatic_publication_job(
+                        lesson.lesson_id,
+                        "conflict",
+                        error=str(exc),
+                    )
+                    reconciled += 1
+                continue
+
+            publication = lesson.publication
+            publication_matches = (
+                lesson.status == JobStatus.PUBLISHED
+                and publication is not None
+                and publication.remote_verified
+                and publication.repository_path == repository_path
+                and publication.content_sha256 == revision.content_sha256
+            )
+            if publication_matches and job.status != "published":
+                self.store.update_automatic_publication_job(
+                    lesson.lesson_id,
+                    "published",
+                    error=None,
+                    next_attempt_at=None,
+                )
+                reconciled += 1
+            elif existing is None:
+                reconciled += 1
+        return reconciled
 
     def publish_automatic_transcript(
         self,

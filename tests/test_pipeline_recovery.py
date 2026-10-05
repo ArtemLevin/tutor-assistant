@@ -320,3 +320,34 @@ def test_automatic_publication_rejects_teacher_revision_before_transport(
             content_sha256=teacher_revision.content_sha256,
             repository_path="students/student/transcript/13.07.26.txt",
         )
+
+
+def test_startup_reconciliation_recreates_missing_publication_intent(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+    pipeline.transcribe(lesson, audio)
+
+    with pipeline.store.connect() as db:
+        db.execute(
+            "DELETE FROM automatic_publication_jobs WHERE lesson_id=?",
+            (lesson.lesson_id,),
+        )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    restored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 1
+    assert restored is not None
+    assert restored.status == "waiting"
+    assert restored.repository_path == "students/student/transcript/13.07.26.txt"

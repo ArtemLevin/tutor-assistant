@@ -29,6 +29,10 @@ class GitError(RuntimeError):
     pass
 
 
+class PublicationBlockedError(GitError):
+    """Publication cannot proceed until configuration or authorization changes."""
+
+
 class PublicationConflictError(GitError):
     pass
 
@@ -198,7 +202,9 @@ def ensure_private_repository(
     gateway: GitHubRepositoryGateway | None = None,
 ) -> None:
     if not config.repository_full_name.strip():
-        raise GitError("Укажите repository.repository_full_name перед публикацией")
+        raise PublicationBlockedError(
+            "Укажите repository.repository_full_name перед публикацией"
+        )
     if shutil.which("gh") is None:
         try:
             (gateway or GitHubRestGateway(config)).ensure_private_repository()
@@ -226,7 +232,7 @@ def ensure_private_repository(
         )
     visibility = result.stdout.strip().upper()
     if visibility != "PRIVATE":
-        raise GitError(
+        raise PublicationBlockedError(
             f"Публикация заблокирована: {config.repository_full_name} имеет visibility "
             f"{visibility or 'UNKNOWN'}, требуется PRIVATE"
         )
@@ -394,14 +400,20 @@ def _validated_publication_payload(
         or ".." in path.parts
         or path.suffix.casefold() != ".txt"
     ):
-        raise GitError("Путь publication payload выходит за разрешённые границы")
+        raise PublicationBlockedError(
+            "Путь publication payload выходит за разрешённые границы"
+        )
     canonical = _canonical_transcript_text(payload.content)
     if canonical != payload.content:
-        raise GitError("Publication payload должен использовать canonical LF UTF-8 text")
+        raise PublicationBlockedError(
+            "Publication payload должен использовать canonical LF UTF-8 text"
+        )
     encoded = canonical.encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     if digest != payload.content_sha256:
-        raise GitError("Publication payload содержит некорректный SHA-256")
+        raise PublicationBlockedError(
+            "Publication payload содержит некорректный SHA-256"
+        )
     if len(encoded) > policy.maximum_file_size_bytes:
         raise GitError(
             f"Транскрипт превышает {policy.maximum_file_size_bytes} байт"
@@ -529,7 +541,7 @@ class LessonPublisher:
             descriptor = describe_push_remote(self.config.remote, raw_url)
             assert_expected_repository(descriptor.identity, self.config.repository_full_name)
         except RemoteIdentityError as exc:
-            raise GitError(str(exc)) from exc
+            raise PublicationBlockedError(str(exc)) from exc
         return descriptor
 
     def preview(
@@ -540,7 +552,7 @@ class LessonPublisher:
         approved: ApprovedTranscriptPayload | None = None,
     ) -> PublicationPlan:
         if not self.config.push:
-            raise GitError(
+            raise PublicationBlockedError(
                 "Публикация отключена параметром repository.push=false. "
                 "Production publish требует реальной отправки в remote."
             )
@@ -553,7 +565,7 @@ class LessonPublisher:
         _assert_transcript_only_egress(publication_payload_files(lesson), expected_path)
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
-            raise GitError(f"Git-репозиторий не найден: {repo}")
+            raise PublicationBlockedError(f"Git-репозиторий не найден: {repo}")
         descriptor = self._descriptor(repo)
         if self.policy.require_private_repository:
             ensure_private_repository(self.config, repo, self.github_gateway)
@@ -662,12 +674,12 @@ class LessonPublisher:
                 )
                 raise PublicationConflictError("Удалённая ветка изменилась после публикации")
             completed = store.mark_completed(operation.id)
-            lesson.transition(JobStatus.PUBLISHED)
+            _transition_published(lesson)
             return _result(completed, commit=remote_sha, idempotent=True)
         if operation.local_commit_sha and remote_sha == operation.local_commit_sha:
             verified = store.mark_remote_verified(operation.id, remote_sha)
             completed = store.mark_completed(verified.id)
-            lesson.transition(JobStatus.PUBLISHED)
+            _transition_published(lesson)
             return _result(completed, commit=remote_sha, idempotent=True)
         if remote_sha == operation.expected_remote_sha:
             store.mark_failed(

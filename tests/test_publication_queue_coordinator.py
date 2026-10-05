@@ -5,11 +5,18 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tutor_assistant.application.publication_queue import (
+    PublicationFailureDisposition,
     PublicationPumpContext,
     PublicationQueueCoordinator,
+    classify_publication_failure,
 )
 from tutor_assistant.domain import Lesson, Student
 from tutor_assistant.publication_queue import AutomaticPublicationStatus
+from tutor_assistant.publisher import (
+    GitError,
+    PublicationBlockedError,
+    PublicationConflictError,
+)
 
 
 def lesson(identifier: str) -> Lesson:
@@ -117,3 +124,32 @@ def test_shutdown_barrier_prevents_new_publication() -> None:
     enqueue(coordinator, "lesson")
 
     assert coordinator.pump(PublicationPumpContext(shutdown_requested=True)) is None
+
+
+
+def test_publication_failure_classifier_separates_conflict_block_and_retry() -> None:
+    conflict = classify_publication_failure(
+        PublicationConflictError("collision"),
+        attempts=1,
+    )
+    blocked = classify_publication_failure(
+        PublicationBlockedError("public repository"),
+        attempts=1,
+    )
+    transient = classify_publication_failure(GitError("network"), attempts=1)
+    exhausted = classify_publication_failure(GitError("network"), attempts=5)
+
+    assert conflict.disposition == PublicationFailureDisposition.CONFLICT
+    assert blocked.disposition == PublicationFailureDisposition.BLOCKED
+    assert transient.disposition == PublicationFailureDisposition.RETRY_REQUIRED
+    assert transient.retry_after_seconds == 30
+    assert exhausted.disposition == PublicationFailureDisposition.BLOCKED
+
+
+def test_publication_failure_backoff_is_bounded() -> None:
+    delays = [
+        classify_publication_failure(GitError("temporary"), attempts=attempt).retry_after_seconds
+        for attempt in range(1, 5)
+    ]
+
+    assert delays == [30, 120, 600, 1800]

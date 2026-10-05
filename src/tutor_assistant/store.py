@@ -233,6 +233,25 @@ class LessonStore:
 
         return self._retry(operation)
 
+    def get_automatic_publication_job(
+        self,
+        lesson_id: str,
+    ) -> StoredAutomaticPublicationJob | None:
+        def operation():
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+
+        row = self._retry(operation)
+        return StoredAutomaticPublicationJob(**dict(row)) if row is not None else None
+
     def list_automatic_publication_jobs(self) -> list[StoredAutomaticPublicationJob]:
         def operation():
             with self.connect() as db:
