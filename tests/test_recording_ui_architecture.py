@@ -74,6 +74,11 @@ def test_start_adapter_is_the_only_pre_finalize_start_owner() -> None:
     assert "def _recovery_ready(" not in source
 
 
+def test_finalize_adapter_owns_next_lesson_reset_after_recording_refactor() -> None:
+    assert "_prepare_next_lesson" not in base_app.MainWindow.__dict__
+    assert "_prepare_next_lesson" in StopRecordingMainWindow.__dict__
+
+
 def test_stop_and_recovery_owners_do_not_delegate_to_legacy_callbacks() -> None:
     stop_source = inspect.getsource(StopRecordingMainWindow._stop_recording_async)
     recovery_source = inspect.getsource(ProductionMainWindow._offer_recovery)
