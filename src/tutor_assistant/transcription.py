@@ -57,6 +57,15 @@ def transcript_has_content(text: str) -> bool:
     return any(character.isalnum() for character in text)
 
 
+def _diagnostic_label(value: object, fallback: str) -> str:
+    label = str(value or "").strip()
+    if not label:
+        return fallback
+    label = re.split(r"[\\/]", label)[-1]
+    label = re.sub(r"[^\w.-]+", "_", label).strip("_")
+    return label[:80] or fallback
+
+
 def _transcription_quality_diagnostics(path: Path | None) -> list[str]:
     if path is None:
         return ["audio_quality=unavailable"]
@@ -110,8 +119,8 @@ def validate_transcription_result(
         return
 
     details = [
-        f"provider={manifest.get('provider') or 'unknown'}",
-        f"model={manifest.get('model') or 'unknown'}",
+        f"provider={_diagnostic_label(manifest.get('provider'), 'unknown')}",
+        f"model={_diagnostic_label(manifest.get('model'), 'unknown')}",
         f"segment_count={len(segments)}",
         f"meaningful_segment_count={meaningful_segment_count}",
     ]
