@@ -24,6 +24,22 @@ class StoredTranscriptionJob:
     attempts: int
 
 
+@dataclass(frozen=True)
+class StoredAutomaticPublicationJob:
+    lesson_id: str
+    revision_number: int
+    content_sha256: str
+    repository_path: str
+    status: str
+    attempts: int
+    error: str | None
+    next_attempt_at: str | None
+
+
+class AutomaticPublicationJobConflictError(RuntimeError):
+    pass
+
+
 class LessonStore:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +133,120 @@ class LessonStore:
 
         rows = self._retry(operation)
         return [StoredTranscriptionJob(**dict(row)) for row in rows]
+
+    def ensure_automatic_publication_job(
+        self,
+        lesson_id: str,
+        revision_number: int,
+        content_sha256: str,
+        repository_path: str,
+    ) -> StoredAutomaticPublicationJob:
+        def operation() -> StoredAutomaticPublicationJob:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                if row is None:
+                    db.execute(
+                        """
+                        INSERT INTO automatic_publication_jobs (
+                            lesson_id, revision_number, content_sha256, repository_path,
+                            status, attempts, error, next_attempt_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 'waiting', 0, NULL, NULL, CURRENT_TIMESTAMP)
+                        """,
+                        (lesson_id, revision_number, content_sha256, repository_path),
+                    )
+                    row = db.execute(
+                        """
+                        SELECT lesson_id, revision_number, content_sha256, repository_path,
+                               status, attempts, error, next_attempt_at
+                        FROM automatic_publication_jobs
+                        WHERE lesson_id=?
+                        """,
+                        (lesson_id,),
+                    ).fetchone()
+                assert row is not None
+                immutable = (
+                    int(row["revision_number"]),
+                    str(row["content_sha256"]),
+                    str(row["repository_path"]),
+                )
+                expected = (revision_number, content_sha256, repository_path)
+                if immutable != expected:
+                    raise AutomaticPublicationJobConflictError(
+                        "Automatic publication intent already exists "
+                        "with different immutable payload"
+                    )
+                return StoredAutomaticPublicationJob(**dict(row))
+
+        return self._retry(operation)
+
+    def update_automatic_publication_job(
+        self,
+        lesson_id: str,
+        status: str,
+        *,
+        error: str | None = None,
+        next_attempt_at: str | None = None,
+        increment_attempts: bool = False,
+    ) -> StoredAutomaticPublicationJob:
+        def operation() -> StoredAutomaticPublicationJob:
+            with self.connect() as db:
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status=?,
+                        error=?,
+                        next_attempt_at=?,
+                        attempts=attempts + ?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                    """,
+                    (
+                        status,
+                        error,
+                        next_attempt_at,
+                        1 if increment_attempts else 0,
+                        lesson_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(lesson_id)
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert row is not None
+                return StoredAutomaticPublicationJob(**dict(row))
+
+        return self._retry(operation)
+
+    def list_automatic_publication_jobs(self) -> list[StoredAutomaticPublicationJob]:
+        def operation():
+            with self.connect() as db:
+                return db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    ORDER BY updated_at ASC, lesson_id ASC
+                    """
+                ).fetchall()
+
+        rows = self._retry(operation)
+        return [StoredAutomaticPublicationJob(**dict(row)) for row in rows]
 
     def get(self, lesson_id: str) -> Lesson | None:
         def operation():

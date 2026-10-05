@@ -37,6 +37,13 @@ from .normalization import (
     NormalizationStartBlock,
     NormalizationStartDecision,
 )
+from .publication_queue import (
+    PublicationPumpContext,
+    PublicationQueueCoordinator,
+    PublicationQueueEntrySnapshot,
+    PublicationQueueSnapshot,
+    PublicationSubmission,
+)
 from .recording import (
     RecordingHealthSnapshot,
     RecordingLevelsSnapshot,
@@ -119,6 +126,11 @@ __all__ = [
     "NormalizationProgressSnapshot",
     "NormalizationStartBlock",
     "NormalizationStartDecision",
+    "PublicationPumpContext",
+    "PublicationQueueCoordinator",
+    "PublicationQueueEntrySnapshot",
+    "PublicationQueueSnapshot",
+    "PublicationSubmission",
     "RecordingHealthAction",
     "RecordingHealthAssessment",
     "RecordingHealthMonitor",

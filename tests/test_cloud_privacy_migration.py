@@ -8,7 +8,7 @@ from tutor_assistant.content import StudentContentRepository
 def test_migration_10_creates_privacy_audit_tables(tmp_path: Path) -> None:
     repository = StudentContentRepository(tmp_path / "content.sqlite3")
 
-    assert repository.applied_migrations()[-1] == (10, "cloud_processing_privacy")
+    assert (10, "cloud_processing_privacy") in repository.applied_migrations()
     with repository.connect() as db:
         tables = {
             row[0]

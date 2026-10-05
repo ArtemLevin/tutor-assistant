@@ -152,6 +152,13 @@ def test_automatic_transcription_creates_canonical_immutable_revision(
     assert revision.content == "clean transcript\n"
     assert revision.content_sha256 == hashlib.sha256(b"clean transcript\n").hexdigest()
     assert result.status != JobStatus.READY
+    jobs = pipeline.store.list_automatic_publication_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].lesson_id == lesson.lesson_id
+    assert jobs[0].revision_number == revision.revision_number
+    assert jobs[0].content_sha256 == revision.content_sha256
+    assert jobs[0].repository_path == "students/student/transcript/13.07.26.txt"
+    assert jobs[0].status == "waiting"
 
 
 def test_manual_transcription_does_not_create_automatic_revision(monkeypatch, tmp_path) -> None:
@@ -204,6 +211,8 @@ def test_automatic_revision_is_not_duplicated_during_artifact_reconciliation(
     )
     assert transcriber.calls == 1
     assert len(revisions_after_failure) == 1
+    jobs_after_failure = pipeline.store.list_automatic_publication_jobs()
+    assert len(jobs_after_failure) == 1
 
     persisted = pipeline.content_service.get_lesson(lesson.lesson_id).lesson
     recovered = pipeline.transcribe(persisted, audio)

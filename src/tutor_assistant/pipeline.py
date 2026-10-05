@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .atomic_io import atomic_write_text
+from .automatic_publication import automatic_publication_repository_path
 from .config import AppConfig
 from .content import ActivityLease, StudentContentService, TranscriptRevision
 from .domain import (
@@ -376,15 +377,22 @@ class LessonPipeline:
             ),
             None,
         )
-        if existing is not None:
-            return existing
+        if existing is None:
+            existing = self.content_service.save_transcript(
+                lesson.lesson_id,
+                cleaned_text,
+                path=lesson.artifacts.verified_transcript,
+                created_by="automatic-transcription",
+            )
 
-        return self.content_service.save_transcript(
+        repository_path = automatic_publication_repository_path(lesson).as_posix()
+        self.store.ensure_automatic_publication_job(
             lesson.lesson_id,
-            cleaned_text,
-            path=lesson.artifacts.verified_transcript,
-            created_by="automatic-transcription",
+            existing.revision_number,
+            existing.content_sha256,
+            repository_path,
         )
+        return existing
 
     @staticmethod
     def _apply_transcription_result(

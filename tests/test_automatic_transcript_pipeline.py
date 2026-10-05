@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from tutor_assistant.automatic_publication import automatic_publication_repository_path
 from tutor_assistant.domain import Lesson, LessonProcessingMode, Student
 from tutor_assistant.store import LessonStore
 
@@ -43,3 +44,14 @@ def test_automatic_processing_mode_persists_across_store_restart(tmp_path) -> No
 
     assert restored is not None
     assert restored.pipeline.processing_mode == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+
+
+
+def test_automatic_publication_path_uses_lesson_date() -> None:
+    lesson = _lesson()
+    lesson.student.repository_folder = "students/test"
+
+    assert (
+        automatic_publication_repository_path(lesson).as_posix()
+        == "students/test/transcript/04.10.26.txt"
+    )
