@@ -36,6 +36,7 @@ recording
 → stop/finalize
 → persistent transcription queue
 → local ASR
+→ semantic ASR result validation
 → immutable automatic-transcription revision
 → persistent automatic publication queue
 → verified GitHub publication
@@ -51,8 +52,13 @@ Downstream processing starts only after recording finalization returns `RECORDED
 mixed audio file. `RECOVERY_REQUIRED` and recording-finalization failure keep the existing
 audio-first recovery semantics and do not start automatic publication.
 
-After ASR, the pipeline canonicalizes the cleaned transcript, saves an immutable transcript revision
-to SQLite with `created_by="automatic-transcription"`, and then creates a durable
+After ASR, the pipeline first validates that the result contains at least one meaningful speech
+segment and that the cleaned transcript contains a letter or digit. This check has no minimum lesson
+duration: a short meaningful recording is valid, while a zero-segment or punctuation-only result
+fails transcription.
+
+Only after that validation does the pipeline canonicalize the cleaned transcript, save an immutable
+transcript revision to SQLite with `created_by="automatic-transcription"`, and create a durable
 `automatic_publication_jobs` intent containing:
 
 - lesson id;
@@ -100,8 +106,14 @@ The dedicated automatic transcript repository must be a local Git checkout whose
 matches `automatic_transcript_repository.repository_full_name`; the GitHub repository must be
 PRIVATE. A public repository is blocked even if it is otherwise a valid Git remote.
 
-Automatic publication reads the exact persisted automatic transcript revision from SQLite and
-verifies its SHA-256 before Git access.
+Automatic publication reads the exact persisted automatic transcript revision from SQLite,
+verifies its SHA-256, and rejects semantically empty historical revisions before Git access.
+Startup reconciliation does not create publication work from an empty automatic revision; an
+existing unpublished empty intent is blocked until transcription succeeds.
+
+A successful retranscription may repair a legacy unpublished intent that points specifically to an
+older empty automatic revision. The repair is transactional, compare-and-swap guarded, resets retry
+state, and is forbidden once the intent is `running` or `published`.
 
 The Git transport preserves the existing publication safety boundary:
 
@@ -188,7 +200,9 @@ The production regression suite covers:
 
 - backward-compatible manual/default processing mode;
 - automatic mode forcing post-recording transcription;
+- empty ASR rejection without a duration threshold;
 - immutable automatic revision creation and ASR reconciliation;
+- quarantine and controlled repair of legacy empty unpublished publication intents;
 - durable queue migration/storage/restart behavior;
 - retry/backoff, block and conflict classification;
 - publication worker transport behavior;
