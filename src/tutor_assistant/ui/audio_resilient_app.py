@@ -100,6 +100,7 @@ class MainWindow(ProductionMainWindow):
         self.stop_button.setEnabled(True)
         self.test_devices_button.setEnabled(False)
         self.quick_automatic_pipeline.setEnabled(False)
+        self.detailed_automatic_pipeline.setEnabled(False)
         if (
             self._quick_auto_transcribe_active
             or recording_lesson.pipeline.processing_mode
