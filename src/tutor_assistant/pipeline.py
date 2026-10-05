@@ -671,34 +671,54 @@ class LessonPipeline:
                     None,
                 )
                 if pinned_revision is None:
-                    if existing.status == "running" and not recover_stale_running:
-                        continue
-                    updated = self.store.update_inactive_automatic_publication_job(
-                        lesson.lesson_id,
-                        expected_revision_number=existing.revision_number,
-                        expected_content_sha256=existing.content_sha256,
-                        expected_repository_path=existing.repository_path,
-                        status="conflict",
-                        error=(
-                            "Automatic publication intent references a missing "
-                            "automatic transcript revision"
-                        ),
+                    error = (
+                        "Automatic publication intent references a missing "
+                        "automatic transcript revision"
                     )
+                    if existing.status == "running":
+                        if not recover_stale_running:
+                            continue
+                        updated = self.store.conflict_stale_running_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=existing.revision_number,
+                            expected_content_sha256=existing.content_sha256,
+                            expected_repository_path=existing.repository_path,
+                            error=error,
+                        )
+                    else:
+                        updated = self.store.update_inactive_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=existing.revision_number,
+                            expected_content_sha256=existing.content_sha256,
+                            expected_repository_path=existing.repository_path,
+                            status="conflict",
+                            error=error,
+                        )
                     if updated is not None:
                         reconciled += 1
                     continue
 
                 if existing.repository_path != repository_path:
-                    if existing.status == "running" and not recover_stale_running:
-                        continue
-                    updated = self.store.update_inactive_automatic_publication_job(
-                        lesson.lesson_id,
-                        expected_revision_number=existing.revision_number,
-                        expected_content_sha256=existing.content_sha256,
-                        expected_repository_path=existing.repository_path,
-                        status="conflict",
-                        error="Automatic publication intent path no longer matches lesson policy",
-                    )
+                    error = "Automatic publication intent path no longer matches lesson policy"
+                    if existing.status == "running":
+                        if not recover_stale_running:
+                            continue
+                        updated = self.store.conflict_stale_running_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=existing.revision_number,
+                            expected_content_sha256=existing.content_sha256,
+                            expected_repository_path=existing.repository_path,
+                            error=error,
+                        )
+                    else:
+                        updated = self.store.update_inactive_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=existing.revision_number,
+                            expected_content_sha256=existing.content_sha256,
+                            expected_repository_path=existing.repository_path,
+                            status="conflict",
+                            error=error,
+                        )
                     if updated is not None:
                         reconciled += 1
                     continue
