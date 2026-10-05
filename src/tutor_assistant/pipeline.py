@@ -30,11 +30,28 @@ from .latex.remote import (
 from .publisher import (
     ApprovedTranscriptPayload,
     LessonPublisher,
+    PublicationBlockedError,
     PublicationResult,
     TranscriptPublicationPayload,
 )
-from .store import AutomaticPublicationJobConflictError, LessonStore
-from .transcription import TranscriptionResult, WhisperTranscriber
+from .store import (
+    AutomaticPublicationJobConflictError,
+    LessonStore,
+    StoredAutomaticPublicationJob,
+)
+from .transcription import (
+    EmptyTranscriptionError,
+    InvalidTranscriptionResultError,
+    TranscriptionResult,
+    WhisperTranscriber,
+    transcript_has_content,
+    validate_transcription_result,
+)
+
+_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR = (
+    "Автоматическая публикация заблокирована: транскрипт пуст; "
+    "повторите транскрибацию"
+)
 
 
 class LessonPipeline:
@@ -350,7 +367,7 @@ class LessonPipeline:
 
         teacher = output_dir / "teacher_transcript.txt"
         student = output_dir / "student_transcript.txt"
-        return TranscriptionResult(
+        result = TranscriptionResult(
             output_dir=output_dir,
             raw=raw_candidates[0],
             timestamped=timestamped,
@@ -361,6 +378,64 @@ class LessonPipeline:
             teacher_transcript=teacher if teacher.is_file() else None,
             student_transcript=student if student.is_file() else None,
         )
+        try:
+            validate_transcription_result(
+                result,
+                quality_report=recording_dir / "audio_quality_report.json",
+            )
+        except InvalidTranscriptionResultError:
+            logging.warning(
+                "Durable transcription artifacts are not reusable; ASR will run again"
+            )
+            return None
+        return result
+
+    def _ensure_automatic_publication_intent(
+        self,
+        lesson: Lesson,
+        revision: TranscriptRevision,
+        revisions: list[TranscriptRevision],
+    ) -> tuple[StoredAutomaticPublicationJob, bool]:
+        repository_path = automatic_publication_repository_path(lesson).as_posix()
+        try:
+            return (
+                self.store.ensure_automatic_publication_job(
+                    lesson.lesson_id,
+                    revision.revision_number,
+                    revision.content_sha256,
+                    repository_path,
+                ),
+                False,
+            )
+        except AutomaticPublicationJobConflictError:
+            stored = self.store.get_automatic_publication_job(lesson.lesson_id)
+            if stored is None:
+                raise
+            previous = next(
+                (
+                    item
+                    for item in revisions
+                    if item.revision_number == stored.revision_number
+                    and item.content_sha256 == stored.content_sha256
+                ),
+                None,
+            )
+            if (
+                previous is None
+                or previous.created_by != "automatic-transcription"
+                or transcript_has_content(previous.content)
+            ):
+                raise
+            repaired = self.store.repair_automatic_publication_job(
+                lesson.lesson_id,
+                expected_revision_number=stored.revision_number,
+                expected_content_sha256=stored.content_sha256,
+                expected_repository_path=stored.repository_path,
+                revision_number=revision.revision_number,
+                content_sha256=revision.content_sha256,
+                repository_path=repository_path,
+            )
+            return repaired, True
 
     def _ensure_automatic_transcript_revision(
         self,
@@ -374,6 +449,8 @@ class LessonPipeline:
         cleaned_text = Path(lesson.artifacts.cleaned_transcript).read_text(encoding="utf-8")
         if cleaned_text.startswith("\ufeff") or "\x00" in cleaned_text:
             raise RuntimeError("Automatic transcript contains invalid text markers")
+        if not transcript_has_content(cleaned_text):
+            raise EmptyTranscriptionError(_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR)
         canonical_text = (
             cleaned_text.replace("\r\n", "\n").replace("\r", "\n").rstrip() + "\n"
         )
@@ -395,13 +472,7 @@ class LessonPipeline:
                 created_by="automatic-transcription",
             )
 
-        repository_path = automatic_publication_repository_path(lesson).as_posix()
-        self.store.ensure_automatic_publication_job(
-            lesson.lesson_id,
-            existing.revision_number,
-            existing.content_sha256,
-            repository_path,
-        )
+        self._ensure_automatic_publication_intent(lesson, existing, revisions)
         return existing
 
     @staticmethod
@@ -474,6 +545,10 @@ class LessonPipeline:
                 )
             else:
                 result = transcriber.transcribe(audio, output_dir)
+            validate_transcription_result(
+                result,
+                quality_report=recording_dir / "audio_quality_report.json",
+            )
             self._apply_transcription_result(lesson, audio, directory, result)
         except Exception as exc:
             lesson.transition(JobStatus.FAILED, str(exc))
@@ -485,6 +560,13 @@ class LessonPipeline:
 
         try:
             self._ensure_automatic_transcript_revision(lesson)
+        except InvalidTranscriptionResultError as exc:
+            lesson.transition(JobStatus.FAILED, str(exc))
+            try:
+                lesson = self.save_state(lesson, "status", "error")
+            except Exception:
+                logging.exception("Не удалось сохранить ошибку валидации транскрипта")
+            raise
         except Exception:
             logging.exception(
                 "ASR artifacts persisted, but automatic transcript revision was not committed; "
@@ -542,12 +624,13 @@ class LessonPipeline:
                 != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
             ):
                 continue
+            revisions = self.content_service.repository.list_transcript_revisions(
+                lesson.lesson_id
+            )
             revision = next(
                 (
                     item
-                    for item in self.content_service.repository.list_transcript_revisions(
-                        lesson.lesson_id
-                    )
+                    for item in revisions
                     if item.created_by == "automatic-transcription"
                 ),
                 None,
@@ -556,12 +639,28 @@ class LessonPipeline:
                 continue
             repository_path = automatic_publication_repository_path(lesson).as_posix()
             existing = stored_jobs.get(lesson.lesson_id)
+            if not transcript_has_content(revision.content):
+                if (
+                    existing is not None
+                    and existing.status not in {"published", "running"}
+                    and (
+                        existing.status != "blocked"
+                        or existing.error != _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
+                    )
+                ):
+                    self.store.update_automatic_publication_job(
+                        lesson.lesson_id,
+                        "blocked",
+                        error=_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR,
+                        next_attempt_at=None,
+                    )
+                    reconciled += 1
+                continue
             try:
-                job = self.store.ensure_automatic_publication_job(
-                    lesson.lesson_id,
-                    revision.revision_number,
-                    revision.content_sha256,
-                    repository_path,
+                job, repaired = self._ensure_automatic_publication_intent(
+                    lesson,
+                    revision,
+                    revisions,
                 )
             except AutomaticPublicationJobConflictError as exc:
                 if existing is not None and existing.status != "published":
@@ -589,7 +688,7 @@ class LessonPipeline:
                     next_attempt_at=None,
                 )
                 reconciled += 1
-            elif existing is None:
+            elif existing is None or repaired:
                 reconciled += 1
         return reconciled
 
@@ -641,6 +740,8 @@ class LessonPipeline:
                 raise RuntimeError(
                     "Automatic publication requires an automatic-transcription revision"
                 )
+            if not transcript_has_content(revision.content):
+                raise PublicationBlockedError(_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR)
             calculated_sha = hashlib.sha256(
                 revision.content.encode("utf-8")
             ).hexdigest()
