@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from ..domain import Lesson
@@ -13,11 +13,7 @@ from ..publication_queue import (
     PublicationQueueStorage,
     StoredPublicationJobLike,
 )
-from ..publisher import (
-    GitError,
-    PublicationBlockedError,
-    PublicationConflictError,
-)
+from ..publisher import GitError, PublicationBlockedError, PublicationConflictError
 
 
 AUTOMATIC_PUBLICATION_BACKOFF_SECONDS = (30, 120, 600, 1800)
@@ -167,6 +163,51 @@ class PublicationQueueCoordinator:
 
     def retry(self, job_id: str) -> AutomaticPublicationJob:
         return self._queue.retry(job_id)
+
+    def resolve_failure(
+        self,
+        job_id: str,
+        error: BaseException,
+        details: str,
+        *,
+        now: datetime | None = None,
+    ) -> PublicationFailureDecision:
+        job = self._queue.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        decision = classify_publication_failure(error, attempts=job.attempts)
+        if decision.disposition == PublicationFailureDisposition.RETRY_REQUIRED:
+            delay = decision.retry_after_seconds
+            if delay is None:
+                raise RuntimeError("Retry disposition requires a retry delay")
+            self._queue.retry_required(
+                job_id,
+                details,
+                next_attempt_at=(now or datetime.now(UTC))
+                + timedelta(seconds=delay),
+            )
+        elif decision.disposition == PublicationFailureDisposition.CONFLICT:
+            self._queue.conflict(job_id, details)
+        else:
+            self._queue.block(job_id, details)
+        return decision
+
+    def next_retry_delay_ms(self, *, now: datetime | None = None) -> int | None:
+        current = now or datetime.now(UTC)
+        retry_times = [
+            job.next_attempt_at
+            for job in self._queue.jobs
+            if (
+                job.status == AutomaticPublicationStatus.RETRY_REQUIRED
+                and job.next_attempt_at is not None
+            )
+        ]
+        if not retry_times:
+            return None
+        return max(
+            0,
+            int((min(retry_times) - current).total_seconds() * 1000),
+        )
 
     def get(self, job_id: str) -> AutomaticPublicationJob | None:
         return self._queue.get(job_id)
