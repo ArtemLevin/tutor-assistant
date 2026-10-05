@@ -400,6 +400,63 @@ class LessonStore:
 
         return self._retry(operation)
 
+    def conflict_stale_running_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        error: str,
+    ) -> StoredAutomaticPublicationJob | None:
+        """Move an exact startup-stale running intent to conflict."""
+
+        def operation() -> StoredAutomaticPublicationJob | None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status='conflict',
+                        error=?,
+                        next_attempt_at=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status='running'
+                    """,
+                    (
+                        error,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    exists = db.execute(
+                        "SELECT 1 FROM automatic_publication_jobs WHERE lesson_id=?",
+                        (lesson_id,),
+                    ).fetchone()
+                    if exists is None:
+                        raise KeyError(lesson_id)
+                    return None
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert row is not None
+                return StoredAutomaticPublicationJob(**dict(row))
+
+        return self._retry(operation)
+
     def update_inactive_automatic_publication_job(
         self,
         lesson_id: str,
