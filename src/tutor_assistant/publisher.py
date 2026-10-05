@@ -473,7 +473,7 @@ def _journal_path(lesson_dir: Path) -> Path:
 
 def _transition_published(lesson: Lesson) -> None:
     if lesson.status != JobStatus.PUBLISHED:
-        _transition_published(lesson)
+        lesson.transition(JobStatus.PUBLISHED)
 
 
 def _result(

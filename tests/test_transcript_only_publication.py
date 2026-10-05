@@ -199,7 +199,6 @@ def test_egress_guard_accepts_only_expected_transcript() -> None:
     _assert_transcript_only_egress((), expected)
 
 
-
 def test_prevalidated_payload_rejects_corrupted_sha_before_git_access(tmp_path: Path) -> None:
     lesson = make_lesson(tmp_path, status=JobStatus.REVIEW_REQUIRED)
     payload = TranscriptPublicationPayload(

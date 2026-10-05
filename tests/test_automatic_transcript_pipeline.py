@@ -56,7 +56,6 @@ def test_automatic_publication_path_uses_lesson_date() -> None:
     )
 
 
-
 def test_review_required_can_transition_to_published_for_authorized_auto_path() -> None:
     lesson = _lesson()
     lesson.status = JobStatus.REVIEW_REQUIRED

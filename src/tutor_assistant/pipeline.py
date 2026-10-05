@@ -372,7 +372,11 @@ class LessonPipeline:
             raise RuntimeError("Automatic transcription artifacts are incomplete")
 
         cleaned_text = Path(lesson.artifacts.cleaned_transcript).read_text(encoding="utf-8")
-        canonical_text = cleaned_text.rstrip() + "\n"
+        if cleaned_text.startswith("\ufeff") or "\x00" in cleaned_text:
+            raise RuntimeError("Automatic transcript contains invalid text markers")
+        canonical_text = (
+            cleaned_text.replace("\r\n", "\n").replace("\r", "\n").rstrip() + "\n"
+        )
         revisions = self.content_service.repository.list_transcript_revisions(lesson.lesson_id)
         existing = next(
             (
@@ -386,7 +390,7 @@ class LessonPipeline:
         if existing is None:
             existing = self.content_service.save_transcript(
                 lesson.lesson_id,
-                cleaned_text,
+                canonical_text,
                 path=lesson.artifacts.verified_transcript,
                 created_by="automatic-transcription",
             )

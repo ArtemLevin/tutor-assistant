@@ -40,7 +40,6 @@ def test_store_uses_wal_and_persists_transcription_job(tmp_path) -> None:
     assert store.list_transcription_jobs()[0].lesson_id == lesson.lesson_id
 
 
-
 def test_store_persists_immutable_automatic_publication_intent(tmp_path) -> None:
     store = LessonStore(tmp_path / "lessons.sqlite3")
     lesson = Lesson(
