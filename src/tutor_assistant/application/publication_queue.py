@@ -37,7 +37,7 @@ def classify_publication_failure(
 ) -> PublicationFailureDecision:
     if isinstance(error, PublicationConflictError):
         return PublicationFailureDecision(PublicationFailureDisposition.CONFLICT)
-    if isinstance(error, (PublicationBlockedError, RuntimeError)):
+    if isinstance(error, PublicationBlockedError):
         return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
     if isinstance(error, GitError):
         retry_index = max(attempts - 1, 0)
@@ -46,6 +46,8 @@ def classify_publication_failure(
                 PublicationFailureDisposition.RETRY_REQUIRED,
                 AUTOMATIC_PUBLICATION_BACKOFF_SECONDS[retry_index],
             )
+        return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
+    if isinstance(error, RuntimeError):
         return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
     return PublicationFailureDecision(PublicationFailureDisposition.BLOCKED)
 
