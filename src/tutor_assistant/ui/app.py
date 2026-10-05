@@ -740,15 +740,36 @@ class MainWindow(QMainWindow):
             force_status=True,
         )
 
+    def _restore_automatic_publication_jobs(self) -> int:
+        reconciled = self.pipeline.reconcile_automatic_publication_intents()
+        lessons = self.pipeline.store.list(limit=1000)
+        restored = self.publication_queue_coordinator.restore_history(
+            lessons,
+            self.pipeline.store.list_automatic_publication_jobs(),
+        )
+        if reconciled:
+            logging.info(
+                "event=automatic_publication_reconciled count=%d",
+                reconciled,
+            )
+        return restored
+
     def _restore_background_jobs(self) -> None:
-        restored = self.transcription_queue_coordinator.restore_history(
-            self.pipeline.store.list(limit=1000),
+        lessons = self.pipeline.store.list(limit=1000)
+        restored_transcriptions = self.transcription_queue_coordinator.restore_history(
+            lessons,
             self.pipeline.store.list_transcription_jobs(),
         )
+        restored_publications = self._restore_automatic_publication_jobs()
+        restored = restored_transcriptions + restored_publications
         if restored:
             self._update_transcription_queue_ui()
-            self._pump_transcription_queue()
-            self._set_status(f"Восстановлена история обработки · {restored}", "working")
+            self._set_status(
+                f"Восстановлена история фоновой обработки · {restored}",
+                "working",
+            )
+        self._pump_transcription_queue()
+        self._pump_publication_queue()
 
     def _load_lesson(self, lesson: Lesson) -> None:
         self.lesson = lesson
