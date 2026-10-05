@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from ..domain import Lesson
+from ..publisher import GitError, PublicationBlockedError, PublicationConflictError
 from ..publication_queue import (
     AutomaticPublicationJob,
     AutomaticPublicationQueue,
@@ -13,7 +14,6 @@ from ..publication_queue import (
     PublicationQueueStorage,
     StoredPublicationJobLike,
 )
-from ..publisher import GitError, PublicationBlockedError, PublicationConflictError
 
 
 AUTOMATIC_PUBLICATION_BACKOFF_SECONDS = (30, 120, 600, 1800)
