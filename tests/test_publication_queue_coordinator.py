@@ -156,6 +156,33 @@ def test_publication_failure_backoff_is_bounded() -> None:
     assert delays == [30, 120, 600, 1800]
 
 
+def test_failure_resolution_and_retry_deadline_stay_in_application_layer() -> None:
+    coordinator = PublicationQueueCoordinator()
+    enqueue(coordinator, "retry-policy")
+    started = coordinator.pump(PublicationPumpContext())
+    assert started is not None
+    now = datetime(2026, 10, 5, 8, 0, tzinfo=UTC)
+
+    decision = coordinator.resolve_failure(
+        started.job_id,
+        GitError("temporary"),
+        "temporary network failure",
+        now=now,
+    )
+
+    assert decision.disposition == PublicationFailureDisposition.RETRY_REQUIRED
+    assert decision.retry_after_seconds == 30
+    job = coordinator.get(started.job_id)
+    assert job is not None
+    assert job.status == AutomaticPublicationStatus.RETRY_REQUIRED
+    assert job.next_attempt_at == now + timedelta(seconds=30)
+    assert coordinator.next_retry_delay_ms(now=now) == 30_000
+    assert (
+        coordinator.next_retry_delay_ms(now=now + timedelta(seconds=31))
+        == 0
+    )
+
+
 def test_publication_worker_executes_exact_immutable_submission() -> None:
     observed = {}
     results = []
