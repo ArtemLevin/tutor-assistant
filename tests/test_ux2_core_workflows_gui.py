@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QDate
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDateEdit, QLineEdit
 
+from tutor_assistant.domain import LessonProcessingMode, Student
 from tutor_assistant.ui import app as app_module
 from tutor_assistant.ui.content_import import ImportLessonDialog
 from tutor_assistant.ui.crm import SchedulePage, StudentsPage
@@ -87,13 +90,65 @@ def test_required_review_and_explicit_actions_are_first_class_controls() -> None
 
 def test_quick_mode_exposes_automatic_transcript_github_opt_in() -> None:
     page_source = inspect.getsource(app_module.MainWindow._quick_start_page)
-    build_source = inspect.getsource(app_module.MainWindow._build_lesson_from_form)
 
     assert "quick_automatic_pipeline" in page_source
     assert "Автоматически транскрибировать и отправить на GitHub" in page_source
-    assert "LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB" in build_source
-    assert "_quick_launch_active" in build_source
 
+
+def test_detailed_mode_exposes_same_per_lesson_automatic_opt_in() -> None:
+    _application()
+    lesson_source = inspect.getsource(app_module.MainWindow._lesson_tab)
+
+    assert "detailed_automatic_pipeline" in lesson_source
+    assert "Автоматически транскрибировать и отправить на GitHub" in lesson_source
+
+    student = Student(id="student", full_name="Ученик")
+    student_combo = QComboBox()
+    student_combo.addItem(student.full_name, student.id)
+    subject_combo = QComboBox()
+    subject_combo.addItem("Математика", "mathematics")
+    topic = QLineEdit("Тестовая тема")
+    lesson_date = QDateEdit()
+    lesson_date.setDate(QDate(2026, 10, 5))
+    state = SimpleNamespace(
+        _quick_launch_active=False,
+        quick_automatic_pipeline=QCheckBox(),
+        detailed_automatic_pipeline=QCheckBox(),
+        students=[student],
+        student=student_combo,
+        subject=subject_combo,
+        topic=topic,
+        lesson_date=lesson_date,
+    )
+    state._selected_lesson_processing_mode = lambda: (
+        app_module.MainWindow._selected_lesson_processing_mode(state)
+    )
+
+    manual_lesson = app_module.MainWindow._build_lesson_from_form(state)
+    assert manual_lesson.pipeline.processing_mode == LessonProcessingMode.MANUAL
+
+    state.detailed_automatic_pipeline.setChecked(True)
+    automatic_lesson = app_module.MainWindow._build_lesson_from_form(state)
+    assert (
+        automatic_lesson.pipeline.processing_mode
+        == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+    )
+
+    app_module.MainWindow._sync_automatic_pipeline_selection(state, True)
+    assert state.quick_automatic_pipeline.isChecked()
+    assert state.detailed_automatic_pipeline.isChecked()
+
+    state.quick_automatic_pipeline.setEnabled(False)
+    state.detailed_automatic_pipeline.setEnabled(False)
+    app_module.MainWindow._reset_quick_processing_selection(
+        state,
+        clear_selection=True,
+    )
+    assert not state._quick_launch_active
+    assert state.quick_automatic_pipeline.isEnabled()
+    assert state.detailed_automatic_pipeline.isEnabled()
+    assert not state.quick_automatic_pipeline.isChecked()
+    assert not state.detailed_automatic_pipeline.isChecked()
 
 
 def test_processing_queue_exposes_automatic_publication_runtime() -> None:

@@ -863,6 +863,9 @@ class MainWindow(QMainWindow):
             "После завершения записи сервис автоматически транскрибирует занятие "
             "и отправит транскрипт в приватный GitHub-репозиторий."
         )
+        self.quick_automatic_pipeline.toggled.connect(
+            self._sync_automatic_pipeline_selection
+        )
 
         surface = QFrame()
         surface.setObjectName("quickSurface")
@@ -1089,13 +1092,37 @@ class MainWindow(QMainWindow):
         self.config.quick_start.last_topic = self.quick_topic.text().strip()
         self.config.save(self.config_path)
 
+    def _sync_automatic_pipeline_selection(self, checked: bool) -> None:
+        """Keep quick and detailed per-lesson automation controls in sync."""
+
+        for name in ("quick_automatic_pipeline", "detailed_automatic_pipeline"):
+            control = getattr(self, name, None)
+            if control is not None and control.isChecked() != checked:
+                control.setChecked(checked)
+
+    def _selected_lesson_processing_mode(self) -> LessonProcessingMode:
+        control_name = (
+            "quick_automatic_pipeline"
+            if self._quick_launch_active
+            else "detailed_automatic_pipeline"
+        )
+        control = getattr(self, control_name, None)
+        automatic = bool(control is not None and control.isChecked())
+        return (
+            LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+            if automatic
+            else LessonProcessingMode.MANUAL
+        )
+
     def _reset_quick_processing_selection(self, *, clear_selection: bool) -> None:
         self._quick_launch_active = False
-        if not hasattr(self, "quick_automatic_pipeline"):
-            return
-        self.quick_automatic_pipeline.setEnabled(True)
-        if clear_selection:
-            self.quick_automatic_pipeline.setChecked(False)
+        for name in ("quick_automatic_pipeline", "detailed_automatic_pipeline"):
+            control = getattr(self, name, None)
+            if control is None:
+                continue
+            control.setEnabled(True)
+            if clear_selection:
+                control.setChecked(False)
 
     def _quick_start_clicked(self) -> None:
         if self.quick_countdown_timer.isActive():
@@ -1207,9 +1234,21 @@ class MainWindow(QMainWindow):
         form.addRow("Ученик", self.student)
         form.addRow("Предмет", self.subject)
         form.addRow("Тема", self.topic)
+        self.detailed_automatic_pipeline = QCheckBox(
+            "Автоматически транскрибировать и отправить на GitHub"
+        )
+        self.detailed_automatic_pipeline.setChecked(False)
+        self.detailed_automatic_pipeline.setToolTip(
+            "После завершения записи сервис автоматически транскрибирует занятие "
+            "и отправит транскрипт в приватный GitHub-репозиторий."
+        )
+        self.detailed_automatic_pipeline.toggled.connect(
+            self._sync_automatic_pipeline_selection
+        )
         form.addRow("Дата", self.lesson_date)
         form.addRow("Микрофон", self.mic)
         form.addRow("Системный звук / loopback", self.loopback)
+        form.addRow("Автоматизация", self.detailed_automatic_pipeline)
         columns.addWidget(form_box, 3)
 
         diagnostics = QGroupBox("Уровни и стабильность")
@@ -1610,12 +1649,7 @@ class MainWindow(QMainWindow):
             topic=self.topic.text().strip(),
             lesson_date=date(value.year(), value.month(), value.day()),
         )
-        if self._quick_launch_active:
-            lesson.pipeline.processing_mode = (
-                LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
-                if self.quick_automatic_pipeline.isChecked()
-                else LessonProcessingMode.MANUAL
-            )
+        lesson.pipeline.processing_mode = self._selected_lesson_processing_mode()
         return lesson
 
     def _create_lesson_from_form(self) -> Lesson:
@@ -1694,6 +1728,7 @@ class MainWindow(QMainWindow):
             )
             self._enqueue_transcription(lesson, audio)
             self.lesson = None
+            self._reset_quick_processing_selection(clear_selection=True)
             self._set_status(
                 f"{lesson.student.full_name}: добавлено в фоновую очередь",
                 "working",
