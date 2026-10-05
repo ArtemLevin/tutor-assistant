@@ -127,7 +127,6 @@ def test_final_persistence_failure_reconciles_without_second_asr(monkeypatch, tm
     assert stored.artifacts.transcription_manifest
 
 
-
 def test_automatic_transcription_creates_canonical_immutable_revision(
     monkeypatch,
     tmp_path,
