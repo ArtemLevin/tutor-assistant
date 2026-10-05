@@ -4,6 +4,20 @@
 
 ## 1.0.0rc1 — Release 1.0 readiness
 
+- Добавлен opt-in режим `AUTO_TRANSCRIPT_GITHUB`: после успешного завершения записи занятие
+  автоматически проходит persistent ASR queue, создаёт immutable automatic-transcription revision
+  в SQLite и публикует transcript через durable publication queue без подмены teacher-approved
+  семантики `READY`.
+- Automatic publication использует transcript-only egress, immutable revision/SHA/path,
+  isolated Git worktree, `--force-with-lease`, remote commit/content verification и fail-closed
+  collision policy; transient Git failures имеют bounded retry, а blocked/conflict состояния
+  видимы в фоновой очереди и переживают restart.
+- Safe shutdown теперь учитывает publication worker как drain barrier; waiting/retry publication
+  jobs сохраняются для следующего запуска.
+- Добавлен end-to-end regression contract
+  `stop → ASR → SQLite revision → publication queue → verified Git publication`
+  с реальным локальным bare Git remote.
+
 - Python 3.12 утверждён production runtime; Python 3.13/3.14 вынесены в compatibility CI.
 - Добавлен стабильный aggregate `Release 1.0 Gate` с privacy, architecture,
   accessibility, packaging и production test contracts.
