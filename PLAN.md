@@ -1,6 +1,6 @@
 # Tutor Assistant — Development Plan
 
-**Актуальность:** 20 августа 2026 года
+**Актуальность:** 5 октября 2026 года
 **Текущая версия:** `1.0.0rc1`
 **Основная ветка:** `main`  
 **Production entrypoint:** `tutor-assistant-gui -> tutor_assistant.ui.recording_recovery_app:main`
@@ -26,7 +26,7 @@ Tutor Assistant перешёл из фазы архитектурной стаб
 
 Stable release намеренно **не объявляется завершённым** до внешней проверки:
 
-1. первого green GitHub `Release 1.0 Gate` и отдельного включения branch protection владельцем;
+1. включения branch protection/ruleset владельцем после уже подтверждённого green `Release 1.0 Gate` (repository setting остаётся открытой задачей #35);
 2. реальной сборки и установки на clean Windows runner;
 3. предоставления сертификата либо явного согласования unsigned stable exception;
 4. фактических 20 часов hardware soak и остальных физических acceptance scenarios;
@@ -41,15 +41,19 @@ Stable release намеренно **не объявляется завершён
 - Wave 3 / Slice 15 — LaTeX monitor coordinator;
 - Wave 3 / Slice 16 — shutdown coordinator;
 - Wave 3 / Slice 17 — Teacher Cockpit / recording-review workspace synchronization;
-- P0 Production Safety Hardening — transactional restore boundary, single-channel audio recovery, recorder quiescence, observable lease loss, authoritative approved transcript publication, Git blob integrity и transcription reconciliation.
+- P0 Production Safety Hardening — transactional restore boundary, single-channel audio recovery, recorder quiescence, observable lease loss, authoritative approved transcript publication, Git blob integrity и transcription reconciliation;
+- opt-in automatic transcript publication pipeline (#116): persisted lesson mode, mandatory post-stop ASR, immutable automatic SQLite revision, durable publication queue, verified transcript-only GitHub publication, bounded retry/recovery, UI status и shutdown barriers.
 
-Последний объединённый production commit после Slice 17 + P0 hardening:
+Текущий production HEAD после merge #116:
 
 ```text
-4ffafbcda985e987419336e0f28baec3f1027140
+899442cf36ba6047c6dfafeaabf8861369a5e30d
 ```
 
-Следующий архитектурный feature slice — **Wave 3 / Slice 18: Quick lesson launch orchestration / schedule bridge** — откладывается до завершения Release 1.0 hardening.
+Automatic pipeline считается реализованным и покрыт production gate. Его operational contract описан в
+[`docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md`](docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md).
+
+Следующий архитектурный feature slice — **Wave 3 / Slice 18: Quick lesson launch orchestration / schedule bridge** — по-прежнему откладывается до завершения Release 1.0 hardening.
 
 Главный текущий приоритет:
 
@@ -99,6 +103,9 @@ recording, persistence and external infrastructure
 - recovery не откатывает уже продвинувшийся lesson status;
 - recording safety имеет приоритет над UX convenience;
 - persisted transcription queue не очищается при обычном shutdown;
+- persisted automatic publication queue не очищается при обычном shutdown и восстанавливается после restart;
+- `READY` остаётся семантикой teacher-approved transcript; automatic machine revision не маскируется под teacher approval;
+- automatic Git publication использует immutable SQLite revision, transcript-only egress, collision fail-closed и remote verification;
 - cloud processing требует explicit consent;
 - аудио не отправляется во внешние сервисы;
 - application use cases/coordinators не должны зависеть от Qt;
