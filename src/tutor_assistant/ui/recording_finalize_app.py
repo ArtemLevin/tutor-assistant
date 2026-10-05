@@ -220,7 +220,6 @@ class MainWindow(AudioResilientMainWindow):
             if review_before is not None:
                 self.review_lesson = review_before
 
-
     def _present_recording_recovery_required(self, details: str) -> None:
         logging.error(details)
         self._recording_stop_started = False
