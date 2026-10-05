@@ -4,9 +4,9 @@ from datetime import date
 
 import pytest
 
+import tutor_assistant.pipeline as pipeline_module
 from tutor_assistant.config import AppConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
-import tutor_assistant.pipeline as pipeline_module
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.publisher import PublicationResult
 from tutor_assistant.transcription import TranscriptionResult
