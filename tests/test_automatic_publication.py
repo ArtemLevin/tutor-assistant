@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import tutor_assistant.pipeline as pipeline_module
+from tutor_assistant.automatic_publication import automatic_publication_repository_path
 from tutor_assistant.application.publication_queue import (
     PublicationPumpContext,
     PublicationQueueCoordinator,
