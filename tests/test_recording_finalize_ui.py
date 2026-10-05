@@ -166,6 +166,21 @@ def test_completed_auto_recording_prepares_next_lesson_without_crash(tmp_path) -
     assert harness.readiness_refreshes == 1
 
 
+def test_prepare_next_lesson_preserves_parallel_review_audio_context(tmp_path) -> None:
+    harness = _FinalizeHarness(tmp_path / "config.toml")
+    review_lesson = _lesson()
+    harness.lesson = review_lesson
+    harness.review_lesson = review_lesson
+
+    harness._prepare_next_lesson()
+
+    assert harness.lesson is review_lesson
+    assert harness.review_lesson is review_lesson
+    assert harness.audio_path.cleared == 0
+    assert harness.recording_lesson is None
+    assert harness.phases[-1] == RecordingPanelPhase.READY
+
+
 def test_completed_recording_releases_workflow_before_optional_post_finalize_failure(
     tmp_path,
 ) -> None:
