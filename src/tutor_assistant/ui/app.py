@@ -1466,7 +1466,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             self._page_heading(
                 "Фоновая обработка",
-                "Записывайте следующие занятия, пока Whisper последовательно обрабатывает очередь.",
+                "Записывайте следующие занятия, пока транскрибация и GitHub-публикация "
+                "последовательно обрабатывают durable очереди.",
             )
         )
         summary = QFrame()
@@ -1487,7 +1488,10 @@ class MainWindow(QMainWindow):
         self.processing_list.itemDoubleClicked.connect(self._open_processing_item)
         layout.addWidget(self.processing_list, 1)
         processing_actions = QHBoxLayout()
-        hint = QLabel("Выберите задание, затем откройте готовый транскрипт или повторите ошибку")
+        hint = QLabel(
+            "Выберите задание: откройте готовый результат или повторите "
+            "остановленную транскрибацию/публикацию"
+        )
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         processing_actions.addWidget(hint, 1)
