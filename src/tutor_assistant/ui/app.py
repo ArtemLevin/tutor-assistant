@@ -3195,10 +3195,17 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         has_recording = bool(self.recorder and self.recorder.active) or self._recording_stop_started
-        has_workers = any(worker.isRunning() for worker in self.workers) or self.transcription_worker.busy
+        has_workers = (
+            any(worker.isRunning() for worker in self.workers)
+            or self.transcription_worker.busy
+            or self.publication_worker.busy
+        )
         if not has_recording and not has_workers:
             self.transcription_worker.shutdown()
-            if self.transcription_worker.wait(1000):
+            self.publication_worker.shutdown()
+            transcription_stopped = self.transcription_worker.wait(1000)
+            publication_stopped = self.publication_worker.wait(1000)
+            if transcription_stopped and publication_stopped:
                 event.accept()
             else:
                 self._shutdown_requested = True
@@ -3208,7 +3215,8 @@ class MainWindow(QMainWindow):
             self,
             "Безопасное завершение",
             "Сначала завершить запись и дождаться текущих фоновых операций? "
-            "Ожидающие транскрибации сохранятся и продолжатся при следующем запуске.",
+            "Ожидающие транскрибации и публикации сохранятся и продолжатся "
+            "при следующем запуске.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Yes,
         )
@@ -3220,6 +3228,8 @@ class MainWindow(QMainWindow):
         if self._normalization_cancellation is not None:
             self._normalization_cancellation.cancel()
         self.transcription_worker.shutdown()
+        self.publication_worker.shutdown()
+        self.publication_retry_timer.stop()
         self.timer.stop()
         self.latex_poll_timer.stop()
         self.content_maintenance_timer.stop()
@@ -3236,7 +3246,12 @@ class MainWindow(QMainWindow):
             return
         recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
         workers_busy = any(worker.isRunning() for worker in self.workers)
-        if recording_busy or workers_busy or self.transcription_worker.isRunning():
+        if (
+            recording_busy
+            or workers_busy
+            or self.transcription_worker.isRunning()
+            or self.publication_worker.isRunning()
+        ):
             return
         self._shutdown_ready = True
         QTimer.singleShot(0, self.close)
