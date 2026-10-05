@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import tutor_assistant.pipeline as pipeline_module
 from tutor_assistant.application.publication_queue import (
     PublicationPumpContext,
     PublicationQueueCoordinator,
@@ -19,7 +20,6 @@ from tutor_assistant.application.recording_stop import (
 )
 from tutor_assistant.config import AppConfig, RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
-import tutor_assistant.pipeline as pipeline_module
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.publication import GitHubRepositoryIdentity, GitRemoteDescriptor
 from tutor_assistant.publisher import (
