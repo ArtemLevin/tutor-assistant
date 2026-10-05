@@ -595,20 +595,22 @@ class LessonPublisher:
         payload: TranscriptPublicationPayload,
     ) -> PublicationPlan:
         if payload.lesson_id != lesson.lesson_id:
-            raise GitError("Publication payload относится к другому занятию")
+            raise PublicationBlockedError(
+                "Publication payload относится к другому занятию"
+            )
         _text, size = _validated_publication_payload(payload, self.policy)
         _assert_transcript_only_egress(
             (payload.repository_path,),
             payload.repository_path,
         )
         if not self.config.push:
-            raise GitError(
+            raise PublicationBlockedError(
                 "Публикация отключена параметром repository.push=false. "
                 "Production publish требует реальной отправки в remote."
             )
         repo = self.config.students_repo.resolve()
         if not (repo / ".git").exists():
-            raise GitError(f"Git-репозиторий не найден: {repo}")
+            raise PublicationBlockedError(f"Git-репозиторий не найден: {repo}")
         descriptor = self._descriptor(repo)
         if self.policy.require_private_repository:
             ensure_private_repository(self.config, repo, self.github_gateway)
