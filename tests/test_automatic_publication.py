@@ -240,6 +240,12 @@ def test_stop_to_asr_to_publication_queue_to_verified_git_publication(
     config = AppConfig(workspace=tmp_path / "workspace")
     config.recording.dual_channel_transcription = False
     config.repository = RepositoryConfig(
+        students_repo=tmp_path / "public-students-pages",
+        remote="origin",
+        repository_full_name="ArtemLevin/students-26-27",
+        push=True,
+    )
+    config.automatic_transcript_repository = RepositoryConfig(
         students_repo=repository,
         remote="origin",
         repository_full_name="ArtemLevin/private-students",
@@ -373,13 +379,18 @@ def test_stop_to_asr_to_publication_queue_to_verified_git_publication(
         lambda _self, _repo: descriptor,
     )
     publisher = LessonPublisher(
-        config.repository,
+        config.automatic_publication_repository,
         policy=PublicationPolicy(require_private_repository=False),
     )
+
+    def automatic_publisher(publisher_config):
+        assert publisher_config is config.automatic_transcript_repository
+        return publisher
+
     monkeypatch.setattr(
         pipeline_module,
         "LessonPublisher",
-        lambda _config: publisher,
+        automatic_publisher,
     )
 
     publication = pipeline.publish_automatic_transcript(
