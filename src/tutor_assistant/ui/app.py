@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 import traceback
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
@@ -63,7 +63,6 @@ from ..application import (
     TranscriptionAudioMissingError,
     TranscriptionPumpContext,
     TranscriptionQueueCoordinator,
-    classify_publication_failure,
 )
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
@@ -1760,19 +1759,10 @@ class MainWindow(QMainWindow):
         if self._shutdown_requested:
             self.publication_retry_timer.stop()
             return
-        retry_times = [
-            entry.next_attempt_at
-            for entry in self.publication_queue_coordinator.snapshot().entries
-            if entry.status == "retry_required" and entry.next_attempt_at is not None
-        ]
-        if not retry_times:
+        delay_ms = self.publication_queue_coordinator.next_retry_delay_ms()
+        if delay_ms is None:
             self.publication_retry_timer.stop()
             return
-        next_attempt = min(retry_times)
-        delay_ms = max(
-            0,
-            int((next_attempt - datetime.now(UTC)).total_seconds() * 1000),
-        )
         self.publication_retry_timer.start(delay_ms)
 
     def _background_publication_ready(self, job_id: str, result) -> None:
@@ -1804,28 +1794,23 @@ class MainWindow(QMainWindow):
                 details,
             )
             return
-        decision = classify_publication_failure(error, attempts=job.attempts)
+        decision = self.publication_queue_coordinator.resolve_failure(
+            job_id,
+            error,
+            details,
+        )
         if decision.disposition == PublicationFailureDisposition.RETRY_REQUIRED:
             delay = decision.retry_after_seconds
-            if delay is None:
-                raise RuntimeError("Retry disposition requires a retry delay")
-            self.publication_queue_coordinator.retry_required(
-                job_id,
-                details,
-                next_attempt_at=datetime.now(UTC) + timedelta(seconds=delay),
-            )
             self._set_status(
                 f"GitHub временно недоступен · повтор через {delay} с",
                 "warning",
             )
         elif decision.disposition == PublicationFailureDisposition.CONFLICT:
-            self.publication_queue_coordinator.conflict(job_id, details)
             self._set_status(
                 "Автопубликация остановлена: удалённый transcript отличается",
                 "error",
             )
         else:
-            self.publication_queue_coordinator.blocked(job_id, details)
             self._set_status(
                 "Автопубликация заблокирована; исправьте настройку и повторите",
                 "error",
