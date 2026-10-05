@@ -673,28 +673,34 @@ class LessonPipeline:
                 if pinned_revision is None:
                     if existing.status == "running" and not recover_stale_running:
                         continue
-                    self.store.update_automatic_publication_job(
+                    updated = self.store.update_inactive_automatic_publication_job(
                         lesson.lesson_id,
-                        "conflict",
+                        expected_revision_number=existing.revision_number,
+                        expected_content_sha256=existing.content_sha256,
+                        expected_repository_path=existing.repository_path,
+                        status="conflict",
                         error=(
                             "Automatic publication intent references a missing "
                             "automatic transcript revision"
                         ),
-                        next_attempt_at=None,
                     )
-                    reconciled += 1
+                    if updated is not None:
+                        reconciled += 1
                     continue
 
                 if existing.repository_path != repository_path:
                     if existing.status == "running" and not recover_stale_running:
                         continue
-                    self.store.update_automatic_publication_job(
+                    updated = self.store.update_inactive_automatic_publication_job(
                         lesson.lesson_id,
-                        "conflict",
+                        expected_revision_number=existing.revision_number,
+                        expected_content_sha256=existing.content_sha256,
+                        expected_repository_path=existing.repository_path,
+                        status="conflict",
                         error="Automatic publication intent path no longer matches lesson policy",
-                        next_attempt_at=None,
                     )
-                    reconciled += 1
+                    if updated is not None:
+                        reconciled += 1
                     continue
 
                 job = existing
@@ -725,13 +731,16 @@ class LessonPipeline:
                             job.status != "blocked"
                             or job.error != _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
                         ):
-                            self.store.update_automatic_publication_job(
+                            updated = self.store.update_inactive_automatic_publication_job(
                                 lesson.lesson_id,
-                                "blocked",
+                                expected_revision_number=job.revision_number,
+                                expected_content_sha256=job.content_sha256,
+                                expected_repository_path=job.repository_path,
+                                status="blocked",
                                 error=_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR,
-                                next_attempt_at=None,
                             )
-                            reconciled += 1
+                            if updated is not None:
+                                reconciled += 1
                         continue
 
                     try:
@@ -745,13 +754,16 @@ class LessonPipeline:
                             repository_path=repository_path,
                         )
                     except AutomaticPublicationJobConflictError as exc:
-                        self.store.update_automatic_publication_job(
+                        updated = self.store.update_inactive_automatic_publication_job(
                             lesson.lesson_id,
-                            "conflict",
+                            expected_revision_number=job.revision_number,
+                            expected_content_sha256=job.content_sha256,
+                            expected_repository_path=job.repository_path,
+                            status="conflict",
                             error=str(exc),
-                            next_attempt_at=None,
                         )
-                        reconciled += 1
+                        if updated is not None:
+                            reconciled += 1
                         continue
                     pinned_revision = replacement_revision
                     reconciled += 1
@@ -759,12 +771,17 @@ class LessonPipeline:
                     job.status == "blocked"
                     and job.error == _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
                 ):
-                    job = self.store.update_automatic_publication_job(
+                    updated = self.store.update_inactive_automatic_publication_job(
                         lesson.lesson_id,
-                        "waiting",
+                        expected_revision_number=job.revision_number,
+                        expected_content_sha256=job.content_sha256,
+                        expected_repository_path=job.repository_path,
+                        status="waiting",
                         error=None,
-                        next_attempt_at=None,
                     )
+                    if updated is None:
+                        continue
+                    job = updated
                     reconciled += 1
 
             publication = lesson.publication
