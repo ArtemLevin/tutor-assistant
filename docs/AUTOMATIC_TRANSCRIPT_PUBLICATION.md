@@ -112,8 +112,15 @@ Startup reconciliation does not create publication work from an empty automatic 
 existing unpublished empty intent is blocked until transcription succeeds.
 
 A successful retranscription may repair a legacy unpublished intent that points specifically to an
-older empty automatic revision. The repair is transactional, compare-and-swap guarded, resets retry
-state, and is forbidden once the intent is `running` or `published`.
+older empty automatic revision. The repair is transactional, compare-and-swap guarded, verifies both
+old and replacement automatic revisions inside the same SQLite transaction, resets retry state, and
+is forbidden once a live intent is `running` or `published`.
+
+When a durable publication job already exists, its immutable
+`revision_number + content_sha256 + repository_path` tuple is authoritative. A newer automatic
+revision must not silently retarget or block a valid existing job. Newer revisions participate only
+when creating a missing intent or repairing a job that is proven to reference an older empty
+automatic revision.
 
 The Git transport preserves the existing publication safety boundary:
 
@@ -168,10 +175,16 @@ automatic transcript revisions.
 
 Important recovery rules:
 
-- a missing publication intent can be recreated from the durable automatic revision;
-- a persisted `running` publication is restored as retryable work rather than assumed successful;
+- a missing publication intent can be recreated from the latest meaningful durable automatic revision;
+- an existing job is reconciled against the exact automatic revision pinned by its immutable tuple,
+  not against an unrelated newer revision;
+- a persisted meaningful `running` publication is restored as retryable work rather than assumed
+  successful;
+- at process startup only, a stale `running` job pinned to an empty automatic revision is quarantined
+  before it can be repaired to a newer meaningful revision or left `blocked`;
+- runtime reconciliation never reclassifies a live `running` publication worker;
 - an already remotely verified/persisted publication is reconciled to `published`;
-- immutable payload mismatch is surfaced as conflict;
+- missing pinned revisions and immutable path mismatches are surfaced as conflict;
 - retry/restart does not create a second automatic transcript revision when durable ASR artifacts
   already exist.
 
@@ -202,7 +215,7 @@ The production regression suite covers:
 - automatic mode forcing post-recording transcription;
 - empty ASR rejection without a duration threshold;
 - immutable automatic revision creation and ASR reconciliation;
-- quarantine and controlled repair of legacy empty unpublished publication intents;
+- pinned-revision recovery, startup quarantine and controlled repair of legacy empty unpublished publication intents;
 - durable queue migration/storage/restart behavior;
 - retry/backoff, block and conflict classification;
 - publication worker transport behavior;
