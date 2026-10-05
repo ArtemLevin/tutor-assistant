@@ -657,7 +657,9 @@ class LessonPipeline:
                 content_sha256=revision.content_sha256,
                 revision_number=revision.revision_number,
             )
-            target = LessonPublisher(self.config.repository).publish_payload(
+            target = LessonPublisher(
+                self.config.automatic_publication_repository
+            ).publish_payload(
                 current,
                 self.lesson_dir(current),
                 payload,
