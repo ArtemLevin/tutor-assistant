@@ -15,7 +15,6 @@ from ..publication_queue import (
     StoredPublicationJobLike,
 )
 
-
 AUTOMATIC_PUBLICATION_BACKOFF_SECONDS = (30, 120, 600, 1800)
 
 
