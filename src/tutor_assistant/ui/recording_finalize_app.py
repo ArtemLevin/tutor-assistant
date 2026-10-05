@@ -5,13 +5,13 @@ import logging
 
 from PySide6.QtWidgets import QMessageBox
 
-from ..application.transcription_queue import should_enqueue_transcription
 from ..application.recording_stop import (
     RecordingStopOutcome,
     RecordingStopSession,
     RecordingStopState,
     StopRecordingUseCase,
 )
+from ..application.transcription_queue import should_enqueue_transcription
 from ..audio_files import finalize_readable_audio
 from ..domain import Lesson
 from ..recording import RecordingResult

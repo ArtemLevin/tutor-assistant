@@ -179,7 +179,6 @@ def test_snapshot_contains_ui_neutral_queue_state(tmp_path: Path) -> None:
     ]
 
 
-
 def test_auto_processing_mode_requires_transcription_even_when_profile_disables_it() -> None:
     source = lesson("automatic", status=JobStatus.RECORDED)
     source.pipeline.processing_mode = LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
