@@ -522,14 +522,19 @@ class LessonPublisher:
 
     def _write_transcript(
         self,
-        checkout: Path,
-        repository_path: str,
+        checkout: Path | Lesson,
+        repository_path: str | Path,
         text: str,
     ) -> Path:
-        relative = PurePosixPath(repository_path)
-        checkout = checkout.resolve()
-        target = (checkout / Path(relative.as_posix())).resolve()
-        if not target.is_relative_to(checkout):
+        if isinstance(checkout, Lesson):
+            lesson = checkout
+            checkout_path = Path(repository_path).resolve()
+            relative = publication_repository_path(lesson, self.policy)
+        else:
+            checkout_path = checkout.resolve()
+            relative = PurePosixPath(repository_path)
+        target = (checkout_path / Path(relative.as_posix())).resolve()
+        if not target.is_relative_to(checkout_path):
             raise GitError("Путь публикации транскрипта выходит за пределы Git-репозитория")
         target.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(target, text)
