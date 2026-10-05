@@ -198,6 +198,83 @@ def test_store_repair_rejects_meaningful_pinned_revision(tmp_path) -> None:
     assert stored.content_sha256 == old_sha
 
 
+def test_store_repair_rejects_nonautomatic_empty_pinned_revision(tmp_path) -> None:
+    store = LessonStore(tmp_path / "lessons.sqlite3")
+    lesson = Lesson(
+        student=Student(id="student", full_name="Ученик"),
+        subject="physics",
+        lesson_date=date(2026, 10, 4),
+        topic="Волны",
+    )
+    store.save(lesson)
+    path = "students/student/transcript/04.10.26.txt"
+    old_sha = _insert_transcript_revision(
+        store,
+        lesson.lesson_id,
+        1,
+        "\n",
+        created_by="teacher-review",
+    )
+    new_sha = _insert_transcript_revision(store, lesson.lesson_id, 2, "replacement\n")
+    store.ensure_automatic_publication_job(lesson.lesson_id, 1, old_sha, path)
+
+    with pytest.raises(AutomaticPublicationJobConflictError, match="automatic"):
+        store.repair_automatic_publication_job(
+            lesson.lesson_id,
+            expected_revision_number=1,
+            expected_content_sha256=old_sha,
+            expected_repository_path=path,
+            revision_number=2,
+            content_sha256=new_sha,
+            repository_path=path,
+        )
+
+    stored = store.get_automatic_publication_job(lesson.lesson_id)
+    assert stored is not None
+    assert stored.revision_number == 1
+    assert stored.content_sha256 == old_sha
+
+
+def test_store_repair_rejects_corrupted_revision_sha(tmp_path) -> None:
+    store = LessonStore(tmp_path / "lessons.sqlite3")
+    lesson = Lesson(
+        student=Student(id="student", full_name="Ученик"),
+        subject="physics",
+        lesson_date=date(2026, 10, 4),
+        topic="Волны",
+    )
+    store.save(lesson)
+    path = "students/student/transcript/04.10.26.txt"
+    old_sha = _insert_transcript_revision(store, lesson.lesson_id, 1, "\n")
+    new_sha = _insert_transcript_revision(store, lesson.lesson_id, 2, "replacement\n")
+    store.ensure_automatic_publication_job(lesson.lesson_id, 1, old_sha, path)
+    with store.connect() as db:
+        db.execute(
+            """
+            UPDATE transcript_revisions
+            SET content='corrupted transcript'
+            WHERE lesson_id=? AND revision_number=1
+            """,
+            (lesson.lesson_id,),
+        )
+
+    with pytest.raises(AutomaticPublicationJobConflictError, match="SHA-256"):
+        store.repair_automatic_publication_job(
+            lesson.lesson_id,
+            expected_revision_number=1,
+            expected_content_sha256=old_sha,
+            expected_repository_path=path,
+            revision_number=2,
+            content_sha256=new_sha,
+            repository_path=path,
+        )
+
+    stored = store.get_automatic_publication_job(lesson.lesson_id)
+    assert stored is not None
+    assert stored.revision_number == 1
+    assert stored.content_sha256 == old_sha
+
+
 def test_store_repair_rejects_nonautomatic_or_empty_replacement(tmp_path) -> None:
     store = LessonStore(tmp_path / "lessons.sqlite3")
     lesson = Lesson(
