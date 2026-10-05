@@ -30,6 +30,8 @@ class ShutdownRuntimeSnapshot:
     workers_running: bool = False
     transcription_busy: bool = False
     transcription_running: bool = False
+    publication_busy: bool = False
+    publication_running: bool = False
     normalization_cancellable: bool = False
 
     @property
@@ -38,11 +40,21 @@ class ShutdownRuntimeSnapshot:
 
     @property
     def prompt_required(self) -> bool:
-        return self.recording_busy or self.workers_running or self.transcription_busy
+        return (
+            self.recording_busy
+            or self.workers_running
+            or self.transcription_busy
+            or self.publication_busy
+        )
 
     @property
     def drain_busy(self) -> bool:
-        return self.recording_busy or self.workers_running or self.transcription_running
+        return (
+            self.recording_busy
+            or self.workers_running
+            or self.transcription_running
+            or self.publication_running
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +68,7 @@ class ShutdownDrainPlan:
     begin_draining: bool = False
     cancel_normalization: bool = False
     shutdown_transcription: bool = False
+    shutdown_publication: bool = False
     quiesce_runtime: bool = False
     finalize_recording: bool = False
 
@@ -93,14 +106,19 @@ class ShutdownCoordinator:
             transcription_wait_ms=self._immediate_wait_ms,
         )
 
-    def complete_immediate_shutdown(self, *, transcription_stopped: bool) -> ShutdownPhase:
+    def complete_immediate_shutdown(
+        self,
+        *,
+        transcription_stopped: bool,
+        publication_stopped: bool = True,
+    ) -> ShutdownPhase:
         if self._phase == ShutdownPhase.READY:
             return self._phase
         if self._phase == ShutdownPhase.DRAINING:
             return self._phase
         self._phase = (
             ShutdownPhase.READY
-            if transcription_stopped
+            if transcription_stopped and publication_stopped
             else ShutdownPhase.DRAINING
         )
         return self._phase
@@ -118,6 +136,7 @@ class ShutdownCoordinator:
             begin_draining=True,
             cancel_normalization=snapshot.normalization_cancellable,
             shutdown_transcription=True,
+            shutdown_publication=True,
             quiesce_runtime=True,
             finalize_recording=(
                 snapshot.recording_active and not snapshot.recording_stop_in_flight
