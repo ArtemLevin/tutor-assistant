@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QCheckBox
 
+from tutor_assistant.domain import LessonProcessingMode
 from tutor_assistant.ui import app as app_module
 from tutor_assistant.ui.content_import import ImportLessonDialog
 from tutor_assistant.ui.crm import SchedulePage, StudentsPage
@@ -87,13 +89,48 @@ def test_required_review_and_explicit_actions_are_first_class_controls() -> None
 
 def test_quick_mode_exposes_automatic_transcript_github_opt_in() -> None:
     page_source = inspect.getsource(app_module.MainWindow._quick_start_page)
-    build_source = inspect.getsource(app_module.MainWindow._build_lesson_from_form)
 
     assert "quick_automatic_pipeline" in page_source
     assert "Автоматически транскрибировать и отправить на GitHub" in page_source
-    assert "LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB" in build_source
-    assert "_quick_launch_active" in build_source
 
+
+def test_detailed_mode_exposes_same_per_lesson_automatic_opt_in() -> None:
+    _application()
+    lesson_source = inspect.getsource(app_module.MainWindow._lesson_tab)
+
+    assert "detailed_automatic_pipeline" in lesson_source
+    assert "Автоматически транскрибировать и отправить на GitHub" in lesson_source
+
+    state = SimpleNamespace(
+        _quick_launch_active=False,
+        quick_automatic_pipeline=QCheckBox(),
+        detailed_automatic_pipeline=QCheckBox(),
+    )
+    assert (
+        app_module.MainWindow._selected_lesson_processing_mode(state)
+        == LessonProcessingMode.MANUAL
+    )
+
+    state.detailed_automatic_pipeline.setChecked(True)
+    assert (
+        app_module.MainWindow._selected_lesson_processing_mode(state)
+        == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+    )
+
+    state._quick_launch_active = True
+    assert (
+        app_module.MainWindow._selected_lesson_processing_mode(state)
+        == LessonProcessingMode.MANUAL
+    )
+    state.quick_automatic_pipeline.setChecked(True)
+    assert (
+        app_module.MainWindow._selected_lesson_processing_mode(state)
+        == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+    )
+
+    app_module.MainWindow._sync_automatic_pipeline_selection(state, False)
+    assert not state.quick_automatic_pipeline.isChecked()
+    assert not state.detailed_automatic_pipeline.isChecked()
 
 
 def test_processing_queue_exposes_automatic_publication_runtime() -> None:
