@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
-from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtCore import QItemSelectionModel, QObject, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from tutor_assistant.content import StudentContentService  # noqa: E402
@@ -95,6 +95,19 @@ def make_page(tmp_path: Path) -> tuple[StudentContentPage, StudentContentService
     return page, service
 
 
+def select_rows(page: StudentContentPage, *rows: int) -> None:
+    selection = page.table.selectionModel()
+    assert selection is not None
+    selection.clearSelection()
+    flags = (
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows
+    )
+    for row in rows:
+        selection.select(page.table.model().index(row, 0), flags)
+    QApplication.processEvents()
+
+
 def test_archive_accessibility_filters_delete_and_restore(
     tmp_path: Path,
     application: QApplication,
@@ -142,6 +155,118 @@ def test_archive_accessibility_filters_delete_and_restore(
     dialog.restore_shortcut.activated.emit()
     assert service.list_lessons().total == 1
     dialog.close()
+    page.close()
+
+
+def test_bulk_delete_and_purge_selected_lessons_frees_disk_space(
+    tmp_path: Path,
+    application: QApplication,
+    monkeypatch,
+) -> None:
+    page, service = make_page(tmp_path)
+    student = Student(id="student", full_name="Ученик")
+    service.create_lesson(
+        Lesson(
+            lesson_id="gui-lesson-2",
+            student=student,
+            subject="mathematics",
+            lesson_date=date(2026, 7, 19),
+            topic="Bulk deletion",
+        )
+    )
+    page.refresh()
+    assert page.table.rowCount() == 2
+
+    confirmations: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda _parent, _title, message, *_args, **_kwargs: (
+            confirmations.append(message) or QMessageBox.Yes
+        ),
+    )
+    select_rows(page, 0, 1)
+
+    assert set(page.selected_lesson_ids()) == {"gui-lesson", "gui-lesson-2"}
+    assert page.delete_lesson_button.text() == "В корзину (2)"
+
+    page.delete_selected_lesson()
+
+    assert service.list_lessons().total == 0
+    summary = service.trash_summary()
+    assert len(summary.items) == 2
+    assert "Для освобождения места" in confirmations[0]
+
+    page.open_trash()
+    dialog = page.trash_dialog
+    assert dialog is not None
+    assert dialog.table.rowCount() == 2
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    selection = dialog.table.selectionModel()
+    assert selection is not None
+    flags = (
+        QItemSelectionModel.SelectionFlag.Select
+        | QItemSelectionModel.SelectionFlag.Rows
+    )
+    selection.select(dialog.table.model().index(0, 0), flags)
+    selection.select(dialog.table.model().index(1, 0), flags)
+    application.processEvents()
+
+    assert len(dialog.selected_lesson_ids()) == 2
+    assert dialog.purge_button.text() == "Удалить навсегда (2)"
+    dialog.purge_shortcut.activated.emit()
+
+    assert service.trash_summary().items == []
+    assert not (service.workspace / "trash" / "lessons" / "gui-lesson").exists()
+    assert not (service.workspace / "trash" / "lessons" / "gui-lesson-2").exists()
+    dialog.close()
+    page.close()
+
+
+def test_bulk_delete_continues_when_one_selected_lesson_is_active(
+    tmp_path: Path,
+    application: QApplication,
+    monkeypatch,
+) -> None:
+    page, service = make_page(tmp_path)
+    student = Student(id="student", full_name="Ученик")
+    service.create_lesson(
+        Lesson(
+            lesson_id="gui-deletable",
+            student=student,
+            subject="mathematics",
+            lesson_date=date(2026, 7, 19),
+            topic="Can delete",
+        )
+    )
+    active = service.get_lesson("gui-lesson").lesson
+    active.transition(JobStatus.RECORDING, force=True)
+    service.repository.upsert_lesson(active)
+    page.refresh()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, _title, message, *_args, **_kwargs: (
+            warnings.append(message) or QMessageBox.Ok
+        ),
+    )
+    select_rows(page, 0, 1)
+
+    page.delete_selected_lesson()
+
+    remaining = service.list_lessons()
+    assert [lesson.lesson_id for lesson in remaining.items] == ["gui-lesson"]
+    assert {item.lesson.lesson_id for item in service.trash_summary().items} == {"gui-deletable"}
+    assert warnings
+    assert "перемещено 1 из 2" in warnings[0].casefold()
     page.close()
 
 
