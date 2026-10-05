@@ -6,7 +6,9 @@ import pytest
 
 from tutor_assistant.config import AppConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
+import tutor_assistant.pipeline as pipeline_module
 from tutor_assistant.pipeline import LessonPipeline
+from tutor_assistant.publisher import PublicationResult
 from tutor_assistant.transcription import TranscriptionResult
 
 
@@ -224,3 +226,97 @@ def test_automatic_revision_is_not_duplicated_during_artifact_reconciliation(
     assert recovered.status == JobStatus.REVIEW_REQUIRED
     assert len(revisions_after_recovery) == 1
     assert revisions_after_recovery[0].created_by == "automatic-transcription"
+
+
+def test_automatic_publication_uses_exact_durable_revision(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+    transcribed = pipeline.transcribe(lesson, audio)
+    job = pipeline.store.list_automatic_publication_jobs()[0]
+    observed = {}
+
+    class FakePublisher:
+        def __init__(self, _config) -> None:
+            pass
+
+        def publish_payload(
+            self,
+            current,
+            _lesson_dir,
+            payload,
+            *,
+            reject_existing_mismatch,
+        ):
+            observed["payload"] = payload
+            observed["reject_existing_mismatch"] = reject_existing_mismatch
+            current.transition(JobStatus.PUBLISHED)
+            return PublicationResult(
+                branch="main",
+                repository_path=payload.repository_path,
+                commit="1" * 40,
+                repository_full_name="ArtemLevin/private-students",
+                content_sha256=payload.content_sha256,
+                remote_verified=True,
+            )
+
+    monkeypatch.setattr(pipeline_module, "LessonPublisher", FakePublisher)
+
+    result = pipeline.publish_automatic_transcript(
+        transcribed,
+        revision_number=job.revision_number,
+        content_sha256=job.content_sha256,
+        repository_path=job.repository_path,
+    )
+
+    payload = observed["payload"]
+    assert observed["reject_existing_mismatch"] is True
+    assert payload.revision_number == job.revision_number
+    assert payload.content_sha256 == job.content_sha256
+    assert payload.repository_path == job.repository_path
+    assert result.remote_verified is True
+    persisted = pipeline.content_service.get_lesson(lesson.lesson_id).lesson
+    assert persisted.status == JobStatus.PUBLISHED
+    assert persisted.publication is not None
+    assert persisted.publication.content_sha256 == job.content_sha256
+
+
+def test_automatic_publication_rejects_teacher_revision_before_transport(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+    transcribed = pipeline.transcribe(lesson, audio)
+    teacher_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "teacher edit",
+        path=transcribed.artifacts.verified_transcript,
+        created_by="teacher-review",
+    )
+
+    with pytest.raises(RuntimeError, match="automatic-transcription revision"):
+        pipeline.publish_automatic_transcript(
+            transcribed,
+            revision_number=teacher_revision.revision_number,
+            content_sha256=teacher_revision.content_sha256,
+            repository_path="students/student/transcript/13.07.26.txt",
+        )
