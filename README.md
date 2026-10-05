@@ -8,9 +8,9 @@ Tutor Assistant — локальное Windows-приложение для по�
 подготовка занятия
 → запись микрофона + системного звука
 → безопасное сохранение и восстановление аудио
-→ локальная транскрибация faster-whisper
-→ ручная проверка и LLM-фильтрация учебного содержания
-→ публикация подтверждённого транскрипта
+→ локальная транскрибация
+→ manual: проверка → подтверждение → публикация
+  или opt-in automatic: immutable revision → verified GitHub publication
 → LaTeX / PDF / web-материалы
 ```
 
@@ -79,11 +79,12 @@ uv run tutor-assistant --config config\app.yaml hardware-soak
 - [`docs/SUPPORT.md`](docs/SUPPORT.md) — crash marker, безопасный журнал и support bundle.
 - [`docs/HARDWARE_SOAK.md`](docs/HARDWARE_SOAK.md) — физические сценарии и release thresholds.
 - [`docs/RELEASE.md`](docs/RELEASE.md) — CI gate, защита main, packaging и signing.
+- [`docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md`](docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md) — automatic mode, durable queues, retry/recovery и Git publication contract.
 - [`CHANGELOG.md`](CHANGELOG.md) — изменения по версиям.
 
 ## Текущее состояние архитектуры
 
-**Срез:** 20 августа 2026 года.
+**Срез:** 5 октября 2026 года.
 
 Production GUI запускается через console entrypoint:
 
@@ -124,11 +125,15 @@ recording, persistence and external infrastructure
 - Qt-free `TranscriptionQueueCoordinator` для restore/pump/retry/complete/fail decisions; queue UI получает typed snapshot, а `TranscriptionWorker` вынесен из `ui/app.py` в отдельный Qt transport adapter.
 - Qt-free `NormalizationCoordinator` для manual/auto scheduling, lifecycle, cancellation/progress и resume decisions; `normalization_presentation` централизует actions/process/result state, а explicit Yandex consent остаётся в UI adapter.
 - Qt-free `LatexMonitorCoordinator` для enable/disable, manual/periodic scan eligibility и single-flight state; `latex_monitor_presentation` централизует no-update/success/failure UI state, а `RemoteLatexService` остаётся infrastructure concern.
-- Qt-free `ShutdownCoordinator` для `IDLE/DRAINING/READY`, prompt/immediate-close decisions и drain barriers; `shutdown_app` вставлен в production MRO между publication/cockpit и concurrent layers, сохраняя recording finalize, normalization cancellation, background-task shutdown и persisted transcription queue semantics.
+- Qt-free `ShutdownCoordinator` для `IDLE/DRAINING/READY`, prompt/immediate-close decisions и drain barriers; `shutdown_app` вставлен в production MRO между publication/cockpit и concurrent layers, сохраняя recording finalize, normalization cancellation, background-task shutdown и persisted transcription/publication queue semantics.
+- persisted `LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB`, durable automatic transcript revision и `automatic_publication_jobs` queue;
+- Qt-free `PublicationQueueCoordinator` для restore/pump/retry/conflict/block decisions и отдельный `PublicationWorker` как Qt transport adapter;
+- automatic publication использует immutable SQLite revision, transcript-only egress, collision fail-closed policy, Git force-with-lease и remote content/commit verification.
 
-**Wave 2 завершён; Wave 3 / Slices 13–17 завершены.** Текущий приоритет — Release 1.0:
-production runtime, безопасный backup, disaster recovery, packaging и физическая проверка записи.
-**Wave 3 / Slice 18 перенесён после stable `v1.0.0`.** Детали описаны в [`PLAN.md`](PLAN.md).
+**Wave 2 завершён; Wave 3 / Slices 13–17 завершены; automatic transcript publication pipeline реализован в #116.**
+Текущий приоритет — Release 1.0: production runtime, безопасный backup, disaster recovery,
+packaging и физическая проверка записи. **Wave 3 / Slice 18 перенесён после stable `v1.0.0`.**
+Детали описаны в [`PLAN.md`](PLAN.md).
 
 ## Основные возможности
 
@@ -158,7 +163,8 @@ production runtime, безопасный backup, disaster recovery, packaging и
 - отменяемый countdown;
 - одна контекстная кнопка для начала/завершения;
 - `F9` для быстрого управления;
-- автоматический запуск транскрибации после завершения при соответствующем профиле.
+- автоматический запуск транскрибации после завершения при соответствующем профиле;
+- отдельный opt-in режим «Автоматически транскрибировать и отправить на GitHub» для конкретного занятия; режим фиксируется до старта записи и не становится глобальным default.
 
 ### Транскрибация
 
@@ -170,7 +176,9 @@ production runtime, безопасный backup, disaster recovery, packaging и
 - метки говорящего;
 - редактор сегментов;
 - черновики и ручное подтверждение итогового текста;
-- восстановление очереди после перезапуска.
+- восстановление очереди после перезапуска;
+- в automatic mode — immutable automatic-transcription revision в SQLite без подмены семантики `READY = teacher-approved`;
+- успешный ASR автоматически передаёт durable publication intent в отдельную persistent очередь.
 
 ### LLM-фильтрация учебного содержания
 
@@ -220,22 +228,45 @@ SQLite является долговечным источником истины
 
 ### Публикация и материалы
 
-После подтверждения транскрипта Tutor Assistant может:
+Поддерживаются два совместимых transcript publication workflow.
 
-1. подготовить transcript-only payload;
-2. создать отдельную Git-ветку занятия;
-3. отправить изменения в `students-26-27`;
-4. создать draft PR через GitHub API;
-5. сохранить URL PR в состоянии занятия;
-6. отслеживать появление LaTeX в ветке;
-7. локально скомпилировать PDF;
-8. опубликовать PDF/log/report обратно в ветку.
+**Manual mode** сохраняет существующий контракт:
 
-`gh` CLI **не является обязательной production-зависимостью** для создания draft PR. Он может использоваться как дополнительный диагностический инструмент:
-
-```powershell
-gh auth status
+```text
+ASR → REVIEW_REQUIRED → teacher review → READY → manual publication
 ```
+
+Публикация берёт teacher-approved immutable SQLite revision как source of truth.
+
+**Automatic mode** включается отдельно для конкретного Lesson до начала записи:
+
+```text
+recording stop
+→ persistent transcription queue
+→ local ASR
+→ immutable automatic-transcription revision
+→ persistent publication queue
+→ verified GitHub publication
+→ PUBLISHED
+```
+
+Целевой путь automatic mode:
+
+```text
+<student.repository_folder>/transcript/DD.MM.YY.txt
+```
+
+Дата берётся из `lesson.lesson_date`. Публикация отправляет ровно один ожидаемый текстовый файл:
+аудио, JSON, manifests, TEX/PDF и служебные файлы остаются локально. Existing target с другим
+SHA-256 не перезаписывается: job переходит в conflict. Временные Git-ошибки используют bounded
+retry, configuration/security block требует явного повторного запуска после исправления причины,
+а restart восстанавливает durable publication queue.
+
+Git transport работает через isolated worktree, transcript-only egress guards,
+`--force-with-lease` и remote commit/content verification. `gh` CLI не является обязательной
+production-зависимостью.
+
+Подробный operational contract: [`docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md`](docs/AUTOMATIC_TRANSCRIPT_PUBLICATION.md).
 
 ### LaTeX / PDF
 
