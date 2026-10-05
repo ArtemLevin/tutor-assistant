@@ -44,7 +44,8 @@ def test_shared_lesson_builder_is_persistence_free() -> None:
     builder = inspect.getsource(base_app.MainWindow._build_lesson_from_form)
     creator = inspect.getsource(base_app.MainWindow._create_lesson_from_form)
 
-    assert "return Lesson(" in builder
+    assert "lesson = Lesson(" in builder
+    assert "return lesson" in builder
     assert "pipeline.create" not in builder
     assert "self._build_lesson_from_form()" in creator
     assert "self.pipeline.create(lesson)" in creator

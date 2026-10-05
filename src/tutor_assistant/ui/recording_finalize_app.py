@@ -5,6 +5,7 @@ import logging
 
 from PySide6.QtWidgets import QMessageBox
 
+from ..application.transcription_queue import should_enqueue_transcription
 from ..application.recording_stop import (
     RecordingStopOutcome,
     RecordingStopSession,
@@ -179,7 +180,10 @@ class MainWindow(AudioResilientMainWindow):
         self._recording_stop_started = False
         self.recorder = None
         self.recording_lesson = None
-        if self._quick_auto_transcribe_active:
+        if should_enqueue_transcription(
+            recorded_lesson,
+            profile_auto_transcribe=self._quick_auto_transcribe_active,
+        ):
             self._quick_auto_transcribe_active = False
             self._enqueue_transcription(recorded_lesson, result.mixed_file)
             self._prepare_next_lesson()

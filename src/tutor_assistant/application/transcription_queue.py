@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from ..domain import JobStatus, Lesson
+from ..domain import JobStatus, Lesson, LessonProcessingMode
 from ..transcription_queue import (
     QueueStatus,
     QueueStorage,
@@ -61,6 +61,19 @@ class TranscriptionQueueSnapshot:
 
 
 RetryStateWriter = Callable[[Lesson], None]
+
+
+def should_enqueue_transcription(
+    lesson: Lesson,
+    *,
+    profile_auto_transcribe: bool,
+) -> bool:
+    """Return the durable post-recording transcription decision for a lesson."""
+
+    return (
+        profile_auto_transcribe
+        or lesson.pipeline.processing_mode == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+    )
 
 
 class TranscriptionQueueCoordinator:
