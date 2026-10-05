@@ -501,6 +501,94 @@ def test_automatic_publication_rejects_teacher_revision_before_transport(
         )
 
 
+def test_reconciliation_marks_inactive_job_with_missing_revision_history_conflict(
+    tmp_path,
+) -> None:
+    pipeline = LessonPipeline(AppConfig(workspace=tmp_path))
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    repository_path = "students/student/transcript/13.07.26.txt"
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        1,
+        "a" * 64,
+        repository_path,
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    stored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 1
+    assert stored is not None
+    assert stored.status == "conflict"
+    assert "missing automatic transcript revision" in (stored.error or "")
+
+
+def test_runtime_reconciliation_keeps_running_job_with_missing_revision_history(
+    tmp_path,
+) -> None:
+    pipeline = LessonPipeline(AppConfig(workspace=tmp_path))
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    repository_path = "students/student/transcript/13.07.26.txt"
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        1,
+        "a" * 64,
+        repository_path,
+    )
+    pipeline.store.update_automatic_publication_job(
+        lesson.lesson_id,
+        "running",
+        increment_attempts=True,
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    stored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 0
+    assert stored is not None
+    assert stored.status == "running"
+    assert stored.attempts == 1
+
+
+def test_startup_reconciliation_conflicts_stale_running_job_with_missing_revision_history(
+    tmp_path,
+) -> None:
+    pipeline = LessonPipeline(AppConfig(workspace=tmp_path))
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    repository_path = "students/student/transcript/13.07.26.txt"
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        1,
+        "a" * 64,
+        repository_path,
+    )
+    pipeline.store.update_automatic_publication_job(
+        lesson.lesson_id,
+        "running",
+        increment_attempts=True,
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents(
+        recover_stale_running=True,
+    )
+
+    stored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 1
+    assert stored is not None
+    assert stored.status == "conflict"
+    assert stored.attempts == 1
+    assert "missing automatic transcript revision" in (stored.error or "")
+
+
 def test_reconciliation_preserves_valid_pinned_job_when_newer_revision_is_empty(
     tmp_path,
 ) -> None:
