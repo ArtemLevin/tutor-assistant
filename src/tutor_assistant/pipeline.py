@@ -637,13 +637,40 @@ class LessonPipeline:
                 for item in revisions
                 if item.created_by == "automatic-transcription"
             ]
-            if not automatic_revisions:
-                continue
-
-            latest = automatic_revisions[0]
             repository_path = automatic_publication_repository_path(lesson).as_posix()
             existing = stored_jobs.get(lesson.lesson_id)
 
+            if not automatic_revisions:
+                if existing is None or existing.status == "published":
+                    continue
+                error = (
+                    "Automatic publication intent references a missing "
+                    "automatic transcript revision"
+                )
+                if existing.status == "running":
+                    if not recover_stale_running:
+                        continue
+                    updated = self.store.conflict_stale_running_automatic_publication_job(
+                        lesson.lesson_id,
+                        expected_revision_number=existing.revision_number,
+                        expected_content_sha256=existing.content_sha256,
+                        expected_repository_path=existing.repository_path,
+                        error=error,
+                    )
+                else:
+                    updated = self.store.update_inactive_automatic_publication_job(
+                        lesson.lesson_id,
+                        expected_revision_number=existing.revision_number,
+                        expected_content_sha256=existing.content_sha256,
+                        expected_repository_path=existing.repository_path,
+                        status="conflict",
+                        error=error,
+                    )
+                if updated is not None:
+                    reconciled += 1
+                continue
+
+            latest = automatic_revisions[0]
             if existing is None:
                 if not transcript_has_content(latest.content):
                     continue
