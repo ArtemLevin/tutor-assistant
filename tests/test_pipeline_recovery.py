@@ -9,7 +9,7 @@ from tutor_assistant.config import AppConfig, RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.publisher import PublicationResult
-from tutor_assistant.transcription import TranscriptionResult
+from tutor_assistant.transcription import EmptyTranscriptionError, TranscriptionResult
 
 
 class FailingTranscriber:
@@ -41,6 +41,51 @@ class DurableTranscriber:
                     "provider": "fake",
                     "model": "fake-model",
                     "sources": [{"source_audio": str(audio.resolve())}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return TranscriptionResult(
+            output_dir=output_dir,
+            raw=raw,
+            timestamped=timestamped,
+            cleaned=cleaned,
+            segments=segments,
+            signals=signals,
+            manifest=manifest,
+        )
+
+
+class EmptyTranscriber:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def transcribe(self, audio, output_dir):
+        self.calls += 1
+        output_dir.mkdir(parents=True, exist_ok=True)
+        raw = output_dir / "00_raw_fake.txt"
+        timestamped = output_dir / "00_raw_timestamped.txt"
+        cleaned = output_dir / "03_content_only_medium.txt"
+        segments = output_dir / "00_raw_segments.json"
+        signals = output_dir / "important_student_signals.json"
+        manifest = output_dir / "manifest.json"
+        raw.write_text("", encoding="utf-8")
+        timestamped.write_text("", encoding="utf-8")
+        cleaned.write_text("", encoding="utf-8")
+        segments.write_text("[]", encoding="utf-8")
+        signals.write_text("[]", encoding="utf-8")
+        manifest.write_text(
+            json.dumps(
+                {
+                    "provider": "fake",
+                    "model": "fake-model",
+                    "segment_count": 0,
+                    "sources": [
+                        {
+                            "source_audio": str(audio.resolve()),
+                            "duration_seconds": 180.0,
+                        }
+                    ],
                 }
             ),
             encoding="utf-8",
@@ -89,6 +134,125 @@ def test_transcription_failure_is_persisted(monkeypatch, tmp_path) -> None:
     restored = pipeline.store.get(lesson.lesson_id)
     assert restored.status == JobStatus.FAILED
     assert "model failure" in restored.error
+
+
+def test_empty_asr_fails_without_automatic_revision_or_publication_job(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    (tmp_path / "audio_quality_report.json").write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "microphone": {
+                    "duration_seconds": 180.0,
+                    "silence_ratio": 0.2,
+                    "rms": 0.03,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    transcriber = EmptyTranscriber()
+    monkeypatch.setattr(pipeline, "transcriber", lambda: transcriber)
+
+    with pytest.raises(EmptyTranscriptionError, match="segment_count=0"):
+        pipeline.transcribe(lesson, audio)
+
+    restored = pipeline.store.get(lesson.lesson_id)
+    assert restored is not None
+    assert restored.status == JobStatus.FAILED
+    assert "audio_quality_ready=True" in (restored.error or "")
+    assert restored.artifacts.cleaned_transcript is None
+    assert (
+        pipeline.content_service.repository.list_transcript_revisions(lesson.lesson_id)
+        == []
+    )
+    assert pipeline.store.list_automatic_publication_jobs() == []
+
+
+def test_empty_durable_artifacts_are_not_reused(monkeypatch, tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(pipeline)
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    EmptyTranscriber().transcribe(
+        audio,
+        pipeline.lesson_dir(lesson) / "transcript",
+    )
+    lesson.transition(JobStatus.TRANSCRIBING)
+    pipeline.save_state(lesson, "status", "error")
+    transcriber = DurableTranscriber()
+    monkeypatch.setattr(pipeline, "transcriber", lambda: transcriber)
+
+    recovered = pipeline.transcribe(lesson, audio)
+
+    assert transcriber.calls == 1
+    assert recovered.status == JobStatus.REVIEW_REQUIRED
+
+
+def test_valid_retry_repairs_legacy_empty_unpublished_intent(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    transcript_path = pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt"
+    empty_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=transcript_path,
+        created_by="automatic-transcription",
+    )
+    repository_path = "students/student/transcript/13.07.26.txt"
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        empty_revision.revision_number,
+        empty_revision.content_sha256,
+        repository_path,
+    )
+    pipeline.store.update_automatic_publication_job(
+        lesson.lesson_id,
+        "blocked",
+        error="legacy empty transcript",
+        increment_attempts=True,
+    )
+
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+
+    result = pipeline.transcribe(lesson, audio)
+
+    revisions = pipeline.content_service.repository.list_transcript_revisions(
+        lesson.lesson_id
+    )
+    valid_revision = revisions[0]
+    repaired = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert result.status == JobStatus.REVIEW_REQUIRED
+    assert valid_revision.content == "clean transcript\n"
+    assert repaired is not None
+    assert repaired.revision_number == valid_revision.revision_number
+    assert repaired.content_sha256 == valid_revision.content_sha256
+    assert repaired.status == "waiting"
+    assert repaired.attempts == 0
+    assert repaired.error is None
 
 
 def test_final_persistence_failure_reconciles_without_second_asr(monkeypatch, tmp_path) -> None:
@@ -366,3 +530,53 @@ def test_startup_reconciliation_recreates_missing_publication_intent(
     assert restored is not None
     assert restored.status == "waiting"
     assert restored.repository_path == "students/student/transcript/13.07.26.txt"
+
+
+def test_startup_reconciliation_does_not_create_job_for_empty_revision(tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    empty_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt",
+        created_by="automatic-transcription",
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    assert empty_revision.content == "\n"
+    assert reconciled == 0
+    assert pipeline.store.get_automatic_publication_job(lesson.lesson_id) is None
+
+
+def test_startup_reconciliation_blocks_existing_empty_publication_job(tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    empty_revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt",
+        created_by="automatic-transcription",
+    )
+    pipeline.store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        empty_revision.revision_number,
+        empty_revision.content_sha256,
+        "students/student/transcript/13.07.26.txt",
+    )
+
+    reconciled = pipeline.reconcile_automatic_publication_intents()
+
+    stored = pipeline.store.get_automatic_publication_job(lesson.lesson_id)
+    assert reconciled == 1
+    assert stored is not None
+    assert stored.status == "blocked"
+    assert "транскрипт пуст" in (stored.error or "")

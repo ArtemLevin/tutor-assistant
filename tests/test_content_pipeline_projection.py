@@ -33,9 +33,15 @@ class FakeTranscriber:
         raw.write_text("Теорема Виета", encoding="utf-8")
         timestamped.write_text("[00:00] Теорема Виета", encoding="utf-8")
         cleaned.write_text("Теорема Виета и дискриминант", encoding="utf-8")
-        segments.write_text("[]", encoding="utf-8")
+        segments.write_text(
+            '[{"start": 0.0, "end": 1.0, "text": "Теорема Виета и дискриминант"}]',
+            encoding="utf-8",
+        )
         signals.write_text("[]", encoding="utf-8")
-        manifest.write_text("{}", encoding="utf-8")
+        manifest.write_text(
+            '{"provider": "fake", "model": "fake-model", "segment_count": 1, "sources": []}',
+            encoding="utf-8",
+        )
         return TranscriptionResult(
             output_dir=output_dir,
             raw=raw,

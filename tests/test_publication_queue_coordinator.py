@@ -18,6 +18,7 @@ from tutor_assistant.publisher import (
     PublicationBlockedError,
     PublicationConflictError,
 )
+from tutor_assistant.store import StoredAutomaticPublicationJob
 from tutor_assistant.ui.publication_worker import PublicationWorker
 
 
@@ -274,3 +275,65 @@ def test_publication_worker_is_transport_only() -> None:
     assert "publish_automatic_transcript" in source
     assert "LessonPublisher" not in source
     assert "GitError" not in source
+
+
+def test_restore_refreshes_fresh_repaired_durable_payload() -> None:
+    coordinator = PublicationQueueCoordinator()
+    source = lesson("repaired")
+    coordinator.enqueue(
+        source,
+        revision_number=1,
+        content_sha256="a" * 64,
+        repository_path="students/repaired/transcript/04.10.26.txt",
+    )
+    started = coordinator.pump(PublicationPumpContext())
+    assert started is not None
+    coordinator.blocked(started.job_id, "legacy empty transcript")
+    stored = StoredAutomaticPublicationJob(
+        lesson_id=source.lesson_id,
+        revision_number=2,
+        content_sha256="b" * 64,
+        repository_path="students/repaired/transcript/04.10.26.txt",
+        status="waiting",
+        attempts=0,
+        error=None,
+        next_attempt_at=None,
+    )
+
+    restored = coordinator.restore_history([source], [stored])
+
+    job = coordinator.get(source.lesson_id)
+    assert restored == 1
+    assert job is not None
+    assert job.revision_number == 2
+    assert job.content_sha256 == "b" * 64
+    assert job.status == AutomaticPublicationStatus.WAITING
+
+
+@pytest.mark.parametrize("terminal", ["running", "published"])
+def test_restore_does_not_replace_active_or_published_payload(terminal) -> None:
+    coordinator = PublicationQueueCoordinator()
+    source = lesson(f"immutable-{terminal}")
+    coordinator.enqueue(
+        source,
+        revision_number=1,
+        content_sha256="a" * 64,
+        repository_path=f"students/{source.lesson_id}/transcript/04.10.26.txt",
+    )
+    started = coordinator.pump(PublicationPumpContext())
+    assert started is not None
+    if terminal == "published":
+        coordinator.published(started.job_id)
+    stored = StoredAutomaticPublicationJob(
+        lesson_id=source.lesson_id,
+        revision_number=2,
+        content_sha256="b" * 64,
+        repository_path=f"students/{source.lesson_id}/transcript/04.10.26.txt",
+        status="waiting",
+        attempts=0,
+        error=None,
+        next_attempt_at=None,
+    )
+
+    with pytest.raises(ValueError, match="immutable"):
+        coordinator.restore_history([source], [stored])

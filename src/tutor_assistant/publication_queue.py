@@ -191,6 +191,36 @@ class AutomaticPublicationQueue:
         lesson: Lesson,
         stored: StoredPublicationJobLike,
     ) -> AutomaticPublicationJob:
+        existing = self._jobs.get(lesson.lesson_id)
+        if (
+            existing is not None
+            and not self._same_payload(
+                existing,
+                revision_number=stored.revision_number,
+                content_sha256=stored.content_sha256,
+                repository_path=stored.repository_path,
+            )
+        ):
+            if (
+                self._active_id == existing.id
+                or existing.status
+                in {
+                    AutomaticPublicationStatus.RUNNING,
+                    AutomaticPublicationStatus.PUBLISHED,
+                }
+            ):
+                raise ValueError("Active or published publication payload is immutable")
+            if (
+                stored.status != AutomaticPublicationStatus.WAITING.value
+                or stored.attempts != 0
+                or stored.error is not None
+                or stored.next_attempt_at is not None
+            ):
+                raise ValueError("Replacement publication payload is not a fresh repaired intent")
+            self._jobs.pop(existing.id, None)
+            self._waiting = deque(
+                job_id for job_id in self._waiting if job_id != existing.id
+            )
         return self.enqueue(
             lesson,
             revision_number=stored.revision_number,

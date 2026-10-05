@@ -18,12 +18,14 @@ from tutor_assistant.application.recording_stop import (
     RecordingStopState,
     StopRecordingUseCase,
 )
+from tutor_assistant.automatic_publication import automatic_publication_repository_path
 from tutor_assistant.config import AppConfig, RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.publication import GitHubRepositoryIdentity, GitRemoteDescriptor
 from tutor_assistant.publisher import (
     LessonPublisher,
+    PublicationBlockedError,
     PublicationConflictError,
     PublicationPolicy,
     TranscriptPublicationPayload,
@@ -430,3 +432,34 @@ def test_stop_to_asr_to_publication_queue_to_verified_git_publication(
         "refs/heads/main",
     ).splitlines()
     assert files == ["README.md", publication.repository_path]
+
+
+def test_automatic_publication_blocks_empty_historical_revision_before_git(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(workspace=tmp_path / "workspace")
+    pipeline = LessonPipeline(config)
+    lesson = make_lesson("empty-historical")
+    pipeline.create(lesson)
+    revision = pipeline.content_service.save_transcript(
+        lesson.lesson_id,
+        "",
+        path=pipeline.lesson_dir(lesson) / "transcript" / "transcript_verified.txt",
+        created_by="automatic-transcription",
+    )
+    repository_path = automatic_publication_repository_path(lesson).as_posix()
+
+    class UnexpectedPublisher:
+        def __init__(self, _config) -> None:
+            raise AssertionError("Git publisher must not be created for an empty transcript")
+
+    monkeypatch.setattr(pipeline_module, "LessonPublisher", UnexpectedPublisher)
+
+    with pytest.raises(PublicationBlockedError, match="транскрипт пуст"):
+        pipeline.publish_automatic_transcript(
+            lesson,
+            revision_number=revision.revision_number,
+            content_sha256=revision.content_sha256,
+            repository_path=repository_path,
+        )

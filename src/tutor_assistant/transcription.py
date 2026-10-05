@@ -43,6 +43,117 @@ class TranscriptionResult:
     student_transcript: Path | None = None
 
 
+class InvalidTranscriptionResultError(RuntimeError):
+    """ASR artifacts exist but do not satisfy the transcription result contract."""
+
+
+class EmptyTranscriptionError(InvalidTranscriptionResultError):
+    """ASR completed without producing meaningful transcript content."""
+
+
+def transcript_has_content(text: str) -> bool:
+    """Return whether transcript text contains at least one letter or digit."""
+
+    return any(character.isalnum() for character in text)
+
+
+def _diagnostic_label(value: object, fallback: str) -> str:
+    label = str(value or "").strip()
+    if not label:
+        return fallback
+    label = re.split(r"[\\/]", label)[-1]
+    label = re.sub(r"[^\w.-]+", "_", label).strip("_")
+    return label[:80] or fallback
+
+
+def _transcription_quality_diagnostics(path: Path | None) -> list[str]:
+    if path is None:
+        return ["audio_quality=unavailable"]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ["audio_quality=unavailable"]
+    if not isinstance(payload, dict):
+        return ["audio_quality=unavailable"]
+
+    details = [f"audio_quality_ready={bool(payload.get('ready'))}"]
+    for label in ("microphone", "system"):
+        track = payload.get(label)
+        if not isinstance(track, dict):
+            continue
+        for field in ("duration_seconds", "silence_ratio", "rms"):
+            value = track.get(field)
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                details.append(f"{label}_{field}={value}")
+    return details
+
+
+def validate_transcription_result(
+    result: TranscriptionResult,
+    *,
+    quality_report: Path | None = None,
+) -> None:
+    """Reject structurally invalid or semantically empty ASR output."""
+
+    try:
+        manifest = json.loads(result.manifest.read_text(encoding="utf-8"))
+        segments = json.loads(result.segments.read_text(encoding="utf-8"))
+        cleaned_text = result.cleaned.read_text(encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InvalidTranscriptionResultError(
+            "Артефакты транскрибации повреждены или недоступны"
+        ) from exc
+
+    if not isinstance(manifest, dict) or not isinstance(segments, list):
+        raise InvalidTranscriptionResultError("Артефакты транскрибации имеют неверный формат")
+
+    segment_texts = [
+        str(item.get("text", ""))
+        for item in segments
+        if isinstance(item, dict)
+    ]
+    meaningful_segment_count = sum(
+        transcript_has_content(text) for text in segment_texts
+    )
+    if meaningful_segment_count > 0 and transcript_has_content(cleaned_text):
+        return
+
+    details = [
+        f"provider={_diagnostic_label(manifest.get('provider'), 'unknown')}",
+        f"model={_diagnostic_label(manifest.get('model'), 'unknown')}",
+        f"segment_count={len(segments)}",
+        f"meaningful_segment_count={meaningful_segment_count}",
+    ]
+    sources = manifest.get("sources")
+    durations: list[float] = []
+    if isinstance(sources, list):
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            duration = source.get("duration_seconds")
+            if (
+                isinstance(duration, int | float)
+                and not isinstance(duration, bool)
+                and duration >= 0
+            ):
+                durations.append(round(float(duration), 3))
+    if len(durations) == 1:
+        details.append(f"source_duration_seconds={durations[0]}")
+    elif durations:
+        details.append(
+            "source_durations_seconds=" + ",".join(str(value) for value in durations)
+        )
+    else:
+        details.append("source_duration_seconds=unknown")
+    details.extend(_transcription_quality_diagnostics(quality_report))
+
+    raise EmptyTranscriptionError(
+        "ASR завершился без распознанной речи ("
+        + "; ".join(details)
+        + "). Пустой результат не принят; проверьте аудиодорожки и повторите транскрибацию."
+    )
+
+
 SIGNALS = [
     "не понимаю",
     "не понял",

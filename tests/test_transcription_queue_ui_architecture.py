@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tutor_assistant.ui import app as base_app
 from tutor_assistant.ui import concurrent_app
+from tutor_assistant.ui.transcription_worker import TranscriptionWorker
 
 
 def _source(path: str) -> str:
@@ -77,3 +78,28 @@ def test_normalization_busy_gates_read_queue_activity_through_coordinator() -> N
 
     assert "self.transcription_queue.active" not in source
     assert source.count("self.transcription_queue_coordinator.active") == 2
+
+
+def test_transcription_worker_preserves_exception_and_traceback() -> None:
+    failures = []
+
+    class Pipeline:
+        def transcribe(self, _lesson, _audio):
+            raise RuntimeError("concise transcription failure")
+
+    worker = TranscriptionWorker(Pipeline())
+    worker.failed.connect(
+        lambda job_id, error, details: failures.append((job_id, error, details))
+    )
+    worker.submit("job", object(), Path("audio.wav"))
+    worker.shutdown()
+
+    worker.run()
+
+    assert len(failures) == 1
+    job_id, error, details = failures[0]
+    assert job_id == "job"
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "concise transcription failure"
+    assert "RuntimeError: concise transcription failure" in details
+    assert not worker.busy

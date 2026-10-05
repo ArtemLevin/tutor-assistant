@@ -1770,8 +1770,13 @@ class MainWindow(QMainWindow):
         self._pump_transcription_queue()
         QTimer.singleShot(0, self._pump_auto_normalization)
 
-    def _background_transcription_failed(self, job_id: str, details: str) -> None:
-        job = self.transcription_queue_coordinator.fail(job_id, details)
+    def _background_transcription_failed(
+        self,
+        job_id: str,
+        error: BaseException,
+        details: str,
+    ) -> None:
+        job = self.transcription_queue_coordinator.fail(job_id, str(error))
         self._update_transcription_queue_ui()
         logging.error("Фоновая транскрибация завершилась с ошибкой: lesson=%s\n%s", job_id, details)
         self._set_status(f"Ошибка транскрибации · {job.lesson.student.full_name}", "error")
