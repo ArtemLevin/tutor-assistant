@@ -43,7 +43,7 @@ def test_busy_recording_requires_confirmation() -> None:
     assert coordinator.phase == ShutdownPhase.IDLE
 
 
-def test_background_worker_or_busy_transcription_requires_confirmation() -> None:
+def test_background_worker_or_busy_pipeline_requires_confirmation() -> None:
     coordinator = ShutdownCoordinator()
 
     assert coordinator.request_close(
@@ -51,6 +51,9 @@ def test_background_worker_or_busy_transcription_requires_confirmation() -> None
     ).action == ShutdownCloseAction.PROMPT
     assert coordinator.request_close(
         ShutdownRuntimeSnapshot(transcription_busy=True)
+    ).action == ShutdownCloseAction.PROMPT
+    assert coordinator.request_close(
+        ShutdownRuntimeSnapshot(publication_busy=True)
     ).action == ShutdownCloseAction.PROMPT
 
 
@@ -63,6 +66,7 @@ def test_user_cancel_keeps_shutdown_idle_and_has_no_side_effect_plan() -> None:
     assert not plan.begin_draining
     assert not plan.cancel_normalization
     assert not plan.shutdown_transcription
+    assert not plan.shutdown_publication
     assert not plan.quiesce_runtime
     assert not plan.finalize_recording
     assert coordinator.phase == ShutdownPhase.IDLE
@@ -75,6 +79,8 @@ def test_confirmed_shutdown_emits_one_complete_drain_plan() -> None:
         workers_running=True,
         transcription_busy=True,
         transcription_running=True,
+        publication_busy=True,
+        publication_running=True,
         normalization_cancellable=True,
     )
 
@@ -83,6 +89,7 @@ def test_confirmed_shutdown_emits_one_complete_drain_plan() -> None:
     assert plan.begin_draining
     assert plan.cancel_normalization
     assert plan.shutdown_transcription
+    assert plan.shutdown_publication
     assert plan.quiesce_runtime
     assert plan.finalize_recording
     assert coordinator.phase == ShutdownPhase.DRAINING
@@ -102,7 +109,7 @@ def test_recording_stop_in_flight_is_barrier_but_not_restarted() -> None:
     assert coordinator.observe_drain(snapshot) == ShutdownDrainAction.WAIT
 
 
-def test_drain_waits_for_recording_workers_and_transcription_thread_independently() -> None:
+def test_drain_waits_for_recording_and_background_threads_independently() -> None:
     coordinator = ShutdownCoordinator()
     coordinator.confirm_close(
         ShutdownRuntimeSnapshot(workers_running=True),
@@ -117,6 +124,9 @@ def test_drain_waits_for_recording_workers_and_transcription_thread_independentl
     ) == ShutdownDrainAction.WAIT
     assert coordinator.observe_drain(
         ShutdownRuntimeSnapshot(transcription_running=True)
+    ) == ShutdownDrainAction.WAIT
+    assert coordinator.observe_drain(
+        ShutdownRuntimeSnapshot(publication_running=True)
     ) == ShutdownDrainAction.WAIT
 
 
@@ -155,6 +165,29 @@ def test_idle_transcription_thread_running_is_not_itself_a_prompt_reason() -> No
 
     decision = coordinator.request_close(
         ShutdownRuntimeSnapshot(transcription_running=True, transcription_busy=False)
+    )
+
+    assert decision.action == ShutdownCloseAction.TRY_IMMEDIATE
+
+
+def test_immediate_shutdown_waits_for_publication_worker_too() -> None:
+    coordinator = ShutdownCoordinator()
+    coordinator.request_close(ShutdownRuntimeSnapshot())
+
+    assert (
+        coordinator.complete_immediate_shutdown(
+            transcription_stopped=True,
+            publication_stopped=False,
+        )
+        == ShutdownPhase.DRAINING
+    )
+
+
+def test_idle_publication_thread_running_is_not_itself_a_prompt_reason() -> None:
+    coordinator = ShutdownCoordinator()
+
+    decision = coordinator.request_close(
+        ShutdownRuntimeSnapshot(publication_running=True, publication_busy=False)
     )
 
     assert decision.action == ShutdownCloseAction.TRY_IMMEDIATE
