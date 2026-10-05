@@ -4,6 +4,9 @@
 
 ## 1.0.0rc1 — Release 1.0 readiness
 
+- Automatic publication recovery теперь следует immutable revision, закреплённой в durable job:
+  более новая пустая revision не блокирует валидный ожидающий job; startup отдельно карантинирует
+  stale `running` empty intents, а repair атомарно проверяет old-empty/new-meaningful revisions и SHA.
 - Пустой результат ASR больше не считается успешной транскрибацией: zero-segment и
   semantically empty output переводят задание в ошибку с технической диагностикой, не создают
   automatic revision/publication job и не попадают в Git; короткие содержательные записи не
