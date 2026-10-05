@@ -333,6 +333,7 @@ class PublicationOperationStore:
         *,
         remote_commit_sha: str | None,
         details: str,
+        error_code: str = "remote_advanced",
     ) -> PublicationOperation:
         return self._update(
             operation_id,
@@ -340,7 +341,7 @@ class PublicationOperationStore:
             status=PublicationOperationStatus.CONFLICT,
             assignments={
                 "remote_commit_sha": remote_commit_sha,
-                "error_code": "remote_advanced",
+                "error_code": error_code,
                 "error_details": details[-3000:],
                 "completed_at": _now(),
             },

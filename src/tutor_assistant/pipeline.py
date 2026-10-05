@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Iterator
@@ -26,7 +27,12 @@ from .latex.remote import (
     RemoteLatexService,
     RemoteTexProbe,
 )
-from .publisher import ApprovedTranscriptPayload, LessonPublisher, PublicationResult
+from .publisher import (
+    ApprovedTranscriptPayload,
+    LessonPublisher,
+    PublicationResult,
+    TranscriptPublicationPayload,
+)
 from .store import LessonStore
 from .transcription import TranscriptionResult, WhisperTranscriber
 
@@ -519,6 +525,101 @@ class LessonPipeline:
     def publish(self, lesson: Lesson) -> PublicationResult:
         with self.content_service.activity("publication", lesson_id=lesson.lesson_id):
             return self._publish(lesson)
+
+    def publish_automatic_transcript(
+        self,
+        lesson: Lesson,
+        *,
+        revision_number: int,
+        content_sha256: str,
+        repository_path: str,
+    ) -> PublicationResult:
+        with self.content_service.activity(
+            "automatic-publication",
+            lesson_id=lesson.lesson_id,
+        ):
+            content = self.content_service.get_lesson(lesson.lesson_id)
+            current = content.lesson
+            if (
+                current.pipeline.processing_mode
+                != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+            ):
+                raise RuntimeError(
+                    "Automatic publication requires AUTO_TRANSCRIPT_GITHUB mode"
+                )
+            if current.status not in {
+                JobStatus.REVIEW_REQUIRED,
+                JobStatus.PUBLISHED,
+            }:
+                raise RuntimeError(
+                    "Automatic publication requires a completed automatic transcript"
+                )
+            expected_path = automatic_publication_repository_path(current).as_posix()
+            if repository_path != expected_path:
+                raise RuntimeError("Automatic publication path does not match lesson policy")
+
+            revision = next(
+                (
+                    item
+                    for item in self.content_service.repository.list_transcript_revisions(
+                        current.lesson_id
+                    )
+                    if item.revision_number == revision_number
+                ),
+                None,
+            )
+            if revision is None or revision.lesson_id != current.lesson_id:
+                raise RuntimeError("Automatic transcript revision was not found")
+            if revision.created_by != "automatic-transcription":
+                raise RuntimeError(
+                    "Automatic publication requires an automatic-transcription revision"
+                )
+            calculated_sha = hashlib.sha256(
+                revision.content.encode("utf-8")
+            ).hexdigest()
+            if (
+                calculated_sha != revision.content_sha256
+                or content_sha256 != revision.content_sha256
+            ):
+                raise RuntimeError("Automatic transcript revision SHA-256 mismatch")
+
+            payload = TranscriptPublicationPayload(
+                lesson_id=current.lesson_id,
+                repository_path=repository_path,
+                content=revision.content,
+                content_sha256=revision.content_sha256,
+                revision_number=revision.revision_number,
+            )
+            target = LessonPublisher(self.config.repository).publish_payload(
+                current,
+                self.lesson_dir(current),
+                payload,
+                reject_existing_mismatch=True,
+            )
+            current.publication = PublicationInfo(
+                branch=target.branch,
+                repository_path=target.repository_path,
+                commit=target.commit,
+                operation_id=target.operation_id,
+                repository_full_name=target.repository_full_name,
+                remote_name=target.remote_name,
+                previous_remote_commit=target.previous_remote_commit,
+                content_sha256=target.content_sha256,
+                remote_verified=target.remote_verified,
+                idempotent=target.idempotent,
+                published_at=target.published_at,
+                pr_url=target.pr_url,
+                warnings=list(target.warnings),
+            )
+            stored = self.save_state(
+                current,
+                "publication",
+                "status",
+                "error",
+                expected_row_version=content.row_version,
+            )
+            self._replace_lesson(lesson, stored)
+            return target
 
     def _publish(self, lesson: Lesson) -> PublicationResult:
         content = self.content_service.get_lesson(lesson.lesson_id)

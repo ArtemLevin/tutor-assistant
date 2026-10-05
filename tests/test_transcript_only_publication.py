@@ -13,6 +13,7 @@ from tutor_assistant.publisher import (
     GitError,
     LessonPublisher,
     PublicationPolicy,
+    TranscriptPublicationPayload,
     _assert_transcript_only_egress,
     publication_payload_files,
     publication_repository_path,
@@ -196,3 +197,24 @@ def test_egress_guard_accepts_only_expected_transcript() -> None:
 
     _assert_transcript_only_egress((expected,), expected)
     _assert_transcript_only_egress((), expected)
+
+
+
+def test_prevalidated_payload_rejects_corrupted_sha_before_git_access(tmp_path: Path) -> None:
+    lesson = make_lesson(tmp_path, status=JobStatus.REVIEW_REQUIRED)
+    payload = TranscriptPublicationPayload(
+        lesson_id=lesson.lesson_id,
+        repository_path="students/test_student/transcript/30.07.26.txt",
+        content="[П] automatic\n",
+        content_sha256="0" * 64,
+        revision_number=1,
+    )
+    config = RepositoryConfig(students_repo=tmp_path / "missing-repository")
+
+    with pytest.raises(GitError, match="SHA-256"):
+        LessonPublisher(config).publish_payload(
+            lesson,
+            tmp_path,
+            payload,
+            reject_existing_mismatch=True,
+        )

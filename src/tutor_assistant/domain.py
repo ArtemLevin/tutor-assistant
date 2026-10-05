@@ -43,7 +43,12 @@ ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.RECORDING: {JobStatus.RECORDED, JobStatus.FAILED},
     JobStatus.RECORDED: {JobStatus.TRANSCRIBING, JobStatus.FAILED},
     JobStatus.TRANSCRIBING: {JobStatus.REVIEW_REQUIRED, JobStatus.FAILED},
-    JobStatus.REVIEW_REQUIRED: {JobStatus.READY, JobStatus.TRANSCRIBING, JobStatus.FAILED},
+    JobStatus.REVIEW_REQUIRED: {
+        JobStatus.READY,
+        JobStatus.PUBLISHED,
+        JobStatus.TRANSCRIBING,
+        JobStatus.FAILED,
+    },
     JobStatus.READY: {JobStatus.PUBLISHED, JobStatus.TRANSCRIBING, JobStatus.FAILED},
     JobStatus.PUBLISHED: {JobStatus.GENERATED_TEX, JobStatus.GENERATING, JobStatus.READY, JobStatus.FAILED},
     JobStatus.GENERATED_TEX: {JobStatus.COMPILING_PDF, JobStatus.READY, JobStatus.FAILED},
