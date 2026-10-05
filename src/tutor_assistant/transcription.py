@@ -11,6 +11,7 @@ from pathlib import Path
 from time import perf_counter
 
 from .config import WhisperConfig
+from .transcript_policy import transcript_has_content
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -49,12 +50,6 @@ class InvalidTranscriptionResultError(RuntimeError):
 
 class EmptyTranscriptionError(InvalidTranscriptionResultError):
     """ASR completed without producing meaningful transcript content."""
-
-
-def transcript_has_content(text: str) -> bool:
-    """Return whether transcript text contains at least one letter or digit."""
-
-    return any(character.isalnum() for character in text)
 
 
 def _diagnostic_label(value: object, fallback: str) -> str:

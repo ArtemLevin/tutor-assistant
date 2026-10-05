@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from .content.migrations import apply_migrations
 from .content.repository import StudentContentRepository
 from .domain import Lesson
 from .sqlite_utils import ClosingConnection
+from .transcript_policy import transcript_has_content
 
 T = TypeVar("T")
 
@@ -188,6 +190,46 @@ class LessonStore:
 
         return self._retry(operation)
 
+    @staticmethod
+    def _validate_repair_revision(
+        db: sqlite3.Connection,
+        *,
+        lesson_id: str,
+        revision_number: int,
+        content_sha256: str,
+        expect_content: bool,
+    ) -> None:
+        row = db.execute(
+            """
+            SELECT content, content_sha256, created_by
+            FROM transcript_revisions
+            WHERE lesson_id=?
+              AND revision_number=?
+              AND content_sha256=?
+              AND deleted_at IS NULL
+            """,
+            (lesson_id, revision_number, content_sha256),
+        ).fetchone()
+        if row is None:
+            raise AutomaticPublicationJobConflictError(
+                "Automatic transcript revision required for repair was not found"
+            )
+        content = str(row["content"])
+        if str(row["created_by"]) != "automatic-transcription":
+            raise AutomaticPublicationJobConflictError(
+                "Publication intent repair requires automatic transcript revisions"
+            )
+        calculated_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if calculated_sha != str(row["content_sha256"]):
+            raise AutomaticPublicationJobConflictError(
+                "Automatic transcript revision SHA-256 mismatch"
+            )
+        if transcript_has_content(content) != expect_content:
+            state = "meaningful" if expect_content else "empty"
+            raise AutomaticPublicationJobConflictError(
+                f"Publication intent repair requires a {state} automatic transcript revision"
+            )
+
     def repair_automatic_publication_job(
         self,
         lesson_id: str,
@@ -199,7 +241,7 @@ class LessonStore:
         content_sha256: str,
         repository_path: str,
     ) -> StoredAutomaticPublicationJob:
-        """Replace a legacy invalid immutable payload before publication starts."""
+        """Replace a legacy empty immutable payload before publication starts."""
 
         def operation() -> StoredAutomaticPublicationJob:
             with self.connect() as db:
@@ -233,6 +275,26 @@ class LessonStore:
                     raise AutomaticPublicationJobConflictError(
                         "Automatic publication intent cannot be repaired after publication starts"
                     )
+                if revision_number <= expected_revision_number:
+                    raise AutomaticPublicationJobConflictError(
+                        "Automatic publication intent repair requires a newer revision"
+                    )
+
+                self._validate_repair_revision(
+                    db,
+                    lesson_id=lesson_id,
+                    revision_number=expected_revision_number,
+                    content_sha256=expected_content_sha256,
+                    expect_content=False,
+                )
+                self._validate_repair_revision(
+                    db,
+                    lesson_id=lesson_id,
+                    revision_number=revision_number,
+                    content_sha256=content_sha256,
+                    expect_content=True,
+                )
+
                 cursor = db.execute(
                     """
                     UPDATE automatic_publication_jobs
@@ -275,6 +337,187 @@ class LessonStore:
                 ).fetchone()
                 assert repaired is not None
                 return StoredAutomaticPublicationJob(**dict(repaired))
+
+        return self._retry(operation)
+
+    def quarantine_stale_empty_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        error: str,
+    ) -> StoredAutomaticPublicationJob:
+        """Quarantine a startup-recovered running job pinned to an empty revision."""
+
+        def operation() -> StoredAutomaticPublicationJob:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                self._validate_repair_revision(
+                    db,
+                    lesson_id=lesson_id,
+                    revision_number=expected_revision_number,
+                    content_sha256=expected_content_sha256,
+                    expect_content=False,
+                )
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status='blocked',
+                        error=?,
+                        next_attempt_at=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status='running'
+                    """,
+                    (
+                        error,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise AutomaticPublicationJobConflictError(
+                        "Stale running publication intent changed before quarantine"
+                    )
+                quarantined = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert quarantined is not None
+                return StoredAutomaticPublicationJob(**dict(quarantined))
+
+        return self._retry(operation)
+
+    def conflict_stale_running_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        error: str,
+    ) -> StoredAutomaticPublicationJob | None:
+        """Move an exact startup-stale running intent to conflict."""
+
+        def operation() -> StoredAutomaticPublicationJob | None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status='conflict',
+                        error=?,
+                        next_attempt_at=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status='running'
+                    """,
+                    (
+                        error,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    exists = db.execute(
+                        "SELECT 1 FROM automatic_publication_jobs WHERE lesson_id=?",
+                        (lesson_id,),
+                    ).fetchone()
+                    if exists is None:
+                        raise KeyError(lesson_id)
+                    return None
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert row is not None
+                return StoredAutomaticPublicationJob(**dict(row))
+
+        return self._retry(operation)
+
+    def update_inactive_automatic_publication_job(
+        self,
+        lesson_id: str,
+        *,
+        expected_revision_number: int,
+        expected_content_sha256: str,
+        expected_repository_path: str,
+        status: str,
+        error: str | None,
+        next_attempt_at: str | None = None,
+    ) -> StoredAutomaticPublicationJob | None:
+        """CAS-update an inactive publication job without stealing a live owner."""
+
+        if status not in {"waiting", "retry_required", "conflict", "blocked"}:
+            raise ValueError("Inactive publication update requires an inactive target status")
+
+        def operation() -> StoredAutomaticPublicationJob | None:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                cursor = db.execute(
+                    """
+                    UPDATE automatic_publication_jobs
+                    SET status=?,
+                        error=?,
+                        next_attempt_at=?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE lesson_id=?
+                      AND revision_number=?
+                      AND content_sha256=?
+                      AND repository_path=?
+                      AND status NOT IN ('running', 'published')
+                    """,
+                    (
+                        status,
+                        error,
+                        next_attempt_at,
+                        lesson_id,
+                        expected_revision_number,
+                        expected_content_sha256,
+                        expected_repository_path,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    exists = db.execute(
+                        "SELECT 1 FROM automatic_publication_jobs WHERE lesson_id=?",
+                        (lesson_id,),
+                    ).fetchone()
+                    if exists is None:
+                        raise KeyError(lesson_id)
+                    return None
+                row = db.execute(
+                    """
+                    SELECT lesson_id, revision_number, content_sha256, repository_path,
+                           status, attempts, error, next_attempt_at
+                    FROM automatic_publication_jobs
+                    WHERE lesson_id=?
+                    """,
+                    (lesson_id,),
+                ).fetchone()
+                assert row is not None
+                return StoredAutomaticPublicationJob(**dict(row))
 
         return self._retry(operation)
 

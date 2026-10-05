@@ -42,12 +42,13 @@ Stable release намеренно **не объявляется завершён
 - Wave 3 / Slice 16 — shutdown coordinator;
 - Wave 3 / Slice 17 — Teacher Cockpit / recording-review workspace synchronization;
 - P0 Production Safety Hardening — transactional restore boundary, single-channel audio recovery, recorder quiescence, observable lease loss, authoritative approved transcript publication, Git blob integrity и transcription reconciliation;
-- opt-in automatic transcript publication pipeline (#116): persisted lesson mode, mandatory post-stop ASR, immutable automatic SQLite revision, durable publication queue, verified transcript-only GitHub publication, bounded retry/recovery, UI status и shutdown barriers.
+- opt-in automatic transcript publication pipeline (#116/#121): persisted lesson mode, mandatory post-stop ASR, semantic empty-ASR fail-closed validation, immutable automatic SQLite revision, durable publication queue, verified transcript-only GitHub publication, bounded retry/recovery, UI status и shutdown barriers;
+- automatic publication recovery hardening: durable job tuple является authoritative, startup stale-running empty intent карантинируется отдельно от live runtime, а legacy repair проверяет old/new revisions внутри одной SQLite transaction.
 
-Текущий production HEAD после merge #116:
+Production baseline перед текущим recovery-hardening — merge #121:
 
 ```text
-899442cf36ba6047c6dfafeaabf8861369a5e30d
+4156e296c81cf19bc628fa87bf49e69ca8e6b04b
 ```
 
 Automatic pipeline считается реализованным и покрыт production gate. Его operational contract описан в

@@ -62,6 +62,15 @@ def test_restore_and_presentation_delegate_to_pure_boundaries() -> None:
     assert "ready = sum(" not in presentation_source
 
 
+def test_publication_recovery_distinguishes_startup_from_live_runtime() -> None:
+    startup_source = inspect.getsource(base_app.MainWindow._restore_background_jobs)
+    ready_source = inspect.getsource(base_app.MainWindow._background_transcription_ready)
+
+    assert "recover_stale_running=True" in startup_source
+    assert "recover_stale_running=True" not in ready_source
+    assert "_restore_automatic_publication_jobs()" in ready_source
+
+
 def test_retry_orchestration_is_shared_and_not_duplicated_in_concurrent_layer() -> None:
     base_retry = inspect.getsource(base_app.MainWindow._retry_transcription_job)
     concurrent_open = inspect.getsource(concurrent_app.MainWindow._open_processing_item)

@@ -739,8 +739,14 @@ class MainWindow(QMainWindow):
             force_status=True,
         )
 
-    def _restore_automatic_publication_jobs(self) -> int:
-        reconciled = self.pipeline.reconcile_automatic_publication_intents()
+    def _restore_automatic_publication_jobs(
+        self,
+        *,
+        recover_stale_running: bool = False,
+    ) -> int:
+        reconciled = self.pipeline.reconcile_automatic_publication_intents(
+            recover_stale_running=recover_stale_running,
+        )
         lessons = self.pipeline.store.list(limit=1000)
         restored = self.publication_queue_coordinator.restore_history(
             lessons,
@@ -759,7 +765,9 @@ class MainWindow(QMainWindow):
             lessons,
             self.pipeline.store.list_transcription_jobs(),
         )
-        restored_publications = self._restore_automatic_publication_jobs()
+        restored_publications = self._restore_automatic_publication_jobs(
+            recover_stale_running=True,
+        )
         restored = restored_transcriptions + restored_publications
         if restored:
             self._update_transcription_queue_ui()
