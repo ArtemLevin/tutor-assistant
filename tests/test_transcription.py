@@ -48,7 +48,14 @@ def test_dual_transcription_merges_speakers(monkeypatch, tmp_path) -> None:
     assert result.student_transcript.exists()
 
 
-def _transcription_result(tmp_path, *, cleaned_text: str, segment_texts: list[str], duration: float):
+def _transcription_result(
+    tmp_path,
+    *,
+    cleaned_text: str,
+    segment_texts: list[str],
+    duration: float,
+    model: str = "fake-model",
+):
     output_dir = tmp_path / "out"
     output_dir.mkdir()
     raw = output_dir / "00_raw_fake.txt"
@@ -74,7 +81,7 @@ def _transcription_result(tmp_path, *, cleaned_text: str, segment_texts: list[st
         json.dumps(
             {
                 "provider": "fake",
-                "model": "fake-model",
+                "model": model,
                 "segment_count": len(segment_texts),
                 "sources": [
                     {
@@ -103,6 +110,7 @@ def test_validation_rejects_empty_asr_with_privacy_safe_diagnostics(tmp_path) ->
         cleaned_text="",
         segment_texts=[],
         duration=184.2,
+        model=r"C:\Users\Teacher\private-model",
     )
     quality = tmp_path / "audio_quality_report.json"
     quality.write_text(
@@ -135,6 +143,8 @@ def test_validation_rejects_empty_asr_with_privacy_safe_diagnostics(tmp_path) ->
     assert "audio_quality_ready=True" in message
     assert "microphone_silence_ratio=0.18" in message
     assert "/private/student" not in message
+    assert r"C:\Users\Teacher" not in message
+    assert "model=private-model" in message
     assert str(tmp_path) not in message
 
 
