@@ -175,7 +175,7 @@ automatic transcript revisions.
 
 Important recovery rules:
 
-- a missing publication intent can be recreated from the latest meaningful durable automatic revision;
+- a missing publication intent can be recreated only when the latest durable automatic revision is meaningful;
 - an existing job is reconciled against the exact automatic revision pinned by its immutable tuple,
   not against an unrelated newer revision;
 - a persisted meaningful `running` publication is restored as retryable work rather than assumed
