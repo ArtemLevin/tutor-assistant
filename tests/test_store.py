@@ -374,6 +374,45 @@ def test_store_rejects_quarantine_for_meaningful_running_intent(tmp_path) -> Non
         )
 
 
+@pytest.mark.parametrize("terminal_status", ["running", "published"])
+def test_store_inactive_reconciliation_update_does_not_steal_terminal_owner(
+    tmp_path,
+    terminal_status,
+) -> None:
+    store = LessonStore(tmp_path / "lessons.sqlite3")
+    lesson = Lesson(
+        student=Student(id="student", full_name="Ученик"),
+        subject="physics",
+        lesson_date=date(2026, 10, 4),
+        topic="Волны",
+    )
+    store.save(lesson)
+    path = "students/student/transcript/04.10.26.txt"
+    content_sha256 = "a" * 64
+    store.ensure_automatic_publication_job(
+        lesson.lesson_id,
+        1,
+        content_sha256,
+        path,
+    )
+    store.update_automatic_publication_job(lesson.lesson_id, terminal_status)
+
+    updated = store.update_inactive_automatic_publication_job(
+        lesson.lesson_id,
+        expected_revision_number=1,
+        expected_content_sha256=content_sha256,
+        expected_repository_path=path,
+        status="conflict",
+        error="stale reconciliation",
+    )
+
+    stored = store.get_automatic_publication_job(lesson.lesson_id)
+    assert updated is None
+    assert stored is not None
+    assert stored.status == terminal_status
+    assert stored.error is None
+
+
 @pytest.mark.parametrize("status", ["running", "published"])
 def test_store_rejects_repair_after_publication_starts(tmp_path, status) -> None:
     store = LessonStore(tmp_path / "lessons.sqlite3")
