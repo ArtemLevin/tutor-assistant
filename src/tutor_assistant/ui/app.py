@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 import traceback
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QDate, Qt, QThread, QTimer, QUrl, Signal
@@ -51,6 +51,9 @@ from ..application import (
     NormalizationCoordinator,
     NormalizationManualStartContext,
     NormalizationStartBlock,
+    PublicationFailureDisposition,
+    PublicationPumpContext,
+    PublicationQueueCoordinator,
     RecordingHealthAction,
     RecordingHealthMonitor,
     RecordingHealthPolicy,
@@ -60,6 +63,7 @@ from ..application import (
     TranscriptionAudioMissingError,
     TranscriptionPumpContext,
     TranscriptionQueueCoordinator,
+    classify_publication_failure,
 )
 from ..config import AppConfig, load_students
 from ..content import ContentMaintenanceResult
@@ -125,6 +129,7 @@ from .normalization_provider import (
 from .normalization_worker import NormalizationWorker
 from .parallel_review import ParallelReviewPolicy
 from .playback import QtPlaybackBackend, QtStopScheduler
+from .publication_worker import PublicationWorker
 from .recording_presentation import (
     RecordingPanelPhase,
     RecordingTickPresentation,
@@ -218,6 +223,9 @@ class MainWindow(QMainWindow):
             self.pipeline.store,
             retry_state_writer=self._persist_transcription_retry_state,
         )
+        self.publication_queue_coordinator = PublicationQueueCoordinator(
+            self.pipeline.store,
+        )
         self._loading_segments = False
         self._summary_dirty = False
         self._shutdown_requested = False
@@ -228,6 +236,15 @@ class MainWindow(QMainWindow):
         self.transcription_worker.became_idle.connect(self._maybe_finish_shutdown)
         self.transcription_worker.became_idle.connect(self._pump_auto_normalization)
         self.transcription_worker.finished.connect(self._maybe_finish_shutdown)
+        self.publication_worker = PublicationWorker(self.pipeline)
+        self.publication_worker.succeeded.connect(self._background_publication_ready)
+        self.publication_worker.failed.connect(self._background_publication_failed)
+        self.publication_worker.became_idle.connect(self._maybe_finish_shutdown)
+        self.publication_worker.became_idle.connect(self._pump_publication_queue)
+        self.publication_worker.finished.connect(self._maybe_finish_shutdown)
+        self.publication_retry_timer = QTimer(self)
+        self.publication_retry_timer.setSingleShot(True)
+        self.publication_retry_timer.timeout.connect(self._pump_publication_queue)
         self.playback_backend = QtPlaybackBackend(self)
         self.playback_scheduler = QtStopScheduler(self)
         self.playback_controller = PlaybackController(
@@ -250,6 +267,7 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
         self._build()
         self.transcription_worker.start()
+        self.publication_worker.start()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.draft_timer = QTimer(self)
