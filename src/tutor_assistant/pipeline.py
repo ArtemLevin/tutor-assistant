@@ -612,7 +612,11 @@ class LessonPipeline:
         with self.content_service.activity("publication", lesson_id=lesson.lesson_id):
             return self._publish(lesson)
 
-    def reconcile_automatic_publication_intents(self) -> int:
+    def reconcile_automatic_publication_intents(
+        self,
+        *,
+        recover_stale_running: bool = False,
+    ) -> int:
         stored_jobs = {
             job.lesson_id: job
             for job in self.store.list_automatic_publication_jobs()
@@ -624,71 +628,164 @@ class LessonPipeline:
                 != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
             ):
                 continue
+
             revisions = self.content_service.repository.list_transcript_revisions(
                 lesson.lesson_id
             )
-            revision = next(
-                (
-                    item
-                    for item in revisions
-                    if item.created_by == "automatic-transcription"
-                ),
-                None,
-            )
-            if revision is None:
+            automatic_revisions = [
+                item
+                for item in revisions
+                if item.created_by == "automatic-transcription"
+            ]
+            if not automatic_revisions:
                 continue
+
+            latest = automatic_revisions[0]
             repository_path = automatic_publication_repository_path(lesson).as_posix()
             existing = stored_jobs.get(lesson.lesson_id)
-            if not transcript_has_content(revision.content):
-                if (
-                    existing is not None
-                    and existing.status not in {"published", "running"}
-                    and (
-                        existing.status != "blocked"
-                        or existing.error != _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
+
+            if existing is None:
+                if not transcript_has_content(latest.content):
+                    continue
+                try:
+                    job, _ = self._ensure_automatic_publication_intent(
+                        lesson,
+                        latest,
+                        revisions,
                     )
-                ):
-                    self.store.update_automatic_publication_job(
-                        lesson.lesson_id,
-                        "blocked",
-                        error=_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR,
-                        next_attempt_at=None,
-                    )
-                    reconciled += 1
-                continue
-            try:
-                job, repaired = self._ensure_automatic_publication_intent(
-                    lesson,
-                    revision,
-                    revisions,
+                except AutomaticPublicationJobConflictError:
+                    continue
+                reconciled += 1
+                pinned_revision = latest
+            else:
+                if existing.status == "published":
+                    continue
+
+                pinned_revision = next(
+                    (
+                        item
+                        for item in automatic_revisions
+                        if item.revision_number == existing.revision_number
+                        and item.content_sha256 == existing.content_sha256
+                    ),
+                    None,
                 )
-            except AutomaticPublicationJobConflictError as exc:
-                if existing is not None and existing.status != "published":
+                if pinned_revision is None:
+                    if existing.status == "running" and not recover_stale_running:
+                        continue
                     self.store.update_automatic_publication_job(
                         lesson.lesson_id,
                         "conflict",
-                        error=str(exc),
+                        error=(
+                            "Automatic publication intent references a missing "
+                            "automatic transcript revision"
+                        ),
+                        next_attempt_at=None,
                     )
                     reconciled += 1
-                continue
+                    continue
+
+                if existing.repository_path != repository_path:
+                    if existing.status == "running" and not recover_stale_running:
+                        continue
+                    self.store.update_automatic_publication_job(
+                        lesson.lesson_id,
+                        "conflict",
+                        error="Automatic publication intent path no longer matches lesson policy",
+                        next_attempt_at=None,
+                    )
+                    reconciled += 1
+                    continue
+
+                job = existing
+                if not transcript_has_content(pinned_revision.content):
+                    if existing.status == "running":
+                        if not recover_stale_running:
+                            continue
+                        job = self.store.quarantine_stale_empty_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=existing.revision_number,
+                            expected_content_sha256=existing.content_sha256,
+                            expected_repository_path=existing.repository_path,
+                            error=_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR,
+                        )
+                        reconciled += 1
+
+                    replacement_revision = next(
+                        (
+                            item
+                            for item in automatic_revisions
+                            if item.revision_number > pinned_revision.revision_number
+                            and transcript_has_content(item.content)
+                        ),
+                        None,
+                    )
+                    if replacement_revision is None:
+                        if (
+                            job.status != "blocked"
+                            or job.error != _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
+                        ):
+                            self.store.update_automatic_publication_job(
+                                lesson.lesson_id,
+                                "blocked",
+                                error=_EMPTY_AUTOMATIC_TRANSCRIPT_ERROR,
+                                next_attempt_at=None,
+                            )
+                            reconciled += 1
+                        continue
+
+                    try:
+                        job = self.store.repair_automatic_publication_job(
+                            lesson.lesson_id,
+                            expected_revision_number=job.revision_number,
+                            expected_content_sha256=job.content_sha256,
+                            expected_repository_path=job.repository_path,
+                            revision_number=replacement_revision.revision_number,
+                            content_sha256=replacement_revision.content_sha256,
+                            repository_path=repository_path,
+                        )
+                    except AutomaticPublicationJobConflictError as exc:
+                        self.store.update_automatic_publication_job(
+                            lesson.lesson_id,
+                            "conflict",
+                            error=str(exc),
+                            next_attempt_at=None,
+                        )
+                        reconciled += 1
+                        continue
+                    pinned_revision = replacement_revision
+                    reconciled += 1
+                elif (
+                    job.status == "blocked"
+                    and job.error == _EMPTY_AUTOMATIC_TRANSCRIPT_ERROR
+                ):
+                    job = self.store.update_automatic_publication_job(
+                        lesson.lesson_id,
+                        "waiting",
+                        error=None,
+                        next_attempt_at=None,
+                    )
+                    reconciled += 1
 
             publication = lesson.publication
             publication_matches = (
                 lesson.status == JobStatus.PUBLISHED
                 and publication is not None
                 and publication.remote_verified
-                and publication.repository_path == repository_path
-                and publication.content_sha256 == revision.content_sha256
+                and publication.repository_path == job.repository_path
+                and publication.content_sha256 == pinned_revision.content_sha256
             )
-            if publication_matches and job.status != "published":
+            if (
+                publication_matches
+                and job.status != "published"
+                and (job.status != "running" or recover_stale_running)
+            ):
                 self.store.update_automatic_publication_job(
                     lesson.lesson_id,
                     "published",
                     error=None,
                     next_attempt_at=None,
                 )
-                reconciled += 1
-            elif existing is None or repaired:
                 reconciled += 1
         return reconciled
 
