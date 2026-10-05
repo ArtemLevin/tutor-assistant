@@ -4,6 +4,11 @@
 
 ## 1.0.0rc1 — Release 1.0 readiness
 
+- Automatic transcript publication поддерживает отдельный `automatic_transcript_repository`:
+  public Pages/materials repository остаётся в `repository`, а машинные транскрипты можно
+  маршрутизировать в независимый PRIVATE GitHub repository; старые конфигурации сохраняют
+  безопасный fallback на `repository`.
+
 - Добавлен opt-in режим `AUTO_TRANSCRIPT_GITHUB`: после успешного завершения записи занятие
   автоматически проходит persistent ASR queue, создаёт immutable automatic-transcription revision
   в SQLite и публикует transcript через durable publication queue без подмены teacher-approved
