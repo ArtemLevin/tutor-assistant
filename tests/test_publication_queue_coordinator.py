@@ -128,7 +128,6 @@ def test_shutdown_barrier_prevents_new_publication() -> None:
     assert coordinator.pump(PublicationPumpContext(shutdown_requested=True)) is None
 
 
-
 def test_publication_failure_classifier_separates_conflict_block_and_retry() -> None:
     conflict = classify_publication_failure(
         PublicationConflictError("collision"),
@@ -238,3 +237,13 @@ def test_publication_worker_preserves_exception_type_for_failure_policy() -> Non
     assert str(error) == "invalid publication configuration"
     assert "RuntimeError: invalid publication configuration" in details
     assert not worker.busy
+
+
+def test_publication_worker_is_transport_only() -> None:
+    import inspect
+
+    source = inspect.getsource(PublicationWorker)
+
+    assert "publish_automatic_transcript" in source
+    assert "LessonPublisher" not in source
+    assert "GitError" not in source
