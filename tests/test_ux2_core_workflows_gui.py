@@ -83,3 +83,13 @@ def test_required_review_and_explicit_actions_are_first_class_controls() -> None
     assert "edit_guardian_button" in students_source
     assert "open_selected_button" in schedule_source
     assert "Применить и перейти к публикации" in review_source
+
+
+def test_quick_mode_exposes_automatic_transcript_github_opt_in() -> None:
+    page_source = inspect.getsource(app_module.MainWindow._quick_start_page)
+    build_source = inspect.getsource(app_module.MainWindow._build_lesson_from_form)
+
+    assert "quick_automatic_pipeline" in page_source
+    assert "Автоматически транскрибировать и отправить на GitHub" in page_source
+    assert "LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB" in build_source
+    assert "_quick_launch_active" in build_source

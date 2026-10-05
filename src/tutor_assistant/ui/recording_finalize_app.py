@@ -149,6 +149,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self.quick_start_button.setText("Начать занятие")
+        self._reset_quick_processing_selection(clear_selection=True)
         self._set_recording_panel_phase(RecordingPanelPhase.SAVED)
 
         warnings: list[str] = []
@@ -206,6 +207,7 @@ class MainWindow(AudioResilientMainWindow):
         self.test_devices_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=True)
         self._refresh_quick_readiness()
         self._set_recording_panel_phase(RecordingPanelPhase.RECOVERY_REQUIRED)
         self._set_status("Запись сохранена частично; доступно восстановление", "error")
@@ -230,6 +232,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=True)
         self._refresh_quick_readiness()
         self._set_recording_panel_phase(RecordingPanelPhase.FAILED)
         self._set_status("Аудио сохранено, оформление занятия завершилось с ошибкой", "error")

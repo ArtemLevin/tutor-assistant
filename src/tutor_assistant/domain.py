@@ -28,6 +28,11 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class LessonProcessingMode(StrEnum):
+    MANUAL = "manual"
+    AUTO_TRANSCRIPT_GITHUB = "auto_transcript_github"
+
+
 class GeneratedMaterial(StrEnum):
     PDF = "pdf"
     WEB = "web"
@@ -99,6 +104,7 @@ class PipelineOptions(BaseModel):
     poster: bool = True
     web: bool = True
     update_student_index: bool = True
+    processing_mode: LessonProcessingMode = LessonProcessingMode.MANUAL
 
 
 class ArtifactPaths(BaseModel):

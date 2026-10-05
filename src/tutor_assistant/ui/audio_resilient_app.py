@@ -18,7 +18,7 @@ from ..application.recording import (
     RecordingWorkflowRejected,
     StartRecordingUseCase,
 )
-from ..domain import Lesson
+from ..domain import Lesson, LessonProcessingMode
 from ..quick_start import selected_profile
 from ..recording import (
     DualRecorder,
@@ -99,7 +99,12 @@ class MainWindow(ProductionMainWindow):
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
         self.test_devices_button.setEnabled(False)
-        if self._quick_auto_transcribe_active:
+        self.quick_automatic_pipeline.setEnabled(False)
+        if (
+            self._quick_auto_transcribe_active
+            or recording_lesson.pipeline.processing_mode
+            == LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+        ):
             self.quick_start_button.setText("Завершить занятие")
             self.quick_start_button.setEnabled(True)
         self._set_recording_panel_phase(RecordingPanelPhase.RECORDING)
@@ -120,6 +125,7 @@ class MainWindow(ProductionMainWindow):
         self.stop_button.setEnabled(False)
         self.test_devices_button.setEnabled(True)
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=True)
         self._refresh_quick_readiness()
 
     def _persist_audio_selection(self) -> None:
@@ -281,6 +287,7 @@ class MainWindow(ProductionMainWindow):
             self.test_devices_button.setEnabled(True)
             self._quick_start_pending = False
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self._refresh_quick_readiness()
             return
 
@@ -290,6 +297,7 @@ class MainWindow(ProductionMainWindow):
             self.test_devices_button.setEnabled(True)
             self._quick_start_pending = False
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self._refresh_quick_readiness()
             QMessageBox.warning(
                 self,
@@ -355,6 +363,7 @@ class MainWindow(ProductionMainWindow):
         elif self._quick_start_pending:
             self._quick_start_pending = False
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self._refresh_quick_readiness()
 
     def start_recording(self) -> None:
@@ -368,6 +377,7 @@ class MainWindow(ProductionMainWindow):
         if not self._prepare_audio_or_warn(probe=True):
             self.recording_workflow.abort_start()
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self._update_scheduled_occurrence("planned", clear=True)
             return
 
@@ -385,6 +395,8 @@ class MainWindow(ProductionMainWindow):
                 )
                 if answer != QMessageBox.Yes:
                     self.recording_workflow.abort_start()
+                    self._quick_auto_transcribe_active = False
+                    self._reset_quick_processing_selection(clear_selection=False)
                     return
 
             system_source = self.loopback.currentData()
@@ -399,6 +411,7 @@ class MainWindow(ProductionMainWindow):
             self.recording_lesson = started.lesson
             self.recorder = cast(RecordingRuntimeRecorder, started.recorder)
             self._recording_lease = started.lease
+            self._quick_launch_active = False
             self._present_recording_started(recording_lesson, system_source)
         except Exception as exc:
             logging.exception("Не удалось начать запись через application use case")

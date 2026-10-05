@@ -66,7 +66,7 @@ from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
 from ..crash import read_crash_marker
 from ..crm import CrmStore
-from ..domain import JobStatus, Lesson
+from ..domain import JobStatus, Lesson, LessonProcessingMode
 from ..logging_config import (
     configure_logging,
     enable_native_fault_handler,
@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self._recording_stop_started = False
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
+        self._quick_launch_active = False
         self._quick_countdown_remaining = 0
         self._scheduled_occurrence_id: int | None = None
         self.recording_seconds = 0
@@ -816,6 +817,14 @@ class MainWindow(QMainWindow):
         self.quick_topic = QLineEdit(self.config.quick_start.last_topic)
         self.quick_topic.setPlaceholderText("Тема занятия")
         self.quick_topic.setToolTip("Кратко укажите тему — она попадёт в карточку занятия")
+        self.quick_automatic_pipeline = QCheckBox(
+            "Автоматически транскрибировать и отправить на GitHub"
+        )
+        self.quick_automatic_pipeline.setChecked(False)
+        self.quick_automatic_pipeline.setToolTip(
+            "После завершения записи сервис автоматически транскрибирует занятие "
+            "и отправит транскрипт в приватный GitHub-репозиторий."
+        )
 
         surface = QFrame()
         surface.setObjectName("quickSurface")
@@ -865,6 +874,7 @@ class MainWindow(QMainWindow):
         surface_layout.addWidget(self.quick_readiness_text)
         surface_layout.addWidget(self.quick_student)
         surface_layout.addWidget(self.quick_topic)
+        surface_layout.addWidget(self.quick_automatic_pipeline)
 
         self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
         self.quick_start_button.setObjectName("quickStartButton")
@@ -1041,6 +1051,14 @@ class MainWindow(QMainWindow):
         self.config.quick_start.last_topic = self.quick_topic.text().strip()
         self.config.save(self.config_path)
 
+    def _reset_quick_processing_selection(self, *, clear_selection: bool) -> None:
+        self._quick_launch_active = False
+        if not hasattr(self, "quick_automatic_pipeline"):
+            return
+        self.quick_automatic_pipeline.setEnabled(True)
+        if clear_selection:
+            self.quick_automatic_pipeline.setChecked(False)
+
     def _quick_start_clicked(self) -> None:
         if self.quick_countdown_timer.isActive():
             self._cancel_quick_countdown()
@@ -1064,6 +1082,7 @@ class MainWindow(QMainWindow):
                 "\n".join(item.detail for item in readiness.blockers),
             )
             return
+        self._quick_launch_active = True
         self._sync_quick_to_lesson()
         profile = selected_profile(self.config, self.quick_profile.currentData())
         self._quick_auto_transcribe_active = profile.auto_transcribe
@@ -1097,6 +1116,7 @@ class MainWindow(QMainWindow):
         self.quick_countdown_timer.stop()
         self._quick_start_pending = False
         self._quick_auto_transcribe_active = False
+        self._reset_quick_processing_selection(clear_selection=False)
         self._update_scheduled_occurrence("planned", clear=True)
         self._set_status("Быстрый запуск отменён", "warning")
         self._refresh_quick_readiness()
@@ -1542,12 +1562,19 @@ class MainWindow(QMainWindow):
             raise ValueError("Укажите тему занятия")
         selected = next(item for item in self.students if item.id == self.student.currentData())
         value = self.lesson_date.date()
-        return Lesson(
+        lesson = Lesson(
             student=selected,
             subject=subject_value(self.subject.currentData() or self.subject.currentText()),
             topic=self.topic.text().strip(),
             lesson_date=date(value.year(), value.month(), value.day()),
         )
+        if self._quick_launch_active:
+            lesson.pipeline.processing_mode = (
+                LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB
+                if self.quick_automatic_pipeline.isChecked()
+                else LessonProcessingMode.MANUAL
+            )
+        return lesson
 
     def _create_lesson_from_form(self) -> Lesson:
         """Persist a form-backed Lesson for non-recording workflows such as import."""
@@ -2927,6 +2954,7 @@ class MainWindow(QMainWindow):
             self.test_devices_button.setEnabled(True)
             self._quick_start_pending = False
             self._quick_auto_transcribe_active = False
+            self._reset_quick_processing_selection(clear_selection=False)
             self.quick_countdown_timer.stop()
             self._refresh_quick_readiness()
         elif purpose == "publish":
