@@ -4,11 +4,6 @@
 
 ## 1.0.0rc1 — Release 1.0 readiness
 
-- Automatic transcript publication поддерживает отдельный `automatic_transcript_repository`:
-  public Pages/materials repository остаётся в `repository`, а машинные транскрипты можно
-  маршрутизировать в независимый PRIVATE GitHub repository; старые конфигурации сохраняют
-  безопасный fallback на `repository`.
-
 - Архив материалов и корзина теперь поддерживают множественный выбор занятий: выбранные
   занятия можно пакетно переместить в корзину, а затем пакетно удалить локальные данные
   навсегда с отображением освобождённого объёма; ошибки отдельных занятий не прерывают
@@ -26,6 +21,10 @@
 - Добавлен end-to-end regression contract
   `stop → ASR → SQLite revision → publication queue → verified Git publication`
   с реальным локальным bare Git remote.
+- Automatic transcript publication поддерживает отдельный `automatic_transcript_repository`:
+  public Pages/materials repository остаётся в `repository`, а машинные транскрипты можно
+  маршрутизировать в независимый PRIVATE GitHub repository; старые конфигурации сохраняют
+  безопасный fallback на `repository`.
 
 - Python 3.12 утверждён production runtime; Python 3.13/3.14 вынесены в compatibility CI.
 - Добавлен стабильный aggregate `Release 1.0 Gate` с privacy, architecture,
