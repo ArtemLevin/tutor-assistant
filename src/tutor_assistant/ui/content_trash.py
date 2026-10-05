@@ -36,6 +36,7 @@ STATUS_LABELS = {
 class ContentTrashDialog(QDialog):
     restore_requested = Signal(str)
     purge_requested = Signal(str)
+    purge_many_requested = Signal(object)
     purge_expired_requested = Signal()
     retention_changed = Signal(int)
     refresh_requested = Signal()
@@ -78,7 +79,7 @@ class ContentTrashDialog(QDialog):
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Удалено", "Ученик", "Тема", "Размер", "Автоочистка"])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAccessibleName("Удалённые занятия")
         self.table.verticalHeader().setVisible(False)
@@ -130,8 +131,8 @@ class ContentTrashDialog(QDialog):
         self.restore_shortcut.activated.connect(self._restore)
         self.purge_shortcut = QShortcut(QKeySequence("Ctrl+Delete"), self)
         self.purge_shortcut.activated.connect(self._purge)
-        self.restore_button.setToolTip("Восстановить выбранное занятие · Ctrl+R")
-        self.purge_button.setToolTip("Удалить выбранное занятие навсегда · Ctrl+Delete")
+        self.restore_button.setToolTip("Восстановить одно выбранное занятие · Ctrl+R")
+        self.purge_button.setToolTip("Удалить выбранные занятия навсегда · Ctrl+Delete")
 
     def set_data(self, summary: TrashSummary, operations: list[ContentOperation]) -> None:
         self.summary = summary
@@ -174,15 +175,38 @@ class ContentTrashDialog(QDialog):
         self.state.setText("")
         self._selection_changed()
 
+    def selected_lesson_ids(self) -> list[str]:
+        selection = self.table.selectionModel()
+        if selection is None:
+            return []
+        return [
+            str(index.data(Qt.UserRole))
+            for index in sorted(selection.selectedRows(0), key=lambda item: item.row())
+            if index.data(Qt.UserRole)
+        ]
+
     def selected_lesson_id(self) -> str | None:
-        items = self.table.selectedItems()
-        return str(items[0].data(Qt.UserRole)) if items else None
+        lesson_ids = self.selected_lesson_ids()
+        return lesson_ids[0] if len(lesson_ids) == 1 else None
 
     def _selection_changed(self) -> None:
-        items = self.table.selectedItems()
-        trashed = bool(items) and items[0].data(Qt.UserRole + 1) == TrashState.TRASHED.value
-        self.restore_button.setEnabled(trashed)
+        selection = self.table.selectionModel()
+        indexes = (
+            sorted(selection.selectedRows(0), key=lambda item: item.row())
+            if selection is not None
+            else []
+        )
+        lesson_ids = [
+            str(index.data(Qt.UserRole)) for index in indexes if index.data(Qt.UserRole)
+        ]
+        trashed = bool(lesson_ids) and all(
+            index.data(Qt.UserRole + 1) == TrashState.TRASHED.value for index in indexes
+        )
+        self.restore_button.setEnabled(trashed and len(lesson_ids) == 1)
         self.purge_button.setEnabled(trashed)
+        self.purge_button.setText(
+            f"Удалить навсегда ({len(lesson_ids)})" if len(lesson_ids) > 1 else "Удалить навсегда"
+        )
 
     def _restore(self) -> None:
         lesson_id = self.selected_lesson_id()
@@ -191,20 +215,40 @@ class ContentTrashDialog(QDialog):
             self.restore_requested.emit(lesson_id)
 
     def _purge(self) -> None:
-        lesson_id = self.selected_lesson_id()
-        if not lesson_id:
+        lesson_ids = self.selected_lesson_ids()
+        if not lesson_ids:
             return
+        selected = set(lesson_ids)
+        selected_size = sum(
+            item.entry.size_bytes
+            for item in self.summary.items
+            if item.lesson.lesson_id in selected
+        )
+        count = len(lesson_ids)
+        target = (
+            "занятие"
+            if count == 1
+            else f"{count} занятий"
+        )
         answer = QMessageBox.warning(
             self,
-            "Удалить занятие навсегда",
-            "Локальные файлы, транскрипты и история версий будут удалены без возможности "
-            "восстановления. Опубликованный GitHub-контент останется без изменений.",
+            "Удалить навсегда",
+            f"Безвозвратно удалить локальные данные: {target} · {format_size(selected_size)}? "
+            "Файлы, транскрипты и история версий будут удалены без возможности восстановления. "
+            "Опубликованный GitHub-контент останется без изменений.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
         if answer == QMessageBox.Yes:
-            self.set_busy("Удаляю локальные данные навсегда…")
-            self.purge_requested.emit(lesson_id)
+            self.set_busy(
+                "Удаляю локальные данные навсегда…"
+                if count == 1
+                else f"Удаляю локальные данные навсегда: {count} занятий…"
+            )
+            if count == 1:
+                self.purge_requested.emit(lesson_ids[0])
+            else:
+                self.purge_many_requested.emit(lesson_ids)
 
     def _purge_expired(self) -> None:
         if self.summary.expired_count == 0:
