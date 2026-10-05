@@ -285,7 +285,8 @@ class StudentContentPage(QWidget):
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["Дата", "Ученик", "Предмет", "Тема", "Статус"])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.table.setToolTip("Ctrl/Shift — выбрать несколько занятий для пакетного удаления")
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
@@ -574,41 +575,125 @@ class StudentContentPage(QWidget):
         if self.import_dialog is dialog:
             self.import_dialog = None
 
+    def selected_lesson_ids(self) -> list[str]:
+        selection = self.table.selectionModel()
+        if selection is None:
+            return []
+        return [
+            str(index.data(Qt.UserRole))
+            for index in sorted(selection.selectedRows(0), key=lambda item: item.row())
+            if index.data(Qt.UserRole)
+        ]
+
+    @staticmethod
+    def _run_trash_batch(
+        lesson_ids: list[str],
+        action: Callable[[str], TrashActionResult],
+    ) -> tuple[list[TrashActionResult], list[tuple[str, str]]]:
+        completed: list[TrashActionResult] = []
+        failures: list[tuple[str, str]] = []
+        for lesson_id in lesson_ids:
+            try:
+                completed.append(action(lesson_id))
+            except Exception as exc:
+                failures.append((lesson_id, str(exc)))
+        return completed, failures
+
     def delete_selected_lesson(self) -> None:
+        lesson_ids = self.selected_lesson_ids()
+        if not lesson_ids:
+            return
         content = self._current_content
-        if content is None:
-            return
-        lesson = content.lesson
-        if lesson.status in {JobStatus.RECORDING, JobStatus.TRANSCRIBING}:
-            message = "Нельзя удалить занятие во время записи или транскрибации"
-            self.status_changed.emit(message, "warning")
-            QMessageBox.warning(self, "Удаление недоступно", message)
-            return
+        if len(lesson_ids) == 1 and content is not None:
+            lesson = content.lesson
+            if lesson.lesson_id == lesson_ids[0] and lesson.status in {
+                JobStatus.RECORDING,
+                JobStatus.TRANSCRIBING,
+            }:
+                message = "Нельзя удалить занятие во время записи или транскрибации"
+                self.status_changed.emit(message, "warning")
+                QMessageBox.warning(self, "Удаление недоступно", message)
+                return
+        if len(lesson_ids) == 1:
+            topic = (
+                content.lesson.topic
+                if content is not None and content.lesson.lesson_id == lesson_ids[0]
+                else lesson_ids[0]
+            )
+            prompt = (
+                f"Переместить «{topic}» в локальную корзину? "
+                "Занятие можно будет восстановить."
+            )
+        else:
+            prompt = (
+                f"Переместить выбранные занятия в локальную корзину: {len(lesson_ids)}? "
+                "Их можно будет восстановить. Для освобождения места затем удалите их "
+                "навсегда в корзине."
+            )
         answer = QMessageBox.question(
             self,
-            "Переместить занятие в корзину",
-            f"Переместить «{lesson.topic}» в локальную корзину? Занятие можно будет восстановить.",
+            "Переместить занятия в корзину" if len(lesson_ids) > 1 else "Переместить занятие в корзину",
+            prompt,
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
         if answer != QMessageBox.Yes:
             return
         self.delete_lesson_button.setEnabled(False)
-        self.status_changed.emit("Перемещаю занятие в корзину…", "working")
+        self.status_changed.emit(
+            "Перемещаю занятия в корзину…"
+            if len(lesson_ids) > 1
+            else "Перемещаю занятие в корзину…",
+            "working",
+        )
         self.run_background(
-            lambda: self.service.delete_lesson(lesson.lesson_id),
-            self._lesson_deleted,
+            lambda: self._run_trash_batch(lesson_ids, self.service.delete_lesson),
+            self._lessons_deleted,
             self._lesson_delete_failed,
         )
+
+    def _lessons_deleted(self, result: object) -> None:
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[0], list)
+            or not all(isinstance(item, TrashActionResult) for item in result[0])
+            or not isinstance(result[1], list)
+            or not all(
+                isinstance(item, tuple)
+                and len(item) == 2
+                and all(isinstance(value, str) for value in item)
+                for item in result[1]
+            )
+        ):
+            self._lesson_delete_failed("Некорректный результат пакетного удаления")
+            return
+        completed, failures = result
+        for item in completed:
+            self.lesson_trashed.emit(item.lesson_id)
+        total = len(completed) + len(failures)
+        if failures:
+            first_error = self._operation_message(failures[0][1], "Удаление недоступно")
+            message = (
+                f"В корзину перемещено {len(completed)} из {total}; "
+                f"не удалось: {len(failures)}. {first_error}"
+            )
+            self.status_changed.emit(message, "warning")
+            QMessageBox.warning(self, "Пакетное удаление", message)
+        else:
+            noun = "занятие" if len(completed) == 1 else "занятий"
+            message = (
+                f"В корзину перемещено {len(completed)} {noun}. "
+                "Чтобы освободить место на диске, удалите их навсегда в корзине."
+            )
+            self.status_changed.emit(message, "success")
+        self.refresh()
 
     def _lesson_deleted(self, result: object) -> None:
         if not isinstance(result, TrashActionResult):
             self._lesson_delete_failed("Некорректный результат удаления")
             return
-        self.close_details()
-        self.lesson_trashed.emit(result.lesson_id)
-        self.status_changed.emit("Занятие перемещено в корзину", "success")
-        self.refresh()
+        self._lessons_deleted(([result], []))
 
     def _lesson_delete_failed(self, details: str) -> None:
         self.delete_lesson_button.setEnabled(self._current_content is not None)
@@ -633,6 +718,9 @@ class StudentContentPage(QWidget):
         )
         dialog.purge_requested.connect(
             lambda lesson_id, current=dialog: self._purge_from_trash(current, lesson_id)
+        )
+        dialog.purge_many_requested.connect(
+            lambda lesson_ids, current=dialog: self._purge_many_from_trash(current, lesson_ids)
         )
         dialog.purge_expired_requested.connect(lambda current=dialog: self._purge_expired(current))
         dialog.retention_changed.connect(self._change_trash_retention)
@@ -683,6 +771,59 @@ class StudentContentPage(QWidget):
                 self._operation_message(details, "Не удалось удалить занятие")
             ),
         )
+
+    def _purge_many_from_trash(self, dialog: ContentTrashDialog, lesson_ids: object) -> None:
+        if (
+            not isinstance(lesson_ids, list)
+            or not lesson_ids
+            or not all(isinstance(lesson_id, str) for lesson_id in lesson_ids)
+        ):
+            dialog.show_error("Некорректный список занятий для удаления")
+            return
+        self.run_background(
+            lambda: self._run_trash_batch(lesson_ids, self.service.permanently_delete_lesson),
+            lambda result, current=dialog: self._purge_many_ready(current, result),
+            lambda details, current=dialog: current.show_error(
+                self._operation_message(details, "Не удалось удалить выбранные занятия")
+            ),
+        )
+
+    def _purge_many_ready(self, dialog: ContentTrashDialog, result: object) -> None:
+        if (
+            not isinstance(result, tuple)
+            or len(result) != 2
+            or not isinstance(result[0], list)
+            or not all(isinstance(item, TrashActionResult) for item in result[0])
+            or not isinstance(result[1], list)
+            or not all(
+                isinstance(item, tuple)
+                and len(item) == 2
+                and all(isinstance(value, str) for value in item)
+                for item in result[1]
+            )
+        ):
+            dialog.show_error("Некорректный результат пакетного удаления")
+            return
+        completed, failures = result
+        for item in completed:
+            self.lesson_purged.emit(item.lesson_id)
+        released = sum(item.size_bytes for item in completed)
+        total = len(completed) + len(failures)
+        if failures:
+            first_error = self._operation_message(failures[0][1], "Удаление недоступно")
+            message = (
+                f"Удалено навсегда {len(completed)} из {total}; не удалось: {len(failures)}. "
+                f"Освобождено {format_size(released)}. {first_error}"
+            )
+            self.status_changed.emit(message, "warning")
+            QMessageBox.warning(self, "Пакетное удаление", message)
+        else:
+            self.status_changed.emit(
+                f"Удалено навсегда: {len(completed)} · освобождено {format_size(released)}",
+                "success",
+            )
+        self.refresh()
+        self._reload_trash(dialog)
 
     def _purge_expired(self, dialog: ContentTrashDialog) -> None:
         self.run_background(
@@ -1392,12 +1533,27 @@ class StudentContentPage(QWidget):
             self.ensure_loaded()
 
     def _load_selected(self, *, activate: bool = True) -> None:
-        items = self.table.selectedItems()
-        if not items:
+        lesson_ids = self.selected_lesson_ids()
+        if not lesson_ids:
+            if not self._transcript_editing:
+                self._selected_lesson_id = None
+                self._detail_request += 1
+                self._clear_details()
             return
-        lesson_id = str(items[0].data(Qt.UserRole))
-        if not lesson_id:
+        if len(lesson_ids) > 1:
+            self.playback_panel.stop(clear_source=True)
+            self._selected_lesson_id = None
+            self._detail_request += 1
+            self._clear_details()
+            self.details_title.setText(f"Выбрано занятий: {len(lesson_ids)}")
+            sync_text_status(self.details_title, "Выбрано несколько занятий")
+            self.delete_lesson_button.setText(f"В корзину ({len(lesson_ids)})")
+            self.delete_lesson_button.setToolTip(
+                "Переместить выбранные занятия в локальную корзину"
+            )
+            self.delete_lesson_button.setEnabled(True)
             return
+        lesson_id = lesson_ids[0]
         if lesson_id != self._selected_lesson_id:
             self.playback_panel.stop(clear_source=True)
             self._clear_details()
@@ -1434,6 +1590,8 @@ class StudentContentPage(QWidget):
         else:
             self.metadata["materials"].setStyleSheet("")
         self.edit_metadata_button.setEnabled(True)
+        self.delete_lesson_button.setText("В корзину")
+        self.delete_lesson_button.setToolTip("Переместить занятие в локальную корзину")
         self.delete_lesson_button.setEnabled(True)
         self.edit_transcript_button.setEnabled(True)
         self.history_button.setEnabled(result.transcript is not None)
@@ -1536,6 +1694,9 @@ class StudentContentPage(QWidget):
             self.open_file_button.setText("Открыть файл")
         if hasattr(self, "playback_panel"):
             self.playback_panel.reset()
+        if hasattr(self, "delete_lesson_button"):
+            self.delete_lesson_button.setText("В корзину")
+            self.delete_lesson_button.setToolTip("Переместить занятие в локальную корзину")
         for button_name in (
             "edit_metadata_button",
             "edit_transcript_button",
