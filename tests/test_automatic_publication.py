@@ -13,12 +13,12 @@ from tutor_assistant.application.publication_queue import (
     PublicationPumpContext,
     PublicationQueueCoordinator,
 )
-from tutor_assistant.automatic_publication import automatic_publication_repository_path
 from tutor_assistant.application.recording_stop import (
     RecordingStopSession,
     RecordingStopState,
     StopRecordingUseCase,
 )
+from tutor_assistant.automatic_publication import automatic_publication_repository_path
 from tutor_assistant.config import AppConfig, RepositoryConfig
 from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 from tutor_assistant.pipeline import LessonPipeline
