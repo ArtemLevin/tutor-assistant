@@ -14,7 +14,7 @@ class TranscriptionWorker(QThread):
     """Qt transport adapter for sequential background transcription execution."""
 
     succeeded = Signal(str, object)
-    failed = Signal(str, str)
+    failed = Signal(str, object, str)
     became_idle = Signal()
 
     def __init__(self, pipeline: LessonPipeline) -> None:
@@ -44,8 +44,8 @@ class TranscriptionWorker(QThread):
             self.busy = True
             try:
                 self.succeeded.emit(job_id, self.pipeline.transcribe(lesson, audio))
-            except Exception:
-                self.failed.emit(job_id, traceback.format_exc())
+            except Exception as exc:
+                self.failed.emit(job_id, exc, traceback.format_exc())
             finally:
                 self.busy = False
                 self.pending.task_done()
