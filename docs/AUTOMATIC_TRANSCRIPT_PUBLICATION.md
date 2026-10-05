@@ -64,7 +64,29 @@ to SQLite with `created_by="automatic-transcription"`, and then creates a durabl
 The immutable tuple `revision_number + content_sha256 + repository_path` cannot be silently changed
 for an existing job.
 
-The publication target is:
+The Git repository target is resolved independently from the existing Pages/materials repository.
+
+Preferred configuration:
+
+```yaml
+repository:
+  students_repo: ../students-26-27
+  repository_full_name: owner/public-students-pages
+
+automatic_transcript_repository:
+  students_repo: ../students-transcripts
+  remote: origin
+  push: true
+  repository_full_name: owner/private-students-transcripts
+```
+
+`repository` remains the target for existing manual/web/LaTeX workflows.
+`automatic_transcript_repository` is used only by `AUTO_TRANSCRIPT_GITHUB`.
+If the dedicated block is absent, older configurations remain valid: automatic publication falls
+back to `repository`, but the private-repository policy still applies and therefore a public Pages
+repository is rejected.
+
+The publication path inside the private repository is:
 
 ```text
 <student.repository_folder>/transcript/DD.MM.YY.txt
@@ -73,6 +95,10 @@ The publication target is:
 The date comes from `lesson.lesson_date`, not from wall-clock time at publication.
 
 ## Publication safety
+
+The dedicated automatic transcript repository must be a local Git checkout whose configured remote
+matches `automatic_transcript_repository.repository_full_name`; the GitHub repository must be
+PRIVATE. A public repository is blocked even if it is otherwise a valid Git remote.
 
 Automatic publication reads the exact persisted automatic transcript revision from SQLite and
 verifies its SHA-256 before Git access.

@@ -21,6 +21,10 @@
 - Добавлен end-to-end regression contract
   `stop → ASR → SQLite revision → publication queue → verified Git publication`
   с реальным локальным bare Git remote.
+- Automatic transcript publication поддерживает отдельный `automatic_transcript_repository`:
+  public Pages/materials repository остаётся в `repository`, а машинные транскрипты можно
+  маршрутизировать в независимый PRIVATE GitHub repository; старые конфигурации сохраняют
+  безопасный fallback на `repository`.
 
 - Python 3.12 утверждён production runtime; Python 3.13/3.14 вынесены в compatibility CI.
 - Добавлен стабильный aggregate `Release 1.0 Gate` с privacy, architecture,

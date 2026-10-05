@@ -250,7 +250,24 @@ recording stop
 → PUBLISHED
 ```
 
-Целевой путь automatic mode:
+Automatic mode может использовать отдельный private repository, не затрагивая public GitHub Pages repository:
+
+```yaml
+repository:
+  students_repo: ../students-26-27
+  repository_full_name: owner/public-students-pages
+
+automatic_transcript_repository:
+  students_repo: ../students-transcripts
+  remote: origin
+  push: true
+  repository_full_name: owner/private-students-transcripts
+```
+
+Если `automatic_transcript_repository` не указан, используется backward-compatible fallback на
+`repository`, но automatic publisher всё равно требует PRIVATE target.
+
+Целевой путь automatic mode внутри private repository:
 
 ```text
 <student.repository_folder>/transcript/DD.MM.YY.txt

@@ -8,6 +8,7 @@
 4. Проверьте `Automatic backup`: последняя копия должна быть `verified`, а поле ошибки пустым.
 5. Выберите ученика, предмет и тему; дождитесь успешной проверки микрофона и системного звука.
 6. Если нужен полностью автоматический post-lesson flow, до старта записи включите «Автоматически транскрибировать и отправить на GitHub». Режим относится только к создаваемому занятию и не становится глобальным default.
+7. Для automatic mode рекомендуется отдельный PRIVATE checkout в `automatic_transcript_repository`. Public GitHub Pages repository остаётся в `repository`; automatic publisher его не использует, если dedicated target настроен.
 
 ## Во время урока
 

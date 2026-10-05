@@ -260,10 +260,22 @@ class AppConfig(BaseModel):
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
+    automatic_transcript_repository: RepositoryConfig | None = None
     latex: LatexConfig = Field(default_factory=LatexConfig)
     quick_start: QuickStartConfig = Field(default_factory=QuickStartConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)
     normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)
+
+    @property
+    def automatic_publication_repository(self) -> RepositoryConfig:
+        """Repository used only for automatic transcript publication.
+
+        Older configurations remain valid: if the dedicated target is absent,
+        automatic publication falls back to the legacy repository config. The
+        publisher's private-repository policy still applies to that fallback.
+        """
+
+        return self.automatic_transcript_repository or self.repository
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:

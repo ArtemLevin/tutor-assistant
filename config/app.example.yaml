@@ -15,12 +15,20 @@ whisper:
   language: ru
 
 repository:
+  # Existing repository used by manual publication / web / LaTeX workflows.
+  # This may remain the public GitHub Pages repository.
   students_repo: ../students-26-27
   remote: origin
   base_branch: main
   push: false
   use_worktree: true
-  repository_full_name: owner/private-students-repo
+  repository_full_name: owner/students-pages
+
+# Optional dedicated target for AUTO_TRANSCRIPT_GITHUB.
+# Leave null until a separate PRIVATE repository is cloned and configured.
+# If null/omitted, automatic publication falls back to "repository" and still
+# requires that target to be PRIVATE.
+automatic_transcript_repository: null
 
 latex:
   enabled: true

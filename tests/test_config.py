@@ -39,6 +39,47 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert not path.with_suffix(".yaml.tmp").exists()
 
 
+def test_automatic_publication_repository_falls_back_to_legacy_repository() -> None:
+    config = AppConfig()
+    config.repository.repository_full_name = "owner/legacy-private-repo"
+
+    assert config.automatic_transcript_repository is None
+    assert config.automatic_publication_repository is config.repository
+    assert (
+        config.automatic_publication_repository.repository_full_name
+        == "owner/legacy-private-repo"
+    )
+
+
+def test_dedicated_automatic_transcript_repository_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "app.yaml"
+    config = AppConfig(
+        repository=RepositoryConfig(
+            students_repo=Path("../public-students-pages"),
+            repository_full_name="owner/public-students-pages",
+            push=True,
+        ),
+        automatic_transcript_repository=RepositoryConfig(
+            students_repo=Path("../private-student-transcripts"),
+            repository_full_name="owner/private-student-transcripts",
+            push=True,
+        ),
+    )
+
+    config.save(path)
+    restored = AppConfig.load(path)
+
+    assert restored.repository.repository_full_name == "owner/public-students-pages"
+    assert restored.automatic_transcript_repository is not None
+    assert (
+        restored.automatic_publication_repository.repository_full_name
+        == "owner/private-student-transcripts"
+    )
+    assert restored.automatic_publication_repository.students_repo == Path(
+        "../private-student-transcripts"
+    )
+
+
 def test_legacy_loopback_config_remains_valid(tmp_path: Path) -> None:
     path = tmp_path / "legacy.yaml"
     path.write_text(
