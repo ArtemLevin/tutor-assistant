@@ -6,17 +6,17 @@ from datetime import datetime
 from enum import StrEnum
 
 from ..domain import Lesson
-from ..publisher import (
-    GitError,
-    PublicationBlockedError,
-    PublicationConflictError,
-)
 from ..publication_queue import (
     AutomaticPublicationJob,
     AutomaticPublicationQueue,
     AutomaticPublicationStatus,
     PublicationQueueStorage,
     StoredPublicationJobLike,
+)
+from ..publisher import (
+    GitError,
+    PublicationBlockedError,
+    PublicationConflictError,
 )
 
 
