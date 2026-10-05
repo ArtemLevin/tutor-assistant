@@ -7,6 +7,7 @@
 3. Убедитесь, что `Production runtime` соответствует Python 3.12 для packaged build.
 4. Проверьте `Automatic backup`: последняя копия должна быть `verified`, а поле ошибки пустым.
 5. Выберите ученика, предмет и тему; дождитесь успешной проверки микрофона и системного звука.
+6. Если нужен полностью автоматический post-lesson flow, до старта записи включите «Автоматически транскрибировать и отправить на GitHub». Режим относится только к создаваемому занятию и не становится глобальным default.
 
 ## Во время урока
 
@@ -17,9 +18,37 @@
 
 ## После урока
 
-Дождитесь завершения записи и появления канонического `lesson.wav`. Запустите локальную
-транскрибацию, проверьте полученный текст и явно подтвердите revision перед публикацией.
-Обычное закрытие приложения сохраняет очередь незавершённой транскрибации для следующего запуска.
+Дождитесь завершения записи и появления канонического `lesson.wav`.
+
+В manual mode запустите локальную транскрибацию, проверьте полученный текст, явно подтвердите
+revision и затем выполните публикацию.
+
+В automatic mode после успешного stop приложение само выполняет:
+
+```text
+lesson.wav
+→ persistent transcription queue
+→ local ASR
+→ immutable automatic-transcription revision
+→ persistent publication queue
+→ verified GitHub publication
+→ PUBLISHED
+```
+
+Целевой путь строится из даты занятия:
+
+```text
+<student.repository_folder>/transcript/DD.MM.YY.txt
+```
+
+В GitHub отправляется только ожидаемый текстовый файл. Existing target с другим содержимым
+не перезаписывается и помечается как conflict. Временные Git-ошибки автоматически повторяются
+с bounded backoff; blocked publication требует исправить причину и явно выбрать повтор,
+а conflict разрешается вручную.
+
+Обычное закрытие приложения сохраняет незавершённые transcription/publication jobs.
+При следующем запуске automatic publication intents reconciled с SQLite и durable queue
+продолжает обработку без повторного создания automatic revision.
 
 ## Автоматические резервные копии
 
@@ -41,7 +70,8 @@ content:
 
 Журнал приложения находится в `<workspace>\logs\application.log`; каждая запись содержит
 идентификатор application session. Закрывайте приложение через штатный интерфейс: shutdown
-останавливает запуск нового backup и ожидает уже начатые safe background operations.
+останавливает запуск нового backup и ожидает уже начатые safe background operations,
+включая активные transcription/publication workers. Ожидающие durable jobs не теряются.
 При следующем старте после crash приложение предлагает собрать диагностику или открыть журнал.
 
 ## Команды
@@ -53,3 +83,19 @@ tutor-assistant --config config\app.yaml content-doctor --json
 tutor-assistant --config config\app.yaml support-bundle
 tutor-assistant --config config\app.yaml recovery-drill
 ```
+
+
+## Диагностика automatic publication
+
+Состояния publication job видны в разделе фоновой обработки:
+
+- `waiting` / `running` — нормальная обработка;
+- `retry_required` — временная Git-ошибка, следующий retry назначен автоматически;
+- `blocked` — configuration/security/runtime prerequisite требует исправления и явного retry;
+- `conflict` — удалённый target уже содержит другой transcript; автоматическая перезапись запрещена;
+- `published` — remote commit/content подтверждены.
+
+При `blocked` сначала устраните причину (repository configuration, доступ, policy), затем откройте
+job и выберите повтор. `conflict` не переводится в retry автоматически.
+
+Подробности: [`AUTOMATIC_TRANSCRIPT_PUBLICATION.md`](AUTOMATIC_TRANSCRIPT_PUBLICATION.md).
