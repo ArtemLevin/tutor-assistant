@@ -39,12 +39,12 @@ from .store import (
     LessonStore,
     StoredAutomaticPublicationJob,
 )
+from .transcript_policy import transcript_has_content
 from .transcription import (
     EmptyTranscriptionError,
     InvalidTranscriptionResultError,
     TranscriptionResult,
     WhisperTranscriber,
-    transcript_has_content,
     validate_transcription_result,
 )
 
