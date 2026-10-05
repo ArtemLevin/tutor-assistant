@@ -11,8 +11,14 @@ from uuid import uuid4
 
 from .atomic_io import atomic_write_text
 from .config import AppConfig
-from .content import ActivityLease, StudentContentService
-from .domain import ArtifactPaths, JobStatus, Lesson, PublicationInfo
+from .content import ActivityLease, StudentContentService, TranscriptRevision
+from .domain import (
+    ArtifactPaths,
+    JobStatus,
+    Lesson,
+    LessonProcessingMode,
+    PublicationInfo,
+)
 from .latex.remote import (
     LatexCompilationReservation,
     RemoteCompilationResult,
@@ -349,6 +355,37 @@ class LessonPipeline:
             student_transcript=student if student.is_file() else None,
         )
 
+    def _ensure_automatic_transcript_revision(
+        self,
+        lesson: Lesson,
+    ) -> TranscriptRevision | None:
+        if lesson.pipeline.processing_mode != LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB:
+            return None
+        if not lesson.artifacts.cleaned_transcript or not lesson.artifacts.verified_transcript:
+            raise RuntimeError("Automatic transcription artifacts are incomplete")
+
+        cleaned_text = Path(lesson.artifacts.cleaned_transcript).read_text(encoding="utf-8")
+        canonical_text = cleaned_text.rstrip() + "\n"
+        revisions = self.content_service.repository.list_transcript_revisions(lesson.lesson_id)
+        existing = next(
+            (
+                revision
+                for revision in revisions
+                if revision.created_by == "automatic-transcription"
+                and revision.content == canonical_text
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+
+        return self.content_service.save_transcript(
+            lesson.lesson_id,
+            cleaned_text,
+            path=lesson.artifacts.verified_transcript,
+            created_by="automatic-transcription",
+        )
+
     @staticmethod
     def _apply_transcription_result(
         lesson: Lesson,
@@ -389,6 +426,7 @@ class LessonPipeline:
                     lesson.lesson_id,
                 )
                 self._apply_transcription_result(lesson, audio, directory, existing)
+                self._ensure_automatic_transcript_revision(lesson)
                 lesson.transition(JobStatus.REVIEW_REQUIRED)
                 return self.save_state(
                     lesson,
@@ -425,6 +463,15 @@ class LessonPipeline:
                 lesson = self.save_state(lesson, "status", "error")
             except Exception:
                 logging.exception("Не удалось сохранить состояние ошибки транскрибации")
+            raise
+
+        try:
+            self._ensure_automatic_transcript_revision(lesson)
+        except Exception:
+            logging.exception(
+                "ASR artifacts persisted, but automatic transcript revision was not committed; "
+                "retry will reconcile without rerunning ASR"
+            )
             raise
 
         lesson.transition(JobStatus.REVIEW_REQUIRED)

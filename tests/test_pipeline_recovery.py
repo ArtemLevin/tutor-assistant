@@ -1,10 +1,11 @@
+import hashlib
 import json
 from datetime import date
 
 import pytest
 
 from tutor_assistant.config import AppConfig
-from tutor_assistant.domain import JobStatus, Lesson, Student
+from tutor_assistant.domain import JobStatus, Lesson, LessonProcessingMode, Student
 from tutor_assistant.pipeline import LessonPipeline
 from tutor_assistant.transcription import TranscriptionResult
 
@@ -53,13 +54,18 @@ class DurableTranscriber:
         )
 
 
-def _recorded_lesson(pipeline: LessonPipeline) -> Lesson:
+def _recorded_lesson(
+    pipeline: LessonPipeline,
+    *,
+    processing_mode: LessonProcessingMode = LessonProcessingMode.MANUAL,
+) -> Lesson:
     lesson = Lesson(
         student=Student(id="student", full_name="Ученик"),
         subject="mathematics",
         lesson_date=date(2026, 7, 13),
         topic="Функции",
     )
+    lesson.pipeline.processing_mode = processing_mode
     pipeline.create(lesson)
     lesson.transition(JobStatus.RECORDED)
     pipeline.save_state(lesson, "status", "error")
@@ -119,3 +125,94 @@ def test_final_persistence_failure_reconciles_without_second_asr(monkeypatch, tm
     stored = pipeline.content_service.get_lesson(lesson.lesson_id).lesson
     assert stored.status == JobStatus.REVIEW_REQUIRED
     assert stored.artifacts.transcription_manifest
+
+
+
+def test_automatic_transcription_creates_canonical_immutable_revision(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+
+    result = pipeline.transcribe(lesson, audio)
+
+    revisions = pipeline.content_service.repository.list_transcript_revisions(lesson.lesson_id)
+    assert result.status == JobStatus.REVIEW_REQUIRED
+    assert len(revisions) == 1
+    revision = revisions[0]
+    assert revision.created_by == "automatic-transcription"
+    assert revision.content == "clean transcript\n"
+    assert revision.content_sha256 == hashlib.sha256(b"clean transcript\n").hexdigest()
+    assert result.status != JobStatus.READY
+
+
+def test_manual_transcription_does_not_create_automatic_revision(monkeypatch, tmp_path) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(pipeline)
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    monkeypatch.setattr(pipeline, "transcriber", lambda: DurableTranscriber())
+
+    pipeline.transcribe(lesson, audio)
+
+    assert pipeline.content_service.repository.list_transcript_revisions(lesson.lesson_id) == []
+
+
+def test_automatic_revision_is_not_duplicated_during_artifact_reconciliation(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    config = AppConfig(workspace=tmp_path)
+    config.recording.dual_channel_transcription = False
+    pipeline = LessonPipeline(config)
+    lesson = _recorded_lesson(
+        pipeline,
+        processing_mode=LessonProcessingMode.AUTO_TRANSCRIPT_GITHUB,
+    )
+    audio = tmp_path / "lesson.wav"
+    audio.write_bytes(b"audio")
+    transcriber = DurableTranscriber()
+    monkeypatch.setattr(pipeline, "transcriber", lambda: transcriber)
+
+    original_save_state = pipeline.save_state
+    calls = 0
+
+    def fail_final_save(current, *fields, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("database unavailable after automatic revision")
+        return original_save_state(current, *fields, **kwargs)
+
+    monkeypatch.setattr(pipeline, "save_state", fail_final_save)
+
+    with pytest.raises(RuntimeError, match="database unavailable after automatic revision"):
+        pipeline.transcribe(lesson, audio)
+
+    revisions_after_failure = pipeline.content_service.repository.list_transcript_revisions(
+        lesson.lesson_id
+    )
+    assert transcriber.calls == 1
+    assert len(revisions_after_failure) == 1
+
+    persisted = pipeline.content_service.get_lesson(lesson.lesson_id).lesson
+    recovered = pipeline.transcribe(persisted, audio)
+
+    revisions_after_recovery = pipeline.content_service.repository.list_transcript_revisions(
+        lesson.lesson_id
+    )
+    assert transcriber.calls == 1
+    assert recovered.status == JobStatus.REVIEW_REQUIRED
+    assert len(revisions_after_recovery) == 1
+    assert revisions_after_recovery[0].created_by == "automatic-transcription"
