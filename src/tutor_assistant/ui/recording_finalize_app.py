@@ -28,6 +28,7 @@ class MainWindow(AudioResilientMainWindow):
         self.stop_recording_use_case = StopRecordingUseCase(
             self.pipeline,
             result_finalizer=self._finalize_recording_result,
+            on_recorded=self.lesson_board_coordinator.recording_finished,
         )
         self._active_stop_session: RecordingStopSession | None = None
 
