@@ -258,13 +258,25 @@ class TutorBoardConfig(BaseModel):
 
     enabled: bool = False
     base_url: str = ""
+    expected_user_id: str = ""
+    expected_organization_id: str = ""
 
     @model_validator(mode="after")
     def validate_board_url(self) -> TutorBoardConfig:
+        if self.enabled and (
+            not self.expected_user_id or not self.expected_organization_id
+        ):
+            raise ValueError("Enable TutorBoard only with the expected teacher and organization IDs")
         if not self.base_url:
             if self.enabled:
                 raise ValueError("TutorBoard base_url is required when enabled")
             return self
+        for name, value in (
+            ("expected_user_id", self.expected_user_id),
+            ("expected_organization_id", self.expected_organization_id),
+        ):
+            if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
+                raise ValueError(f"Invalid TutorBoard {name}")
         url = urlsplit(self.base_url)
         local_http = url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1"}
         if (
