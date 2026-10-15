@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date
+from threading import Event
 from http.client import HTTPConnection
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,9 +11,13 @@ from urllib.parse import urlsplit
 import pytest
 from pydantic import ValidationError
 
-from tutor_assistant.application.lesson_board import BoardLaunchError, LessonBoardCoordinator
+from tutor_assistant.application.lesson_board import (
+    BoardLaunchError,
+    LessonBoardCoordinator,
+    LocalBoardLaunch,
+)
 from tutor_assistant.config import AppConfig, TutorBoardConfig
-from tutor_assistant.domain import Lesson, LessonBoardState, Student
+from tutor_assistant.domain import JobStatus, Lesson, LessonBoardState, Student
 from tutor_assistant.pipeline import LessonPipeline
 
 
@@ -22,7 +27,12 @@ def make_lesson() -> Lesson:
         subject="math",
         topic="Линейные функции",
         lesson_date=date(2026, 10, 15),
-        board=LessonBoardState(enabled=True, status="pending"),
+        board=LessonBoardState(
+            enabled=True,
+            status="pending",
+            owner_user_id="teacher-user-1",
+            organization_id="organization-1",
+        ),
     )
 
 
@@ -37,6 +47,8 @@ def test_legacy_lesson_and_config_remain_compatible() -> None:
     old = Lesson.model_validate(dumped)
     assert old.board == LessonBoardState()
     assert not AppConfig().board.enabled
+    with pytest.raises(ValidationError):
+        TutorBoardConfig(enabled=True, base_url="https://board.example")
     assert TutorBoardConfig(base_url="https://board.example").base_url == "https://board.example"
     with pytest.raises(ValidationError):
         TutorBoardConfig(enabled=True, base_url="http://untrusted.example")
@@ -50,7 +62,11 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
     pipeline = make_pipeline(tmp_path)
     lesson = make_lesson()
     pipeline.create(lesson)
-    coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
+    coordinator = LessonBoardCoordinator(
+        pipeline, "https://board.example",
+        expected_user_id="teacher-user-1",
+        expected_organization_id="organization-1",
+    )
     lease = pipeline.content_service.acquire_activity(
         "recording", lesson_id=lesson.lesson_id
     )
@@ -63,6 +79,8 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
         )
         assert launch_data["lessonId"] == lesson.lesson_id
         assert launch_data["version"] == 1
+        assert launch_data["teacherUserId"] == "teacher-user-1"
+        assert launch_data["organizationId"] == "organization-1"
         assert "Уч" not in url
         assert "nonce" not in url.partition("#")[0]
         parsed = urlsplit(launch_data["callback"])
@@ -193,3 +211,59 @@ def test_late_board_callback_preserves_recording_completion(tmp_path: Path) -> N
     assert stored.board.status == "linked"
     assert stored.board.recording_finished
     assert stored.board.pdf_status == "pending"
+
+
+def test_launch_requires_exact_pinned_teacher_and_organization(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path)
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    coordinator = LessonBoardCoordinator(
+        pipeline, "https://board.example",
+        expected_user_id="other-teacher",
+        expected_organization_id="organization-1",
+    )
+    with pytest.raises(BoardLaunchError, match="identity"):
+        coordinator.launch(lesson)
+
+
+def test_expired_listener_marks_failed_and_explicit_retry_restores_pending(
+    tmp_path: Path,
+) -> None:
+    pipeline = make_pipeline(tmp_path)
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
+    expired = Event()
+    launch = LocalBoardLaunch(
+        lesson=lesson,
+        base_url="https://board.example",
+        on_linked=lambda board_id: coordinator.link(lesson.lesson_id, board_id),
+        on_expired=lambda: (
+            coordinator.launch_failed(lesson.lesson_id, "expired"), expired.set()
+        ),
+        lifetime_seconds=0.01,
+    )
+    launch.start()
+    try:
+        assert expired.wait(5)
+        assert pipeline.store.get(lesson.lesson_id).board.status == "failed"
+        restored = coordinator.retry_launch(lesson.lesson_id)
+        assert restored.board.status == "pending"
+    finally:
+        launch.close()
+
+
+def test_restart_reconciles_orphan_handoffs_and_recorded_audio(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path)
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    lesson.source_audio_local = str(tmp_path / "audio.wav")
+    lesson.transition(JobStatus.RECORDED)
+    pipeline.save_state(lesson, "source_audio_local", "status")
+    coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
+    assert coordinator.reconcile() == (1, 1)
+    recovered = pipeline.store.get(lesson.lesson_id)
+    assert recovered is not None
+    assert recovered.board.status == "failed"
+    assert recovered.board.recording_finished
+    assert coordinator.reconcile() == (0, 0)
