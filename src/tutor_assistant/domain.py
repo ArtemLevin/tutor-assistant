@@ -165,6 +165,8 @@ class LessonBoardState(BaseModel):
     enabled: bool = False
     status: Literal["disabled", "pending", "linked", "failed"] = "disabled"
     board_id: str | None = None
+    owner_user_id: str | None = None
+    organization_id: str | None = None
     recording_finished: bool = False
     pdf_status: Literal["not_requested", "pending", "ready", "failed"] = "not_requested"
     pdf_sha256: str | None = None
