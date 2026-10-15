@@ -62,7 +62,7 @@ class LocalBoardLaunch:
                 if (
                     self.headers.get("Origin") != owner.base_url
                     or self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}"
-                    or self.path != "/prepare"
+                    or urlsplit(self.path).path != "/prepare"
                 ):
                     self.send_error(403)
                     return
