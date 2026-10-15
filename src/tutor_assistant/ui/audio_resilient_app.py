@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import cast
 
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMessageBox
 
 from ..application import (
@@ -11,6 +13,7 @@ from ..application import (
     AudioPreflightUseCase,
     RefreshAudioDevicesUseCase,
 )
+from ..application.lesson_board import LessonBoardCoordinator, LocalBoardLaunch
 from ..application.recording import (
     RecordingRuntimeRecorder,
     RecordingRuntimeState,
@@ -51,6 +54,10 @@ class MainWindow(ProductionMainWindow):
         self.audio_preflight_use_case = AudioPreflightUseCase(
             self._create_preflight_recorder,
         )
+        self.lesson_board_coordinator = LessonBoardCoordinator(
+            self.pipeline, self.config.board.base_url
+        )
+        self._board_launchers: list[LocalBoardLaunch] = []
         self.recording_workflow.observe_runtime(self._recording_runtime_state())
         try:
             self._refresh_live_audio_devices(require_ready=False)
@@ -101,6 +108,8 @@ class MainWindow(ProductionMainWindow):
         self.test_devices_button.setEnabled(False)
         self.quick_automatic_pipeline.setEnabled(False)
         self.detailed_automatic_pipeline.setEnabled(False)
+        self.quick_board_enabled.setEnabled(False)
+        self.detailed_board_enabled.setEnabled(False)
         if (
             self._quick_auto_transcribe_active
             or recording_lesson.pipeline.processing_mode
@@ -116,6 +125,26 @@ class MainWindow(ProductionMainWindow):
             self.mic.currentText(),
             system_source.display_name,
         )
+        self._launch_lesson_board(recording_lesson)
+
+    def _launch_lesson_board(self, lesson: Lesson) -> None:
+        """Launch browser authentication after capture is durably active."""
+
+        if not lesson.board.enabled:
+            return
+        try:
+            launch, url = self.lesson_board_coordinator.launch(lesson)
+            self._board_launchers.append(launch)
+            if not QDesktopServices.openUrl(QUrl(url)):
+                launch.close()
+                raise RuntimeError("Не удалось открыть браузер TutorBoard")
+        except Exception as exc:
+            logging.exception("Lesson board launch failed: lesson=%s", lesson.lesson_id)
+            try:
+                self.lesson_board_coordinator.launch_failed(lesson.lesson_id, str(exc))
+            except Exception:
+                logging.exception("Could not persist TutorBoard launch failure")
+            self._set_status("Идёт запись; автоматический запуск доски не выполнен", "warning")
 
     def _reset_failed_start_presentation(self) -> None:
         self.recorder = None
