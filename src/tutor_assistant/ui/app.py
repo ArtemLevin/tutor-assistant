@@ -886,6 +886,9 @@ class MainWindow(QMainWindow):
             "настройте board.base_url в конфигурации."
         )
         self.quick_board_enabled.toggled.connect(self._sync_board_selection)
+        self.quick_board_retry = QPushButton("Повторить открытие доски")
+        self.quick_board_retry.setEnabled(False)
+        self.quick_board_retry.clicked.connect(self._retry_lesson_board)
 
         surface = QFrame()
         surface.setObjectName("quickSurface")
@@ -937,6 +940,7 @@ class MainWindow(QMainWindow):
         surface_layout.addWidget(self.quick_topic)
         surface_layout.addWidget(self.quick_automatic_pipeline)
         surface_layout.addWidget(self.quick_board_enabled)
+        surface_layout.addWidget(self.quick_board_retry)
 
         self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
         self.quick_start_button.setObjectName("quickStartButton")
@@ -1152,6 +1156,10 @@ class MainWindow(QMainWindow):
             control.setEnabled(True)
             if clear_selection:
                 control.setChecked(False)
+        for name in ("quick_board_retry", "detailed_board_retry"):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setEnabled(False)
         for name in ("quick_board_enabled", "detailed_board_enabled"):
             control = getattr(self, name, None)
             if control is not None:
@@ -1295,11 +1303,15 @@ class MainWindow(QMainWindow):
             "Для запуска нужна настроенная board.base_url и авторизация на сайте TutorBoard."
         )
         self.detailed_board_enabled.toggled.connect(self._sync_board_selection)
+        self.detailed_board_retry = QPushButton("Повторить открытие доски")
+        self.detailed_board_retry.setEnabled(False)
+        self.detailed_board_retry.clicked.connect(self._retry_lesson_board)
         form.addRow("Дата", self.lesson_date)
         form.addRow("Микрофон", self.mic)
         form.addRow("Системный звук / loopback", self.loopback)
         form.addRow("Автоматизация", self.detailed_automatic_pipeline)
         form.addRow("Доска занятия", self.detailed_board_enabled)
+        form.addRow("", self.detailed_board_retry)
         columns.addWidget(form_box, 3)
 
         diagnostics = QGroupBox("Уровни и стабильность")
