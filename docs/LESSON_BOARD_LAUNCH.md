@@ -17,10 +17,14 @@ In `config/app.yaml`:
 board:
   enabled: true
   base_url: https://YOUR-BOARD-DOMAIN
+  expected_user_id: YOUR-AUTHENTICATED-BOARD-USER-ID
+  expected_organization_id: YOUR-BOARD-ORGANIZATION-ID
 ```
 
 The origin must be HTTPS (or loopback HTTP for development), without embedded
-credentials, paths or query parameters. Use a board deployment where the teacher
+credentials, paths or query parameters. The expected user and organization IDs
+must match the JSON fields returned by an authenticated `GET /api/v1/boards/context`
+request in the browser. A different signed-in teacher cannot start this lesson board. Use a board deployment where the teacher
 can authenticate at `/login`. The per-lesson opt-in appears in both Quick Lesson
 and the detailed recording form and is synchronized between them.
 
@@ -31,20 +35,24 @@ and the detailed recording form and is synchronized between them.
 2. After recording has started successfully, `LocalBoardLaunch` opens a
    loopback listener on `127.0.0.1` and launches
    `https://YOUR-BOARD-DOMAIN/boards#ta-start=<base64url>`.
-3. The browser validates the strictly typed, one-time launch context in the
+3. The browser validates the strictly typed, one-time launch context, including
+   the pinned user and organization IDs, in the
    URL **fragment** and removes it from browser history.
 4. Before issuing any write, the browser verifies the one-time nonce against
    `GET http://127.0.0.1:<port>/prepare?nonce=<nonce>` with a CORS
    response scoped to the configured TutorBoard origin. The desktop listener
    refuses other origins.
-5. The already-authenticated teacher browser sends the usual
+5. The browser compares the authenticated teacher/organization context with the
+   pinned values before any write. The already-authenticated browser sends the usual
    CSRF-protected `POST /api/v1/boards`. Tutor Assistant never stores Board API
    session cookies, a teacher password, or a privileged API token.
-6. The browser navigates to the one-time loopback
+6. Board API atomically creates or reuses one board per organization and client
+   lesson ID (`clientLessonId`). A retry or browser crash cannot create duplicates.
+7. The browser navigates to the one-time loopback
    `/complete?nonce=<nonce>&boardId=<boardId>` callback. The desktop
    atomically persists the board association using the current recording
    lease, then redirects the browser to `/b/<boardId>#/board`.
-7. On successful recording finalization, the Lesson receives
+8. On successful recording finalization, the Lesson receives
    `board.recording_finished=true`. A linked board becomes
    `board.pdf_status=pending` for the later PDF worker.
 
@@ -77,6 +85,14 @@ invalid/expired callback challenge, origin restrictions, one-time
 completion, duplicate callback, cross-lesson board substitution,
 successful association during an active recording lease, late callback
 after recording stop, shutdown, and no regression of ASR/publication.
+
+After a desktop restart, orphaned pending handoffs are marked failed, and
+successfully recorded lessons missing a board-finished marker are reconciled.
+The retry controls on Quick Lesson and the detailed lesson page can reopen
+failed lesson boards without changing their durable client lesson key.
+
+Rollout order: deploy tutor-assistant-web support for `clientLessonId` and its
+database migration before deploying this TutorBoard build and the Windows app.
 
 The next stage adds an immutable board revision, PDF rendering and a
 durable two-file publisher with per-artifact checksums and exact remote
