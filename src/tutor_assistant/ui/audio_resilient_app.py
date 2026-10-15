@@ -133,7 +133,9 @@ class MainWindow(ProductionMainWindow):
         if not lesson.board.enabled:
             return
         try:
-            launch, url = self.lesson_board_coordinator.launch(lesson)
+            launch, url = self.lesson_board_coordinator.launch(
+                lesson, recording_lease=self._recording_lease
+            )
             self._board_launchers.append(launch)
             if not QDesktopServices.openUrl(QUrl(url)):
                 launch.close()
