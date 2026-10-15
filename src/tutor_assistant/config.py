@@ -253,6 +253,33 @@ class NormalizationConfig(BaseModel):
         return self.cloud_policy
 
 
+class TutorBoardConfig(BaseModel):
+    """Browser-authenticated TutorBoard launch; no teacher credentials are stored."""
+
+    enabled: bool = False
+    base_url: str = ""
+
+    @model_validator(mode="after")
+    def validate_board_url(self) -> TutorBoardConfig:
+        if not self.base_url:
+            if self.enabled:
+                raise ValueError("TutorBoard base_url is required when enabled")
+            return self
+        url = urlsplit(self.base_url)
+        local_http = url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1"}
+        if (
+            not (url.scheme == "https" or local_http)
+            or not url.hostname
+            or url.username is not None
+            or url.password is not None
+            or url.path not in {"", "/"}
+            or url.query
+            or url.fragment
+        ):
+            raise ValueError("TutorBoard base_url must be a trusted HTTPS origin")
+        return self
+
+
 class AppConfig(BaseModel):
     setup_completed: bool = False
     workspace: Path = Field(default_factory=default_workspace_path)
@@ -261,6 +288,7 @@ class AppConfig(BaseModel):
     whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     repository: RepositoryConfig = Field(default_factory=RepositoryConfig)
     automatic_transcript_repository: RepositoryConfig | None = None
+    board: TutorBoardConfig = Field(default_factory=TutorBoardConfig)
     latex: LatexConfig = Field(default_factory=LatexConfig)
     quick_start: QuickStartConfig = Field(default_factory=QuickStartConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)
