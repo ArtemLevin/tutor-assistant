@@ -4,9 +4,8 @@ import re
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from uuid import uuid4
-
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -177,7 +176,9 @@ class LessonBoardState(BaseModel):
             raise ValueError("Disabled lessons cannot have an active board launch")
         if self.status == "linked" and self.board_id is None:
             raise ValueError("A linked board requires a board ID")
-        if self.board_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.board_id):
+        if self.board_id is not None and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.board_id
+        ):
             raise ValueError("Invalid TutorBoard document identifier")
         if self.pdf_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", self.pdf_sha256):
             raise ValueError("Invalid board PDF checksum")
