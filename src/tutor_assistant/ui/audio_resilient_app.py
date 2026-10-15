@@ -5,7 +5,7 @@ from typing import cast
 
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 from ..application import (
     AudioDeviceSelection,
@@ -173,11 +173,35 @@ class MainWindow(ProductionMainWindow):
         """Reopen a failed handoff for a recorded or active lesson."""
 
         lesson = self.recording_lesson or self.lesson
-        if lesson is None:
-            QMessageBox.information(
-                self, "Доска занятия", "Выберите занятие для повторного открытия."
+        if lesson is None or lesson.board.status != "failed":
+            candidates = [
+                item
+                for item in self.content_service.iter_lessons()
+                if item.board.enabled
+                and item.board.status == "failed"
+                and item.board.board_id is None
+            ]
+            if not candidates:
+                QMessageBox.information(
+                    self, "Доска занятия", "Занятий с ошибкой открытия доски нет."
+                )
+                return
+            labels = [
+                f"{item.lesson_date} · {item.student.full_name} · "
+                f"{item.topic} ({item.lesson_id[:8]})"
+                for item in candidates
+            ]
+            selected, confirmed = QInputDialog.getItem(
+                self,
+                "Повторить открытие доски",
+                "Выберите занятие:",
+                labels,
+                0,
+                False,
             )
-            return
+            if not confirmed:
+                return
+            lesson = candidates[labels.index(selected)]
         try:
             lease = (
                 self._recording_lease
