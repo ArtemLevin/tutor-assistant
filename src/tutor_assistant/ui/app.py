@@ -876,7 +876,11 @@ class MainWindow(QMainWindow):
         )
         self.quick_board_enabled = QCheckBox("Открыть новую TutorBoard с записью")
         self.quick_board_enabled.setChecked(self.config.board.enabled)
-        self.quick_board_enabled.setEnabled(bool(self.config.board.base_url))
+        self.quick_board_enabled.setEnabled(bool(
+                    self.config.board.base_url
+                    and self.config.board.expected_user_id
+                    and self.config.board.expected_organization_id
+                ))
         self.quick_board_enabled.setToolTip(
             "Использует авторизованную сессию преподавателя в браузере; "
             "настройте board.base_url в конфигурации."
@@ -1151,7 +1155,11 @@ class MainWindow(QMainWindow):
         for name in ("quick_board_enabled", "detailed_board_enabled"):
             control = getattr(self, name, None)
             if control is not None:
-                control.setEnabled(bool(self.config.board.base_url))
+                control.setEnabled(bool(
+                    self.config.board.base_url
+                    and self.config.board.expected_user_id
+                    and self.config.board.expected_organization_id
+                ))
                 if clear_selection:
                     control.setChecked(self.config.board.enabled)
 
@@ -1278,7 +1286,11 @@ class MainWindow(QMainWindow):
         )
         self.detailed_board_enabled = QCheckBox("Открыть новую TutorBoard с записью")
         self.detailed_board_enabled.setChecked(self.config.board.enabled)
-        self.detailed_board_enabled.setEnabled(bool(self.config.board.base_url))
+        self.detailed_board_enabled.setEnabled(bool(
+                    self.config.board.base_url
+                    and self.config.board.expected_user_id
+                    and self.config.board.expected_organization_id
+                ))
         self.detailed_board_enabled.setToolTip(
             "Для запуска нужна настроенная board.base_url и авторизация на сайте TutorBoard."
         )
@@ -1698,6 +1710,10 @@ class MainWindow(QMainWindow):
         lesson.board = LessonBoardState(
             enabled=board_enabled,
             status="pending" if board_enabled else "disabled",
+            owner_user_id=self.config.board.expected_user_id if board_enabled else None,
+            organization_id=(
+                self.config.board.expected_organization_id if board_enabled else None
+            ),
         )
         return lesson
 
