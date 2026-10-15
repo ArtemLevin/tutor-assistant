@@ -157,6 +157,14 @@ class MainWindow(AudioResilientMainWindow):
             raise RuntimeError("Финализация записи завершилась без RecordingResult")
 
         recorded_lesson = outcome.lesson
+        if recorded_lesson.board.enabled and hasattr(self, "lesson_board_coordinator"):
+            try:
+                self.lesson_board_coordinator.recording_finished(recorded_lesson.lesson_id)
+            except Exception:
+                logging.exception(
+                    "Failed to mark TutorBoard recording completion: lesson=%s",
+                    recorded_lesson.lesson_id,
+                )
         review_before = self.review_lesson
         self._update_scheduled_occurrence(
             "completed",
