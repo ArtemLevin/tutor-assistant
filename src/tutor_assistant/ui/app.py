@@ -69,7 +69,7 @@ from ..content import ContentMaintenanceResult
 from ..content_browser import is_audio_path
 from ..crash import read_crash_marker
 from ..crm import CrmStore
-from ..domain import JobStatus, Lesson, LessonProcessingMode
+from ..domain import JobStatus, Lesson, LessonBoardState, LessonProcessingMode
 from ..logging_config import (
     configure_logging,
     enable_native_fault_handler,
@@ -874,6 +874,14 @@ class MainWindow(QMainWindow):
         self.quick_automatic_pipeline.toggled.connect(
             self._sync_automatic_pipeline_selection
         )
+        self.quick_board_enabled = QCheckBox("Открыть новую TutorBoard с записью")
+        self.quick_board_enabled.setChecked(self.config.board.enabled)
+        self.quick_board_enabled.setEnabled(bool(self.config.board.base_url))
+        self.quick_board_enabled.setToolTip(
+            "Использует авторизованную сессию преподавателя в браузере; "
+            "настройте board.base_url в конфигурации."
+        )
+        self.quick_board_enabled.toggled.connect(self._sync_board_selection)
 
         surface = QFrame()
         surface.setObjectName("quickSurface")
@@ -924,6 +932,7 @@ class MainWindow(QMainWindow):
         surface_layout.addWidget(self.quick_student)
         surface_layout.addWidget(self.quick_topic)
         surface_layout.addWidget(self.quick_automatic_pipeline)
+        surface_layout.addWidget(self.quick_board_enabled)
 
         self.quick_start_button = set_button_kind(QPushButton("Начать занятие"), "primary")
         self.quick_start_button.setObjectName("quickStartButton")
@@ -1108,6 +1117,14 @@ class MainWindow(QMainWindow):
             if control is not None and control.isChecked() != checked:
                 control.setChecked(checked)
 
+    def _sync_board_selection(self, checked: bool) -> None:
+        """Mirror the board option between quick and detailed lesson forms."""
+
+        for name in ("quick_board_enabled", "detailed_board_enabled"):
+            control = getattr(self, name, None)
+            if control is not None and control.isChecked() != checked:
+                control.setChecked(checked)
+
     def _selected_lesson_processing_mode(self) -> LessonProcessingMode:
         control_name = (
             "quick_automatic_pipeline"
@@ -1131,6 +1148,12 @@ class MainWindow(QMainWindow):
             control.setEnabled(True)
             if clear_selection:
                 control.setChecked(False)
+        for name in ("quick_board_enabled", "detailed_board_enabled"):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setEnabled(bool(self.config.board.base_url))
+                if clear_selection:
+                    control.setChecked(self.config.board.enabled)
 
     def _quick_start_clicked(self) -> None:
         if self.quick_countdown_timer.isActive():
@@ -1253,10 +1276,18 @@ class MainWindow(QMainWindow):
         self.detailed_automatic_pipeline.toggled.connect(
             self._sync_automatic_pipeline_selection
         )
+        self.detailed_board_enabled = QCheckBox("Открыть новую TutorBoard с записью")
+        self.detailed_board_enabled.setChecked(self.config.board.enabled)
+        self.detailed_board_enabled.setEnabled(bool(self.config.board.base_url))
+        self.detailed_board_enabled.setToolTip(
+            "Для запуска нужна настроенная board.base_url и авторизация на сайте TutorBoard."
+        )
+        self.detailed_board_enabled.toggled.connect(self._sync_board_selection)
         form.addRow("Дата", self.lesson_date)
         form.addRow("Микрофон", self.mic)
         form.addRow("Системный звук / loopback", self.loopback)
         form.addRow("Автоматизация", self.detailed_automatic_pipeline)
+        form.addRow("Доска занятия", self.detailed_board_enabled)
         columns.addWidget(form_box, 3)
 
         diagnostics = QGroupBox("Уровни и стабильность")
@@ -1658,6 +1689,16 @@ class MainWindow(QMainWindow):
             lesson_date=date(value.year(), value.month(), value.day()),
         )
         lesson.pipeline.processing_mode = self._selected_lesson_processing_mode()
+        control = getattr(
+            self,
+            "quick_board_enabled" if self._quick_launch_active else "detailed_board_enabled",
+            None,
+        )
+        board_enabled = bool(control is not None and control.isChecked())
+        lesson.board = LessonBoardState(
+            enabled=board_enabled,
+            status="pending" if board_enabled else "disabled",
+        )
         return lesson
 
     def _create_lesson_from_form(self) -> Lesson:
