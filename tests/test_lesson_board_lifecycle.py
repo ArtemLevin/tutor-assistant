@@ -5,7 +5,7 @@ import json
 from datetime import date
 from http.client import HTTPConnection
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import pytest
 from pydantic import ValidationError
