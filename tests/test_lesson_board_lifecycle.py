@@ -151,3 +151,45 @@ def test_linked_board_requires_correct_server_id_and_single_association(tmp_path
     assert pipeline.store.get(lesson.lesson_id).board.pdf_status == "pending"
     coordinator.recording_finished(lesson.lesson_id)
     assert pipeline.store.get(lesson.lesson_id).board.board_id == "board:expected"
+
+def test_stale_board_callback_retries_without_losing_stop_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipeline = make_pipeline(tmp_path)
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
+    save_state = pipeline.save_state
+    injected = False
+
+    def competing_completion(current: Lesson, *fields: str, **kwargs: object) -> Lesson:
+        nonlocal injected
+        if not injected:
+            injected = True
+            competing = pipeline.content_service.get_lesson(current.lesson_id).lesson
+            competing.board.recording_finished = True
+            save_state(competing, "board")
+        return save_state(current, *fields, **kwargs)
+
+    monkeypatch.setattr(pipeline, "save_state", competing_completion)
+    coordinator.link(lesson.lesson_id, "board:concurrent")
+
+    stored = pipeline.store.get(lesson.lesson_id)
+    assert stored is not None
+    assert stored.board.board_id == "board:concurrent"
+    assert stored.board.recording_finished
+    assert stored.board.pdf_status == "pending"
+
+
+def test_late_board_callback_preserves_recording_completion(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path)
+    lesson = make_lesson()
+    pipeline.create(lesson)
+    coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
+    coordinator.recording_finished(lesson.lesson_id)
+    coordinator.link(lesson.lesson_id, "board:late")
+    stored = pipeline.store.get(lesson.lesson_id)
+    assert stored is not None
+    assert stored.board.status == "linked"
+    assert stored.board.recording_finished
+    assert stored.board.pdf_status == "pending"
