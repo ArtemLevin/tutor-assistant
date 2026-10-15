@@ -51,7 +51,10 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
     lesson = make_lesson()
     pipeline.create(lesson)
     coordinator = LessonBoardCoordinator(pipeline, "https://board.example")
-    launch, url = coordinator.launch(lesson)
+    lease = pipeline.content_service.acquire_activity(
+        "recording", lesson_id=lesson.lesson_id
+    )
+    launch, url = coordinator.launch(lesson, recording_lease=lease)
     try:
         assert url.startswith("https://board.example/boards#ta-start=")
         encoded = url.partition("#ta-start=")[2]
@@ -88,9 +91,6 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
         bad_id.read()
         connection.close()
 
-        coordinator.recording_finished(lesson.lesson_id)
-        assert pipeline.store.get(lesson.lesson_id).board.recording_finished
-
         connection = HTTPConnection(parsed.hostname, parsed.port, timeout=4)
         connection.request("GET", completion)
         linked = connection.getresponse()
@@ -98,6 +98,12 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
         assert linked.getheader("Location") == "https://board.example/b/board%3Alesson-123#/board"
         linked.read()
         connection.close()
+
+        # The association must persist while the recording lease is held.
+        during_recording = pipeline.store.get(lesson.lesson_id)
+        assert during_recording.board.status == "linked"
+        lease.release()
+        coordinator.recording_finished(lesson.lesson_id)
 
         stored = pipeline.store.get(lesson.lesson_id)
         assert stored is not None
@@ -112,6 +118,8 @@ def test_launch_uses_live_teacher_session_and_persists_association(tmp_path: Pat
         assert pipeline.store.get(lesson.lesson_id).board.board_id == "board:lesson-123"
     finally:
         launch.close()
+        if lease.valid:
+            lease.release()
 
 
 def test_board_launch_failure_is_isolated_from_audio_state(tmp_path: Path) -> None:
