@@ -36,6 +36,8 @@ automatic_transcript_repository: null
 board:
   enabled: false
   base_url: "" # e.g. https://board.example.com
+  expected_user_id: "" # from authenticated /api/v1/boards/context
+  expected_organization_id: "" # from authenticated /api/v1/boards/context
 
 
 latex:
