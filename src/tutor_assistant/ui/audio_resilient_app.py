@@ -61,6 +61,16 @@ class MainWindow(ProductionMainWindow):
             expected_organization_id=self.config.board.expected_organization_id,
         )
         self._board_launchers: list[LocalBoardLaunch] = []
+        try:
+            expired, completed = self.lesson_board_coordinator.reconcile()
+            if expired or completed:
+                logging.info(
+                    "Reconciled board lifecycle: expired=%s completed=%s",
+                    expired, completed,
+                )
+        except Exception:
+            logging.exception("Could not reconcile TutorBoard lesson state during startup")
+            self._set_status("Не удалось восстановить состояние досок", "warning")
         self.recording_workflow.observe_runtime(self._recording_runtime_state())
         try:
             self._refresh_live_audio_devices(require_ready=False)
@@ -113,6 +123,8 @@ class MainWindow(ProductionMainWindow):
         self.detailed_automatic_pipeline.setEnabled(False)
         self.quick_board_enabled.setEnabled(False)
         self.detailed_board_enabled.setEnabled(False)
+        self.quick_board_retry.setEnabled(recording_lesson.board.enabled)
+        self.detailed_board_retry.setEnabled(recording_lesson.board.enabled)
         if (
             self._quick_auto_transcribe_active
             or recording_lesson.pipeline.processing_mode
@@ -136,8 +148,14 @@ class MainWindow(ProductionMainWindow):
         if not lesson.board.enabled:
             return
         try:
+            recording_lease = (
+                self._recording_lease
+                if self.recording_lesson is not None
+                and self.recording_lesson.lesson_id == lesson.lesson_id
+                else None
+            )
             launch, url = self.lesson_board_coordinator.launch(
-                lesson, recording_lease=self._recording_lease
+                lesson, recording_lease=recording_lease
             )
             self._board_launchers.append(launch)
             if not QDesktopServices.openUrl(QUrl(url)):
@@ -150,6 +168,34 @@ class MainWindow(ProductionMainWindow):
             except Exception:
                 logging.exception("Could not persist TutorBoard launch failure")
             self._set_status("Идёт запись; автоматический запуск доски не выполнен", "warning")
+
+    def _retry_lesson_board(self) -> None:
+        """Reopen a failed handoff for a recorded or active lesson."""
+
+        lesson = self.recording_lesson or self.lesson
+        if lesson is None:
+            QMessageBox.information(
+                self, "Доска занятия", "Выберите занятие для повторного открытия."
+            )
+            return
+        try:
+            lease = (
+                self._recording_lease
+                if self.recording_lesson is not None
+                and self.recording_lesson.lesson_id == lesson.lesson_id
+                else None
+            )
+            if lease is not None and lease.valid:
+                with self.pipeline.recording_lease_scope(
+                    lease, lesson_id=lesson.lesson_id
+                ):
+                    pending = self.lesson_board_coordinator.retry_launch(lesson.lesson_id)
+            else:
+                pending = self.lesson_board_coordinator.retry_launch(lesson.lesson_id)
+            self._launch_lesson_board(pending)
+        except Exception as exc:
+            logging.exception("Could not retry TutorBoard for lesson=%s", lesson.lesson_id)
+            QMessageBox.warning(self, "Доска занятия", str(exc))
 
     def _reset_failed_start_presentation(self) -> None:
         self.recorder = None
