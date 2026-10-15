@@ -7,14 +7,14 @@ import logging
 import re
 import secrets
 import threading
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable
 from urllib.parse import parse_qs, quote, urlsplit
 
 from ..domain import Lesson
 from ..pipeline import LessonPipeline
 
-_BOARD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\\Z")
+_BOARD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _MAX_CALLBACK_PATH = 512
 
 
@@ -126,7 +126,10 @@ class LocalBoardLaunch:
                     try:
                         owner._on_linked(board_id)
                     except Exception:
-                        logging.exception("Failed to persist linked TutorBoard for lesson=%s", owner.lesson_id)
+                        logging.exception(
+                            "Failed to persist linked TutorBoard for lesson=%s",
+                            owner.lesson_id,
+                        )
                         self.send_error(503)
                         return
                     owner._done.set()
