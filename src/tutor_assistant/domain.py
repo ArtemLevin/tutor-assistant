@@ -6,7 +6,9 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .atomic_io import atomic_write_text
 
@@ -158,6 +160,32 @@ class LatexState(BaseModel):
     active_started_at: datetime | None = None
 
 
+class LessonBoardState(BaseModel):
+    """Durable association with a dedicated TutorBoard document for this lesson."""
+
+    enabled: bool = False
+    status: Literal["disabled", "pending", "linked", "failed"] = "disabled"
+    board_id: str | None = None
+    recording_finished: bool = False
+    pdf_status: Literal["not_requested", "pending", "ready", "failed"] = "not_requested"
+    pdf_sha256: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self) -> LessonBoardState:
+        if not self.enabled and self.status != "disabled":
+            raise ValueError("Disabled lessons cannot have an active board launch")
+        if self.status == "linked" and self.board_id is None:
+            raise ValueError("A linked board requires a board ID")
+        if self.board_id is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.board_id):
+            raise ValueError("Invalid TutorBoard document identifier")
+        if self.pdf_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", self.pdf_sha256):
+            raise ValueError("Invalid board PDF checksum")
+        if self.pdf_status == "ready" and self.pdf_sha256 is None:
+            raise ValueError("Ready board PDFs require a checksum")
+        return self
+
+
 class Lesson(BaseModel):
     schema_version: str = "1.0"
     lesson_id: str = Field(default_factory=lambda: uuid4().hex)
@@ -172,6 +200,7 @@ class Lesson(BaseModel):
     artifacts: ArtifactPaths = Field(default_factory=ArtifactPaths)
     pipeline: PipelineOptions = Field(default_factory=PipelineOptions)
     publication: PublicationInfo | None = None
+    board: LessonBoardState = Field(default_factory=LessonBoardState)
     latex: LatexState = Field(default_factory=LatexState)
     stale_materials: list[GeneratedMaterial] = Field(default_factory=list)
     materials_stale_since_revision: int | None = None
