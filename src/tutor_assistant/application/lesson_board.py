@@ -11,6 +11,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
+from ..content import ActivityLease
 from ..domain import Lesson
 from ..pipeline import LessonPipeline
 
@@ -186,7 +187,9 @@ class LessonBoardCoordinator:
         self.pipeline = pipeline
         self.base_url = base_url
 
-    def launch(self, lesson: Lesson) -> tuple[LocalBoardLaunch, str]:
+    def launch(
+        self, lesson: Lesson, *, recording_lease: ActivityLease | None = None
+    ) -> tuple[LocalBoardLaunch, str]:
         if not lesson.board.enabled or lesson.board.status != "pending":
             raise BoardLaunchError("Lesson board launch is disabled or already completed")
         if not self.base_url:
@@ -194,28 +197,46 @@ class LessonBoardCoordinator:
         launch = LocalBoardLaunch(
             lesson=lesson,
             base_url=self.base_url,
-            on_linked=lambda board_id: self.link(lesson.lesson_id, board_id),
+            on_linked=lambda board_id: self.link(
+                lesson.lesson_id, board_id, recording_lease=recording_lease
+            ),
         )
         return launch, launch.start()
 
-    def link(self, lesson_id: str, board_id: str) -> None:
+    def link(
+        self,
+        lesson_id: str,
+        board_id: str,
+        *,
+        recording_lease: ActivityLease | None = None,
+    ) -> None:
         if _BOARD_ID.fullmatch(board_id) is None:
             raise BoardLaunchError("Invalid board identifier")
-        stored = self.pipeline.store.get(lesson_id)
-        if stored is None or not stored.board.enabled:
-            raise BoardLaunchError("The lesson no longer permits a board association")
-        if stored.board.board_id is not None:
-            if stored.board.board_id == board_id:
-                return
-            raise BoardLaunchError("The lesson is already linked to a different board")
-        if stored.board.status not in {"pending", "failed"}:
-            raise BoardLaunchError("The lesson board launch is not pending")
-        stored.board.board_id = board_id
-        stored.board.status = "linked"
-        stored.board.error = None
-        if stored.board.recording_finished:
-            stored.board.pdf_status = "pending"
-        self.pipeline.save_state(stored, "board")
+
+        def persist_link() -> None:
+            stored = self.pipeline.store.get(lesson_id)
+            if stored is None or not stored.board.enabled:
+                raise BoardLaunchError("The lesson no longer permits a board association")
+            if stored.board.board_id is not None:
+                if stored.board.board_id == board_id:
+                    return
+                raise BoardLaunchError("The lesson is already linked to a different board")
+            if stored.board.status not in {"pending", "failed"}:
+                raise BoardLaunchError("The lesson board launch is not pending")
+            stored.board.board_id = board_id
+            stored.board.status = "linked"
+            stored.board.error = None
+            if stored.board.recording_finished:
+                stored.board.pdf_status = "pending"
+            self.pipeline.save_state(stored, "board")
+
+        if recording_lease is not None and recording_lease.valid:
+            # Live recording owns this lesson's write lease. Explicit delegation
+            # keeps the original exclusion boundary intact in the callback thread.
+            with self.pipeline.recording_lease_scope(recording_lease, lesson_id=lesson_id):
+                persist_link()
+        else:
+            persist_link()
 
     def recording_finished(self, lesson_id: str) -> None:
         stored = self.pipeline.store.get(lesson_id)
