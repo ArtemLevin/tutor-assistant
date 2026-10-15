@@ -55,7 +55,10 @@ class MainWindow(ProductionMainWindow):
             self._create_preflight_recorder,
         )
         self.lesson_board_coordinator = LessonBoardCoordinator(
-            self.pipeline, self.config.board.base_url
+            self.pipeline,
+            self.config.board.base_url,
+            expected_user_id=self.config.board.expected_user_id,
+            expected_organization_id=self.config.board.expected_organization_id,
         )
         self._board_launchers: list[LocalBoardLaunch] = []
         self.recording_workflow.observe_runtime(self._recording_runtime_state())
