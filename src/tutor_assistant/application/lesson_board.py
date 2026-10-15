@@ -58,6 +58,22 @@ class LocalBoardLaunch:
                 # Never log the one-time callback token or browser query string.
                 pass
 
+            def do_OPTIONS(self) -> None:
+                if (
+                    self.headers.get("Origin") != owner.base_url
+                    or self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}"
+                    or self.path != "/prepare"
+                ):
+                    self.send_error(403)
+                    return
+                self.send_response(204)
+                self.send_header("Access-Control-Allow-Origin", owner.base_url)
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+                self.send_header("Vary", "Origin")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
             def do_GET(self) -> None:
                 if self.headers.get("Host") != f"127.0.0.1:{self.server.server_port}":
                     self.send_error(400)
@@ -66,7 +82,32 @@ class LocalBoardLaunch:
                     self.send_error(414)
                     return
                 url = urlsplit(self.path)
-                values = parse_qs(url.query, strict_parsing=True)
+                try:
+                    values = parse_qs(url.query, strict_parsing=True)
+                except ValueError:
+                    self.send_error(403)
+                    return
+                if url.path == "/prepare":
+                    if (
+                        self.headers.get("Origin") != owner.base_url
+                        or set(values) != {"nonce"}
+                        or len(values["nonce"]) != 1
+                        or not hmac.compare_digest(values["nonce"][0], owner._token)
+                        or owner._done.is_set()
+                    ):
+                        self.send_error(403)
+                        return
+                    body = b'{"valid":true}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", owner.base_url)
+                    self.send_header("Access-Control-Allow-Private-Network", "true")
+                    self.send_header("Vary", "Origin")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if (
                     url.path != "/complete"
                     or set(values) != {"nonce", "boardId"}
