@@ -1159,7 +1159,11 @@ class MainWindow(QMainWindow):
         for name in ("quick_board_retry", "detailed_board_retry"):
             control = getattr(self, name, None)
             if control is not None:
-                control.setEnabled(False)
+                control.setEnabled(bool(
+                    self.config.board.base_url
+                    and self.config.board.expected_user_id
+                    and self.config.board.expected_organization_id
+                ))
         for name in ("quick_board_enabled", "detailed_board_enabled"):
             control = getattr(self, name, None)
             if control is not None:
