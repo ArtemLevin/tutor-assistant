@@ -887,7 +887,13 @@ class MainWindow(QMainWindow):
         )
         self.quick_board_enabled.toggled.connect(self._sync_board_selection)
         self.quick_board_retry = QPushButton("Повторить открытие доски")
-        self.quick_board_retry.setEnabled(bool(self.config.board.base_url and self.config.board.expected_user_id and self.config.board.expected_organization_id))
+        self.quick_board_retry.setEnabled(
+            bool(
+                self.config.board.base_url
+                and self.config.board.expected_user_id
+                and self.config.board.expected_organization_id
+            )
+        )
         self.quick_board_retry.clicked.connect(self._retry_lesson_board)
 
         surface = QFrame()
@@ -1308,7 +1314,13 @@ class MainWindow(QMainWindow):
         )
         self.detailed_board_enabled.toggled.connect(self._sync_board_selection)
         self.detailed_board_retry = QPushButton("Повторить открытие доски")
-        self.detailed_board_retry.setEnabled(bool(self.config.board.base_url and self.config.board.expected_user_id and self.config.board.expected_organization_id))
+        self.detailed_board_retry.setEnabled(
+            bool(
+                self.config.board.base_url
+                and self.config.board.expected_user_id
+                and self.config.board.expected_organization_id
+            )
+        )
         self.detailed_board_retry.clicked.connect(self._retry_lesson_board)
         form.addRow("Дата", self.lesson_date)
         form.addRow("Микрофон", self.mic)
