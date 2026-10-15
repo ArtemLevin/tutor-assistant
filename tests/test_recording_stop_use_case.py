@@ -515,3 +515,24 @@ def test_stop_finalize_adapter_remains_in_production_mro() -> None:
     from tutor_assistant.ui.recording_recovery_app import MainWindow as ProductionMainWindow
 
     assert issubclass(ProductionMainWindow, StopFinalizeMainWindow)
+
+
+def test_recording_stop_saves_audio_before_board_marker_and_isolates_failure(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    lesson = make_lesson()
+    recorder = FakeRecorder(make_result(tmp_path), events)
+    pipeline = FakePipeline(events)
+
+    def board_finished(lesson_id: str) -> None:
+        assert lesson_id == lesson.lesson_id
+        events.append("board.finished")
+        raise RuntimeError("board storage unavailable")
+
+    outcome = StopRecordingUseCase(pipeline, on_recorded=board_finished).stop(
+        RecordingStopSession(lesson=lesson, recorder=recorder, lease=None)
+    )
+    assert outcome.state == RecordingStopState.RECORDED
+    assert events.index("lesson.save:recorded") < events.index("board.finished")
+    assert lesson.status == JobStatus.RECORDED

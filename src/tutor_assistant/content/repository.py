@@ -72,6 +72,7 @@ PIPELINE_WRITABLE_FIELDS = frozenset(
         "source_audio_local",
         "artifacts",
         "publication",
+        "board",
         "latex",
     }
 )

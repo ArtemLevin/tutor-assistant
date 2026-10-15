@@ -133,9 +133,11 @@ class StopRecordingUseCase:
         pipeline: RecordingStopPipeline,
         *,
         result_finalizer: RecordingResultFinalizer | None = None,
+        on_recorded: Callable[[str], None] | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._result_finalizer = result_finalizer or (lambda result, _lesson: result)
+        self._on_recorded = on_recorded
 
     def stop(self, session: RecordingStopSession) -> RecordingStopOutcome:
         result: RecordingResult | None = None
@@ -203,6 +205,16 @@ class StopRecordingUseCase:
                 "status",
                 "error",
             )
+            if self._on_recorded is not None:
+                try:
+                    # Independent best-effort metadata. A board failure must
+                    # never relabel successfully saved audio as failed.
+                    self._on_recorded(session.lesson.lesson_id)
+                except Exception:
+                    logging.exception(
+                        "Board finalization marker will need startup reconciliation: lesson=%s",
+                        session.lesson.lesson_id,
+                    )
             return RecordingStopOutcome.recorded(session, result)
         except Exception:
             details = traceback.format_exc()
