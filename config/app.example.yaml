@@ -30,6 +30,14 @@ repository:
 # requires that target to be PRIVATE.
 automatic_transcript_repository: null
 
+# Optional per-lesson browser-authenticated TutorBoard launch. Keep disabled
+# until the Board API is deployed and you can sign in as a teacher in browser.
+# Each enabled recording will create a distinct standalone board.
+board:
+  enabled: false
+  base_url: "" # e.g. https://board.example.com
+
+
 latex:
   enabled: true
   auto_monitor: false
