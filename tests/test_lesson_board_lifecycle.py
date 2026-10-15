@@ -3,9 +3,9 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date
-from threading import Event
 from http.client import HTTPConnection
 from pathlib import Path
+from threading import Event
 from urllib.parse import urlsplit
 
 import pytest
