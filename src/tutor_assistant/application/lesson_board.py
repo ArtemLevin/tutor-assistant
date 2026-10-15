@@ -11,7 +11,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
-from ..content import ActivityLease
+from ..content import ActivityLease, LessonEditConflictError
 from ..domain import Lesson
 from ..pipeline import LessonPipeline
 
@@ -187,6 +187,23 @@ class LessonBoardCoordinator:
         self.pipeline = pipeline
         self.base_url = base_url
 
+    def _update_board(self, lesson_id: str, update: Callable[[Lesson], bool]) -> None:
+        # Compare-and-swap the entire nested board object. Link and stop can
+        # complete concurrently; stale views must never overwrite each other.
+        for attempt in range(4):
+            content = self.pipeline.content_service.get_lesson(lesson_id)
+            stored = content.lesson
+            if not update(stored):
+                return
+            try:
+                self.pipeline.save_state(
+                    stored, "board", expected_row_version=content.row_version
+                )
+                return
+            except LessonEditConflictError:
+                if attempt == 3:
+                    raise
+
     def launch(
         self, lesson: Lesson, *, recording_lease: ActivityLease | None = None
     ) -> tuple[LocalBoardLaunch, str]:
@@ -213,13 +230,12 @@ class LessonBoardCoordinator:
         if _BOARD_ID.fullmatch(board_id) is None:
             raise BoardLaunchError("Invalid board identifier")
 
-        def persist_link() -> None:
-            stored = self.pipeline.store.get(lesson_id)
-            if stored is None or not stored.board.enabled:
+        def update(stored: Lesson) -> bool:
+            if not stored.board.enabled:
                 raise BoardLaunchError("The lesson no longer permits a board association")
             if stored.board.board_id is not None:
                 if stored.board.board_id == board_id:
-                    return
+                    return False
                 raise BoardLaunchError("The lesson is already linked to a different board")
             if stored.board.status not in {"pending", "failed"}:
                 raise BoardLaunchError("The lesson board launch is not pending")
@@ -228,7 +244,10 @@ class LessonBoardCoordinator:
             stored.board.error = None
             if stored.board.recording_finished:
                 stored.board.pdf_status = "pending"
-            self.pipeline.save_state(stored, "board")
+            return True
+
+        def persist_link() -> None:
+            self._update_board(lesson_id, update)
 
         if recording_lease is not None and recording_lease.valid:
             # Live recording owns this lesson's write lease. Explicit delegation
@@ -239,20 +258,22 @@ class LessonBoardCoordinator:
             persist_link()
 
     def recording_finished(self, lesson_id: str) -> None:
-        stored = self.pipeline.store.get(lesson_id)
-        if stored is None or not stored.board.enabled:
-            return
-        if stored.board.recording_finished:
-            return
-        stored.board.recording_finished = True
-        if stored.board.status == "linked":
-            stored.board.pdf_status = "pending"
-        self.pipeline.save_state(stored, "board")
+        def update(stored: Lesson) -> bool:
+            if not stored.board.enabled or stored.board.recording_finished:
+                return False
+            stored.board.recording_finished = True
+            if stored.board.status == "linked":
+                stored.board.pdf_status = "pending"
+            return True
+
+        self._update_board(lesson_id, update)
 
     def launch_failed(self, lesson_id: str, description: str) -> None:
-        stored = self.pipeline.store.get(lesson_id)
-        if stored is None or not stored.board.enabled or stored.board.board_id:
-            return
-        stored.board.status = "failed"
-        stored.board.error = description[:250]
-        self.pipeline.save_state(stored, "board")
+        def update(stored: Lesson) -> bool:
+            if not stored.board.enabled or stored.board.board_id:
+                return False
+            stored.board.status = "failed"
+            stored.board.error = description[:250]
+            return True
+
+        self._update_board(lesson_id, update)
