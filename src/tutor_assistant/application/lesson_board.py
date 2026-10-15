@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlsplit
 
 from ..content import ActivityLease, LessonEditConflictError
-from ..domain import Lesson
+from ..domain import JobStatus, Lesson
 from ..pipeline import LessonPipeline
 
 _BOARD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
@@ -36,6 +36,7 @@ class LocalBoardLaunch:
         lesson: Lesson,
         base_url: str,
         on_linked: Callable[[str], None],
+        on_expired: Callable[[], None] | None = None,
         lifetime_seconds: float = 1800,
     ) -> None:
         self.lesson_id = lesson.lesson_id
@@ -43,6 +44,9 @@ class LocalBoardLaunch:
         self.base_url = base_url.rstrip("/")
         self._token = secrets.token_urlsafe(32)
         self._on_linked = on_linked
+        self._on_expired = on_expired
+        self._teacher_user_id = lesson.board.owner_user_id
+        self._organization_id = lesson.board.organization_id
         self._done = threading.Event()
         self._guard = threading.Lock()
         self._lifetime_seconds = lifetime_seconds
@@ -151,6 +155,8 @@ class LocalBoardLaunch:
             "version": 1,
             "lessonId": self.lesson_id,
             "title": self.title,
+            "teacherUserId": self._teacher_user_id,
+            "organizationId": self._organization_id,
             "callback": callback,
         }
         encoded = base64.urlsafe_b64encode(
@@ -172,6 +178,14 @@ class LocalBoardLaunch:
                 server.handle_request()
         finally:
             server.server_close()
+            if not self._done.is_set() and self._on_expired is not None:
+                try:
+                    self._on_expired()
+                except Exception:
+                    logging.exception(
+                        "Could not record TutorBoard launch expiry: lesson=%s",
+                        self.lesson_id,
+                    )
 
     def close(self) -> None:
         self._done.set()
@@ -183,9 +197,18 @@ class LocalBoardLaunch:
 class LessonBoardCoordinator:
     """Record board associations independently of audio/ASR state transitions."""
 
-    def __init__(self, pipeline: LessonPipeline, base_url: str) -> None:
+    def __init__(
+        self,
+        pipeline: LessonPipeline,
+        base_url: str,
+        *,
+        expected_user_id: str = "",
+        expected_organization_id: str = "",
+    ) -> None:
         self.pipeline = pipeline
         self.base_url = base_url
+        self.expected_user_id = expected_user_id
+        self.expected_organization_id = expected_organization_id
 
     def _update_board(self, lesson_id: str, update: Callable[[Lesson], bool]) -> None:
         # Compare-and-swap the entire nested board object. Link and stop can
@@ -211,11 +234,23 @@ class LessonBoardCoordinator:
             raise BoardLaunchError("Lesson board launch is disabled or already completed")
         if not self.base_url:
             raise BoardLaunchError("TutorBoard origin has not been configured")
+        if (
+            not self.expected_user_id
+            or not self.expected_organization_id
+            or lesson.board.owner_user_id != self.expected_user_id
+            or lesson.board.organization_id != self.expected_organization_id
+        ):
+            raise BoardLaunchError("Configured teacher identity does not match the lesson")
         launch = LocalBoardLaunch(
             lesson=lesson,
             base_url=self.base_url,
             on_linked=lambda board_id: self.link(
                 lesson.lesson_id, board_id, recording_lease=recording_lease
+            ),
+            on_expired=lambda: self.launch_failed(
+                lesson.lesson_id,
+                "Превышено время ожидания ответа TutorBoard",
+                recording_lease=recording_lease,
             ),
         )
         return launch, launch.start()
@@ -268,7 +303,13 @@ class LessonBoardCoordinator:
 
         self._update_board(lesson_id, update)
 
-    def launch_failed(self, lesson_id: str, description: str) -> None:
+    def launch_failed(
+        self,
+        lesson_id: str,
+        description: str,
+        *,
+        recording_lease: ActivityLease | None = None,
+    ) -> None:
         def update(stored: Lesson) -> bool:
             if not stored.board.enabled or stored.board.board_id:
                 return False
@@ -276,4 +317,47 @@ class LessonBoardCoordinator:
             stored.board.error = description[:250]
             return True
 
+        if recording_lease is not None and recording_lease.valid:
+            with self.pipeline.recording_lease_scope(recording_lease, lesson_id=lesson_id):
+                self._update_board(lesson_id, update)
+        else:
+            self._update_board(lesson_id, update)
+
+    def retry_launch(self, lesson_id: str) -> Lesson:
+        """Explicitly re-arm a failed launch, preserving the server idempotency key."""
+
+        def update(lesson: Lesson) -> bool:
+            if not lesson.board.enabled or lesson.board.board_id is not None:
+                raise BoardLaunchError("Only failed, unlinked lesson boards can be retried")
+            if lesson.board.status != "failed":
+                raise BoardLaunchError("The lesson has no failed launch")
+            lesson.board.status = "pending"
+            lesson.board.error = None
+            return True
+
         self._update_board(lesson_id, update)
+        return self.pipeline.content_service.get_lesson(lesson_id).lesson
+
+    def reconcile(self) -> tuple[int, int]:
+        """Restore board metadata from authoritative persisted lesson states.
+
+        Called at startup after crash recovery registration, before allowing
+        fresh recordings. Pending callbacks from a dead process are expired.
+        """
+
+        expired = 0
+        completed = 0
+        for lesson in self.pipeline.content_service.iter_lessons():
+            if not lesson.board.enabled:
+                continue
+            if lesson.board.status == "pending" and lesson.board.board_id is None:
+                self.launch_failed(lesson.lesson_id, "Требуется повторный запуск после перезапуска")
+                expired += 1
+            if (
+                not lesson.board.recording_finished
+                and lesson.source_audio_local
+                and lesson.status not in {JobStatus.DRAFT, JobStatus.RECORDING}
+            ):
+                self.recording_finished(lesson.lesson_id)
+                completed += 1
+        return expired, completed
