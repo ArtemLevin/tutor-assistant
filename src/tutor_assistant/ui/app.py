@@ -639,7 +639,11 @@ class MainWindow(QMainWindow):
                 or self.quick_countdown_timer.isActive()
                 or self._quick_start_pending
             ),
-            recording_stopping=self._recording_stop_started or self._recording_lease is not None,
+            recording_stopping=(
+                self._recording_stop_started
+                or self._recording_lease is not None
+                or self.recording_lesson is not None
+            ),
             transcription_active=(
                 self.transcription_worker.busy
                 or any(

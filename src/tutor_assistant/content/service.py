@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import mimetypes
 import shutil
@@ -1240,6 +1241,17 @@ class StudentContentService:
         blockers = self.repository.bulk_cleanup_blockers()
         if any(status in {"recording", "transcribing"} for _, _, _, status, _ in rows):
             blockers.append("Незавершённая запись или транскрибация занятия")
+        for manifest in self.workspace.glob("lessons/*/recording/session.json"):
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            if data.get("status") in {
+                None, "recording", "recorded", "failed_to_start",
+                "failed_to_stop", "encoding_failed",
+            } and any((manifest.parent / "chunks").rglob("*.wav")):
+                blockers.append("Обнаружена запись с доступными чанками для восстановления")
+                break
         if any(deleted is not None and state != "trashed" for _, _, deleted, _, state in rows):
             blockers.append("Корзина содержит незавершённую операцию")
         for item in self.active_activities():

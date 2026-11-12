@@ -85,6 +85,21 @@ def test_bulk_cleanup_detaches_crm_occurrences_and_preserves_financial_fields(tm
     assert tuple(row) == (None, "completed", 2500, 1)
 
 
+def test_recoverable_recording_chunks_block_cleanup(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    audio = stored(service, "incomplete")
+    recording = audio.parent
+    (recording / "session.json").write_text('{"status": "failed_to_stop"}')
+    chunks = recording / "chunks" / "microphone"
+    chunks.mkdir(parents=True)
+    (chunks / "001.wav").write_bytes(b"recoverable")
+    preview = service.preview_bulk_cleanup()
+    assert any("восстановления" in item for item in preview.blockers)
+    with pytest.raises(ContentBusyError):
+        service.run_bulk_cleanup(preview.fingerprint)
+    assert audio.is_file()
+
+
 def test_bulk_cleanup_rejects_stale_preview_before_any_mutation(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     first = stored(service, "first")
