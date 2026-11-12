@@ -56,6 +56,7 @@ def test_cleanup_allows_a_temporary_only_workspace(tmp_path: Path) -> None:
 
     result = service.run_bulk_cleanup(preview.fingerprint)
     assert result.state == "completed"
+    assert result.removed_bytes == len(b"old-temporary-data")
     assert not stale.exists()
 
 

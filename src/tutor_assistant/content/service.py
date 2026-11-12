@@ -1432,6 +1432,7 @@ class StudentContentService:
             if lease.valid:
                 try:
                     cleanup = self.cleanup_temporary_files()
+                    result.removed_bytes += cleanup.released_bytes
                     result.warnings.extend(cleanup.errors)
                 except (OSError, ValueError) as exc:
                     result.warnings.append(f"Временные файлы: {exc}")
