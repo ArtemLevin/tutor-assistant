@@ -140,6 +140,8 @@ class BulkCleanupDialog(QDialog):
             f"Статус: {result.state}. Удалено: {result.purged} из {result.total}. "
             f"Осталось: {result.remaining_count}. "
             f"Логический размер файлов: {format_size(result.removed_bytes)}. "
+            f"Изменение свободного места: "
+            f"{result.free_after - result.free_before:+d} байт. "
             f"Ошибок: {len(result.failures)}; предупреждений: {len(result.warnings)}."
         )
         if result.failures:

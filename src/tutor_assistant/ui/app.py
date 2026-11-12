@@ -634,7 +634,11 @@ class MainWindow(QMainWindow):
         page = self.student_content_page
         background = getattr(self, "background_tasks", None)
         snapshot = BulkCleanupRuntime(
-            recording_active=bool(self.recorder and self.recorder.active),
+            recording_active=(
+                bool(self.recorder and self.recorder.active)
+                or self.quick_countdown_timer.isActive()
+                or self._quick_start_pending
+            ),
             recording_stopping=self._recording_stop_started or self._recording_lease is not None,
             transcription_active=(
                 self.transcription_worker.busy
