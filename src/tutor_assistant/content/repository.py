@@ -632,6 +632,43 @@ class StudentContentRepository:
             offset=filters.offset,
         )
 
+    def bulk_cleanup_snapshot_rows(self) -> list[tuple[str, int, str | None, str, str]]:
+        """Return all managed lessons, without GUI filtering or pagination."""
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT l.lesson_id, l.row_version, l.deleted_at, l.status,
+                       COALESCE(t.state, '') AS trash_state
+                FROM lessons AS l
+                LEFT JOIN content_trash AS t ON t.lesson_id = l.lesson_id
+                ORDER BY l.lesson_id
+                """
+            ).fetchall()
+        return [
+            (str(row["lesson_id"]), int(row["row_version"]), row["deleted_at"],
+             str(row["status"]), str(row["trash_state"]))
+            for row in rows
+        ]
+
+    def bulk_cleanup_blockers(self) -> list[str]:
+        """Reject destructive runs with active jobs or unfinished content operations."""
+        blockers: list[str] = []
+        checks = (
+            ("transcription_jobs", "status IN ('waiting', 'running') AND status='running'"),
+            ("automatic_publication_jobs", "status='running'"),
+            ("normalization_runs", "status='running'"),
+            ("content_trash", "state<>'trashed'"),
+            ("content_operations", "status IN ('pending', 'cleanup_pending')"),
+        )
+        with self.connect() as db:
+            for table, predicate in checks:
+                row = db.execute(
+                    f"SELECT 1 FROM {table} WHERE {predicate} LIMIT 1"
+                ).fetchone()
+                if row is not None:
+                    blockers.append(f"Незавершённая операция: {table}")
+        return blockers
+
     def set_lesson_deleted(self, lesson_id: str, *, deleted: bool) -> None:
         timestamp = self._now() if deleted else None
 
@@ -884,6 +921,14 @@ class StudentContentRepository:
                     (lesson_id, TrashState.PURGING.value),
                 ).fetchone():
                     raise ContentNotFoundError(f"Операция очистки не найдена: {lesson_id}")
+                # CRM shares this SQLite database but retains calendar/history rows.
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='crm_lesson_occurrences'"
+                ).fetchone():
+                    db.execute(
+                        "UPDATE crm_lesson_occurrences SET lesson_id=NULL WHERE lesson_id=?",
+                        (lesson_id,),
+                    )
                 db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (lesson_id,))
                 db.execute("DELETE FROM transcript_drafts WHERE lesson_id=?", (lesson_id,))
                 db.execute("DELETE FROM transcript_revisions WHERE lesson_id=?", (lesson_id,))

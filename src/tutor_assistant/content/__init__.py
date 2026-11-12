@@ -16,6 +16,10 @@ from .importing import (
 )
 from .models import (
     AssetKind,
+    BulkCleanupFailure,
+    BulkCleanupPreview,
+    BulkCleanupProgress,
+    BulkCleanupResult,
     ContentIntegrityIssue,
     ContentIntegrityReport,
     ContentMaintenanceResult,
@@ -62,6 +66,10 @@ __all__ = [
     "ActivityLease",
     "ActivityLeaseInfo",
     "AssetKind",
+    "BulkCleanupFailure",
+    "BulkCleanupPreview",
+    "BulkCleanupProgress",
+    "BulkCleanupResult",
     "ContentBusyError",
     "ContentConflictError",
     "ContentIntegrityIssue",
