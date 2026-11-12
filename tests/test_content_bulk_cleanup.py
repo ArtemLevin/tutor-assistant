@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -272,6 +273,30 @@ def test_bulk_cleanup_path_escape_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(ContentPathError):
         service.run_bulk_cleanup(service.preview_bulk_cleanup().fingerprint)
     assert sentinel.read_text() == "preserve"
+
+
+def test_bulk_cleanup_reports_partial_on_sqlite_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "failed-db")
+    stored(service, "healthy-db")
+    original = service.stage_lesson_purge
+
+    def fail_one(lesson_id: str):
+        if lesson_id == "failed-db":
+            raise sqlite3.OperationalError("simulated SQLite I/O failure")
+        return original(lesson_id)
+
+    monkeypatch.setattr(service, "stage_lesson_purge", fail_one)
+    result = service.run_bulk_cleanup(service.preview_bulk_cleanup().fingerprint)
+
+    assert result.state == "partial"
+    assert result.purged == 1
+    assert result.remaining_count == 1
+    assert len(result.failures) == 1
+    assert result.failures[0].lesson_id == "failed-db"
+    assert service.repository.database_integrity_status()[0]
 
 
 def test_bulk_cleanup_reports_partial_on_io_failure_and_recovers_on_restart(

@@ -1402,7 +1402,7 @@ class StudentContentService:
                     )
                     result.purged += 1
                     result.removed_bytes += purged.size_bytes
-                except (OSError, ValueError, RuntimeError, LookupError) as exc:
+                except (OSError, ValueError, RuntimeError, LookupError, sqlite3.DatabaseError) as exc:
                     result.failures.append(BulkCleanupFailure(
                         lesson_id=lesson_id,
                         details=f"{type(exc).__name__}: {exc}",
