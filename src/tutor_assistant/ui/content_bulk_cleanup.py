@@ -72,7 +72,7 @@ class BulkCleanupDialog(QDialog):
             f"Рабочий каталог: {preview.workspace}\n"
             f"Занятия: {preview.active_lessons_count}; "
             f"корзина: {preview.trashed_lessons_count}\n"
-            f"Временные файлы к очистке: {format_size(preview.temporary_bytes)}\\n"
+            f"Временные файлы к очистке: {format_size(preview.temporary_bytes)}\n"
             f"Оценка объёма: {format_size(preview.estimated_total_bytes)} "
             f"(резервные копии сохраняются: {format_size(preview.backups_bytes)})"
         )
