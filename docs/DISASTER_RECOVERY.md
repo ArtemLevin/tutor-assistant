@@ -68,6 +68,19 @@ tutor-assistant --config config\app.yaml recovery-drill --output ..\recovery-dri
 Отчёт включает backup/verify, restore, quarantine, rollback, damaged manifest/SHA и
 dual/microphone-only/system-only audio recovery.
 
+## Восстановление после прерванной массовой очистки
+
+Глобальная очистка применяет существующий recoverable workflow для каждого занятия:
+`lessons → trash/lessons → .trash-purge → SQLite delete → filesystem cleanup`.
+Если приложение завершилось во время `moving`/`purging`, следующий запуск
+`StudentContentService` восстанавливает незавершённые операции из
+`content_operations`. Материалы, к удалению которых ещё не приступали, не удаляются
+без нового подтверждения.
+
+Если запуск обнаруживает неисправимую временную операцию, сохраните workspace и
+backup, выполните `content-doctor --json` и обратитесь в поддержку. Не удаляйте
+`.trash-purge`, SQLite WAL или `.operations.sqlite3` вручную.
+
 ## Эскалация
 
 Если rollback также завершился ошибкой, прекратите запись в каталог, сохраните его вместе
