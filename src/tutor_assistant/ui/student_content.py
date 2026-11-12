@@ -205,7 +205,7 @@ class StudentContentPage(QWidget):
         self.health_action.triggered.connect(self.open_content_health)
         self.maintenance_menu.addSeparator()
         self.bulk_cleanup_action = self.maintenance_menu.addAction("Очистить все локальные материалы…")
-        self.bulk_cleanup_action.triggered.connect(self.bulk_cleanup_requested.emit)
+        self.bulk_cleanup_action.triggered.connect(lambda _checked=False: self.bulk_cleanup_requested.emit())
         self.maintenance_menu.addSeparator()
         self.sync_action = self.maintenance_menu.addAction("Проверить и восстановить")
         self.sync_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
