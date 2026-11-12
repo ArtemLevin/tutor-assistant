@@ -1296,6 +1296,33 @@ class StudentContentService:
                             f"Каталог занятия содержит файловую ссылку: {lesson_id}"
                         )
 
+    def _purge_lesson_with_owned_exclusive_lease(
+        self,
+        lease: ActivityLease,
+        lesson_id: str,
+        *,
+        active: bool,
+    ) -> TrashActionResult:
+        """Use the caller's exclusive lease without acquiring a nested lesson lease."""
+        if (
+            lease.info.owner_id != self.owner_id
+            or not lease.info.exclusive
+            or lease.origin_thread_id != get_ident()
+            or not lease.valid
+        ):
+            raise ContentBusyError("Эксклюзивная блокировка очистки утрачена")
+        if active:
+            self._delete_lesson(lesson_id)
+        if not lease.valid:
+            raise ContentBusyError("Очистка остановлена после перемещения в корзину")
+        result, operation_id, staging = self.stage_lesson_purge(lesson_id)
+        if not lease.valid:
+            # Database has a recoverable cleanup_pending operation. Do not
+            # continue with more destructive writes under a lost lease.
+            raise ContentBusyError("Блокировка потеряна после staging; требуется восстановление")
+        self.finalize_staged_purge(operation_id, staging)
+        return result
+
     def run_bulk_cleanup(
         self,
         expected_fingerprint: str,
@@ -1327,9 +1354,9 @@ class StudentContentService:
                     break
                 try:
                     self._validate_bulk_cleanup_paths(lesson_id)
-                    if deleted_at is None:
-                        self._delete_lesson(lesson_id)
-                    purged = self._permanently_delete_lesson(lesson_id)
+                    purged = self._purge_lesson_with_owned_exclusive_lease(
+                        lease, lesson_id, active=deleted_at is None
+                    )
                     result.purged += 1
                     result.removed_bytes += purged.size_bytes
                 except (OSError, ValueError, RuntimeError, LookupError) as exc:
