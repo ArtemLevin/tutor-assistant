@@ -683,7 +683,13 @@ class StudentContentRepository:
 
         self._retry(operation)
 
-    def begin_trash(self, entry: TrashEntry, operation_id: str) -> None:
+    def begin_trash(
+        self,
+        entry: TrashEntry,
+        operation_id: str,
+        *,
+        discard_waiting_transcription: bool = False,
+    ) -> None:
         def operation() -> None:
             with self.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
@@ -705,7 +711,9 @@ class StudentContentRepository:
                     """,
                     (entry.lesson_id,),
                 ).fetchone()
-                if active_job:
+                if active_job and (
+                    active_job["status"] == "running" or not discard_waiting_transcription
+                ):
                     raise ActiveLessonError("Нельзя удалить занятие из активной очереди транскрибации")
                 db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (entry.lesson_id,))
                 db.execute(

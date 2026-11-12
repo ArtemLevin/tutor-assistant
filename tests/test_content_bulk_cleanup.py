@@ -7,6 +7,7 @@ import pytest
 
 from tutor_assistant.application.content_cleanup import BulkCleanupRuntime, cleanup_runtime_blockers
 from tutor_assistant.content import (
+    ActiveLessonError,
     ContentBusyError,
     ContentConflictError,
     ContentPathError,
@@ -15,6 +16,7 @@ from tutor_assistant.content import (
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.publication.journal import PublicationOperationStore
 from tutor_assistant.publication_queue import AutomaticPublicationQueue
+from tutor_assistant.store import LessonStore
 from tutor_assistant.transcription_queue import TranscriptionQueue
 
 
@@ -83,6 +85,30 @@ def test_bulk_cleanup_detaches_crm_occurrences_and_preserves_financial_fields(tm
             "SELECT lesson_id, status, rate_cents, paid FROM crm_lesson_occurrences WHERE id=1"
         ).fetchone()
     assert tuple(row) == (None, "completed", 2500, 1)
+
+
+def test_bulk_cleanup_discards_waiting_transcription_but_normal_delete_stays_blocked(
+    tmp_path: Path,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    audio = stored(service, "waiting-job")
+    LessonStore(service.repository.path).save_transcription_job(
+        "waiting-job", str(audio), "waiting"
+    )
+
+    with pytest.raises(ActiveLessonError, match="активной очереди"):
+        service.delete_lesson("waiting-job")
+    preview = service.preview_bulk_cleanup()
+    assert preview.total_lessons_count == 1
+    assert not preview.blockers
+
+    result = service.run_bulk_cleanup(preview.fingerprint)
+
+    assert result.state == "completed"
+    assert result.purged == 1
+    assert service.repository.list_lesson_index_states() == []
+    assert LessonStore(service.repository.path).list_transcription_jobs() == []
+    assert not audio.exists()
 
 
 def test_symlinked_publication_journal_is_rejected(tmp_path: Path) -> None:

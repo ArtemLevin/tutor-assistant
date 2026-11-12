@@ -1340,7 +1340,7 @@ class StudentContentService:
         ):
             raise ContentBusyError("Эксклюзивная блокировка очистки утрачена")
         if active:
-            self._delete_lesson(lesson_id)
+            self._delete_lesson(lesson_id, discard_waiting_transcription=True)
         if not lease.valid:
             raise ContentBusyError("Очистка остановлена после перемещения в корзину")
         result, operation_id, staging = self.stage_lesson_purge(lesson_id)
@@ -1439,7 +1439,12 @@ class StudentContentService:
         with self.activity("content-delete", lesson_id=lesson_id):
             return self._delete_lesson(lesson_id)
 
-    def _delete_lesson(self, lesson_id: str) -> TrashActionResult:
+    def _delete_lesson(
+        self,
+        lesson_id: str,
+        *,
+        discard_waiting_transcription: bool = False,
+    ) -> TrashActionResult:
         _validate_lesson_id(lesson_id)
         source_relative = Path("lessons") / lesson_id
         trash_relative = Path("trash") / "lessons" / lesson_id
@@ -1459,7 +1464,11 @@ class StudentContentService:
             deleted_at=now,
             purge_after=now + timedelta(days=self.trash_retention_days),
         )
-        self.repository.begin_trash(entry, operation_id)
+        self.repository.begin_trash(
+            entry,
+            operation_id,
+            discard_waiting_transcription=discard_waiting_transcription,
+        )
         moved = False
         try:
             if source.exists():
