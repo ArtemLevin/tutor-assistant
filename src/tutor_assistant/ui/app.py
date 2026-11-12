@@ -657,7 +657,10 @@ class MainWindow(QMainWindow):
                 or self.publication_queue_coordinator.active is not None
                 or not self.publication_worker.pending.empty()
             ),
-            normalization_active=self._normalization_cancellation is not None,
+            normalization_active=(
+                self._normalization_cancellation is not None
+                or self.normalization_coordinator.active
+            ),
             import_active=page.import_cancellation is not None,
             editor_dirty=page._transcript_editing or page._draft_running,
             background_active=(
@@ -753,6 +756,7 @@ class MainWindow(QMainWindow):
             for entry in self.publication_queue_coordinator.snapshot().entries:
                 if entry.job_id not in remaining:
                     self.publication_queue_coordinator.discard_after_confirmed_cleanup(entry.job_id)
+            self.normalization_coordinator.discard_missing_auto_lessons(remaining)
             if self.lesson and self.lesson.lesson_id not in remaining:
                 self.lesson = None
                 self.audio_path.clear()
@@ -795,6 +799,7 @@ class MainWindow(QMainWindow):
         if not self._shutdown_requested:
             self._pump_transcription_queue()
             self._pump_publication_queue()
+            self._pump_auto_normalization()
         self._maybe_finish_shutdown()
 
     def _save_trash_retention(self, days: int) -> None:
@@ -2799,6 +2804,9 @@ class MainWindow(QMainWindow):
         retry_indeterminate: bool = False,
     ) -> None:
         del _checked
+        if self._cleanup_in_progress:
+            self._set_status("Нормализация недоступна во время очистки материалов", "warning")
+            return
         provider = self._selected_normalization_provider()
         decision = self.normalization_coordinator.evaluate_manual_start(
             NormalizationManualStartContext(
@@ -2913,6 +2921,8 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _pump_auto_normalization(self) -> None:
+        if self._cleanup_in_progress:
+            return
         decision = self.normalization_coordinator.pump_auto(
             NormalizationAutoContext(
                 provider=self.config.normalization.provider,
