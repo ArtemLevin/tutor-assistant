@@ -211,6 +211,30 @@ def test_bulk_cleanup_removes_only_terminal_publication_records(tmp_path: Path) 
         assert db.execute("SELECT COUNT(*) FROM publication_operations").fetchone()[0] == 0
 
 
+def test_cleanup_temporary_files_never_unlinks_files_through_linked_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    external = tmp_path / "outside"
+    external.mkdir()
+    protected = external / "private.tmp"
+    protected.write_text("must-survive", encoding="utf-8")
+    link = service.workspace / "lessons" / "orphan-junction"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("OS does not allow creating directory links")
+
+    # Inject the path found by an OS/Path.rglob implementation that follows links.
+    monkeypatch.setattr(service, "_temporary_candidates", lambda **_kwargs: [link / "private.tmp"])
+    result = service.cleanup_temporary_files()
+
+    assert protected.read_text(encoding="utf-8") == "must-survive"
+    assert result.removed_paths == []
+    assert result.errors
+
+
 def test_bulk_cleanup_rejects_trash_path_redirection_into_backups(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     stored(service, "misdirected")

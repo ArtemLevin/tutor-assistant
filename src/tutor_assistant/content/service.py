@@ -636,7 +636,15 @@ class StudentContentService:
             relative = candidate.relative_to(self.workspace).as_posix()
             size = self._safe_path_size(candidate)
             try:
-                if candidate.is_symlink() or candidate.is_file():
+                # A source-level .tmp candidate may be nested below a Windows junction
+                # or linked directory that points outside the managed workspace.
+                if not candidate.parent.resolve().is_relative_to(self.workspace):
+                    raise ContentPathError("Временный файл находится вне рабочего каталога")
+                if candidate.is_symlink():
+                    candidate.unlink()
+                elif candidate.is_file():
+                    if not candidate.resolve().is_relative_to(self.workspace):
+                        raise ContentPathError("Временный файл находится вне рабочего каталога")
                     candidate.unlink()
                 elif candidate.is_dir():
                     resolved = candidate.resolve()
