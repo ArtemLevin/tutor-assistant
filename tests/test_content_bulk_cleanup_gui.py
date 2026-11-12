@@ -86,3 +86,18 @@ def test_cleanup_disables_direct_transcript_draft_writer(tmp_path: Path) -> None
 
     assert not draft.exists()
     assert not draft.parent.exists()
+
+
+
+def test_cleanup_dialog_allows_old_temporary_files_without_lessons(tmp_path: Path) -> None:
+    application = QApplication.instance() or QApplication([])
+    preview = BulkCleanupPreview(
+        fingerprint="c" * 64, workspace=tmp_path,
+        active_lessons_count=0, trashed_lessons_count=0,
+        temporary_bytes=1024,
+    )
+    dialog = BulkCleanupDialog(preview)
+    assert dialog.confirm_button.isEnabled()
+    assert "Временные файлы" in dialog.summary.text()
+    dialog.close()
+    application.processEvents()

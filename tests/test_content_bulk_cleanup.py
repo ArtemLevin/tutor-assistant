@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 from datetime import date
 from pathlib import Path
 
@@ -38,6 +40,23 @@ def stored(service: StudentContentService, identifier: str) -> Path:
     audio.parent.mkdir(parents=True, exist_ok=True)
     audio.write_bytes(b"content-audio")
     return audio
+
+
+def test_cleanup_allows_a_temporary_only_workspace(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stale = service.workspace / ".import-staging" / "stale.part"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"old-temporary-data")
+    os.utime(stale, (time.time() - 90000, time.time() - 90000))
+
+    preview = service.preview_bulk_cleanup()
+    assert preview.total_lessons_count == 0
+    assert preview.temporary_bytes == len(b"old-temporary-data")
+    assert not preview.blockers
+
+    result = service.run_bulk_cleanup(preview.fingerprint)
+    assert result.state == "completed"
+    assert not stale.exists()
 
 
 def test_bulk_cleanup_removes_all_pages_and_trash_but_preserves_backups(tmp_path: Path) -> None:

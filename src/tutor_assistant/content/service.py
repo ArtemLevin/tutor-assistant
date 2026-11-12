@@ -1293,8 +1293,9 @@ class StudentContentService:
             trashed_lessons_count=sum(deleted is not None for _, _, deleted, _, _ in rows),
             lessons_bytes=self._safe_path_size(self.workspace / "lessons"),
             trash_bytes=self._safe_path_size(self.workspace / "trash"),
-            temporary_bytes=self._safe_path_size(self.workspace / ".import-staging")
-            + self._safe_path_size(self.workspace / ".trash-purge"),
+            temporary_bytes=sum(
+                self._safe_path_size(path) for path in self._temporary_candidates()
+            ),
             backups_bytes=self._safe_path_size(self.workspace / "backups"),
             blockers=sorted(set(blockers)),
         )

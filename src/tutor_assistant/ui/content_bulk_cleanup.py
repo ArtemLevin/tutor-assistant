@@ -72,6 +72,7 @@ class BulkCleanupDialog(QDialog):
             f"Рабочий каталог: {preview.workspace}\n"
             f"Занятия: {preview.active_lessons_count}; "
             f"корзина: {preview.trashed_lessons_count}\n"
+            f"Временные файлы к очистке: {format_size(preview.temporary_bytes)}\\n"
             f"Оценка объёма: {format_size(preview.estimated_total_bytes)} "
             f"(резервные копии сохраняются: {format_size(preview.backups_bytes)})"
         )
@@ -100,7 +101,10 @@ class BulkCleanupDialog(QDialog):
         self.close_button.clicked.connect(self.reject)
         actions.addWidget(self.close_button)
         self.confirm_button = set_button_kind(QPushButton("Удалить безвозвратно"), "danger")
-        self.confirm_button.setEnabled(not preview.blockers and preview.total_lessons_count > 0)
+        self.confirm_button.setEnabled(
+            not preview.blockers
+            and (preview.total_lessons_count > 0 or preview.temporary_bytes > 0)
+        )
         self.confirm_button.clicked.connect(self._confirm)
         actions.addWidget(self.confirm_button)
         layout.addLayout(actions)
