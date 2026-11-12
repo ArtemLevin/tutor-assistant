@@ -654,7 +654,7 @@ class StudentContentRepository:
         """Reject destructive runs with active jobs or unfinished content operations."""
         blockers: list[str] = []
         checks = (
-            ("transcription_jobs", "status IN ('waiting', 'running') AND status='running'"),
+            ("transcription_jobs", "status='running'"),
             ("automatic_publication_jobs", "status='running'"),
             ("normalization_runs", "status='running'"),
             ("content_trash", "state<>'trashed'"),

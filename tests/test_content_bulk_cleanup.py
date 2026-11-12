@@ -141,7 +141,7 @@ def test_bulk_cleanup_removes_only_terminal_publication_records(tmp_path: Path) 
     stored(service, "published")
     journal = PublicationOperationStore(service.workspace / "publication.sqlite3")
     identifier = _journal(journal, "published")
-    journal.mark_failed(identifier, "test")
+    journal.mark_failed(identifier, error_code="test", details="synthetic")
     preview = service.preview_bulk_cleanup()
     assert not preview.blockers
     assert service.run_bulk_cleanup(preview.fingerprint).state == "completed"
