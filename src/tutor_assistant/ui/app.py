@@ -642,7 +642,10 @@ class MainWindow(QMainWindow):
             recording_stopping=self._recording_stop_started or self._recording_lease is not None,
             transcription_active=(
                 self.transcription_worker.busy
-                or self.transcription_queue_coordinator.active is not None
+                or any(
+                    entry.status == "running"
+                    for entry in self.transcription_queue_coordinator.snapshot().entries
+                )
                 or not self.transcription_worker.pending.empty()
             ),
             publication_active=(
