@@ -211,6 +211,27 @@ def test_bulk_cleanup_removes_only_terminal_publication_records(tmp_path: Path) 
         assert db.execute("SELECT COUNT(*) FROM publication_operations").fetchone()[0] == 0
 
 
+def test_bulk_cleanup_rejects_trash_path_redirection_into_backups(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "misdirected")
+    service.delete_lesson("misdirected")
+    protected = service.workspace / "backups" / "keep.txt"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("do-not-remove", encoding="utf-8")
+
+    with service.repository.connect() as db:
+        db.execute(
+            "UPDATE content_trash SET trash_relative_path='backups' WHERE lesson_id=?",
+            ("misdirected",),
+        )
+
+    preview = service.preview_bulk_cleanup()
+    with pytest.raises(ContentPathError, match="Каталог корзины"):
+        service.run_bulk_cleanup(preview.fingerprint)
+    assert protected.read_text(encoding="utf-8") == "do-not-remove"
+    assert service.repository.get_lesson("misdirected", include_deleted=True) is not None
+
+
 def test_bulk_cleanup_path_escape_fails_closed(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     original = stored(service, "linked")

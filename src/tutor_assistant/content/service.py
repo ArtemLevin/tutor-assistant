@@ -1294,6 +1294,13 @@ class StudentContentService:
     def _validate_bulk_cleanup_paths(self, lesson_id: str) -> None:
         """Fail closed for symlinks, junctions and other path redirections."""
         _validate_lesson_id(lesson_id)
+        trash = self.repository.get_trash_entry(lesson_id)
+        if trash is not None and (
+            trash.original_relative_path != (Path("lessons") / lesson_id).as_posix()
+            or trash.trash_relative_path != (Path("trash") / "lessons" / lesson_id).as_posix()
+            or trash.staging_relative_path is not None
+        ):
+            raise ContentPathError("Каталог корзины не соответствует управляемому занятию")
         candidates = (
             self.workspace / "lessons",
             self.workspace / "lessons" / lesson_id,
