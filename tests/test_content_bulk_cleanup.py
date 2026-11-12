@@ -112,6 +112,35 @@ def test_bulk_cleanup_discards_waiting_transcription_but_normal_delete_stays_blo
     assert not audio.exists()
 
 
+def test_failed_bulk_move_preserves_waiting_transcription_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    audio = stored(service, "cannot-move")
+    LessonStore(service.repository.path).save_transcription_job(
+        "cannot-move", str(audio), "waiting"
+    )
+    original_replace = Path.replace
+
+    def reject_rename(source: Path, target: Path) -> Path:
+        if source == service.workspace / "lessons" / "cannot-move":
+            raise PermissionError("simulated Windows file lock")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", reject_rename)
+    result = service.run_bulk_cleanup(service.preview_bulk_cleanup().fingerprint)
+
+    assert result.state == "partial"
+    assert result.purged == 0
+    assert result.remaining_count == 1
+    assert audio.exists()
+    jobs = LessonStore(service.repository.path).list_transcription_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].status == "waiting"
+    remaining = service.repository.get_lesson("cannot-move")
+    assert remaining is not None
+
+
 def test_symlinked_publication_journal_is_rejected(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     audio = stored(service, "test-journal-path")

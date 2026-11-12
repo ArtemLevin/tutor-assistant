@@ -715,7 +715,14 @@ class StudentContentRepository:
                     active_job["status"] == "running" or not discard_waiting_transcription
                 ):
                     raise ActiveLessonError("Нельзя удалить занятие из активной очереди транскрибации")
-                db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (entry.lesson_id,))
+                # Preserve waiting jobs until the filesystem move succeeds, so
+                # rollback after a Windows file lock cannot silently lose a job.
+                if not (
+                    discard_waiting_transcription
+                    and active_job is not None
+                    and active_job["status"] == "waiting"
+                ):
+                    db.execute("DELETE FROM transcription_jobs WHERE lesson_id=?", (entry.lesson_id,))
                 db.execute(
                     "UPDATE lessons SET deleted_at=? WHERE lesson_id=?",
                     (entry.deleted_at.isoformat(), entry.lesson_id),
@@ -793,6 +800,11 @@ class StudentContentRepository:
                 )
                 if cursor.rowcount == 0:
                     raise ContentNotFoundError(f"Операция удаления не найдена: {lesson_id}")
+                # This point is reached only after a successful directory move.
+                db.execute(
+                    "DELETE FROM transcription_jobs WHERE lesson_id=? AND status='waiting'",
+                    (lesson_id,),
+                )
                 self._complete_operation(db, operation_id)
 
         self._retry(operation)
