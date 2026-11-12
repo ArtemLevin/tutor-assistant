@@ -143,6 +143,16 @@ class TranscriptionQueue:
     def get(self, job_id: str) -> TranscriptionJob | None:
         return self._jobs.get(job_id)
 
+    def discard_after_confirmed_cleanup(self, job_id: str) -> None:
+        """Forget a non-running job only after its lesson was deleted from SQLite."""
+        job = self._jobs.get(job_id)
+        if job is None:
+            return
+        if job.status == QueueStatus.RUNNING or self._active_id == job_id:
+            raise ValueError("Нельзя удалить выполняющуюся транскрибацию")
+        self._jobs.pop(job_id)
+        self._waiting = deque(item for item in self._waiting if item != job_id)
+
     def discard(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is None:
