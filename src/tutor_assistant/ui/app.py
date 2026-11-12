@@ -621,13 +621,24 @@ class MainWindow(QMainWindow):
             "working",
         )
 
+    def _clear_removed_lesson_view(self) -> None:
+        """Discard transient editor state only after the active lesson is removed."""
+        self.lesson = None
+        self._summary_dirty = False
+        self.draft_timer.stop()
+        self.audio_path.clear()
+        self.transcript.clear()
+        self.segment_table.setRowCount(0)
+        self.approve.setEnabled(False)
+        self.publish_button.setEnabled(False)
+
     def _forget_trashed_lesson(self, lesson_id: str) -> None:
         try:
             self.transcription_queue_coordinator.discard(lesson_id)
         except ValueError:
             logging.warning("Активное задание не удалено из очереди: %s", lesson_id)
         if self.lesson and self.lesson.lesson_id == lesson_id:
-            self.lesson = None
+            self._clear_removed_lesson_view()
         self._update_transcription_queue_ui()
 
     def _bulk_cleanup_runtime_blockers(self) -> tuple[str, ...]:
@@ -665,8 +676,10 @@ class MainWindow(QMainWindow):
             editor_dirty=(
                 page._transcript_editing
                 or page._draft_running
-                or self._summary_dirty
-                or self.draft_timer.isActive()
+                or (
+                    self.lesson is not None
+                    and (self._summary_dirty or self.draft_timer.isActive())
+                )
             ),
             background_active=(
                 any(worker.isRunning() for worker in self.workers)
@@ -764,8 +777,7 @@ class MainWindow(QMainWindow):
                     self.publication_queue_coordinator.discard_after_confirmed_cleanup(entry.job_id)
             self.normalization_coordinator.discard_missing_auto_lessons(remaining)
             if self.lesson and self.lesson.lesson_id not in remaining:
-                self.lesson = None
-                self.audio_path.clear()
+                self._clear_removed_lesson_view()
             page = self.student_content_page
             page.offset = 0
             page._selected_lesson_id = None

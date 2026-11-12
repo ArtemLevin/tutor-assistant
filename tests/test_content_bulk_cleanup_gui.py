@@ -101,3 +101,85 @@ def test_cleanup_dialog_allows_old_temporary_files_without_lessons(tmp_path: Pat
     assert "Временные файлы" in dialog.summary.text()
     dialog.close()
     application.processEvents()
+
+
+
+def test_trashing_current_lesson_clears_stale_transcript_state() -> None:
+    class FakeTimer:
+        active = True
+
+        def stop(self) -> None:
+            self.active = False
+
+        def isActive(self) -> bool:
+            return self.active
+
+    cleared: list[str] = []
+    disabled: list[bool] = []
+    discarded: list[str] = []
+    timer = FakeTimer()
+    state = SimpleNamespace(
+        lesson=SimpleNamespace(lesson_id="trashed-lesson"),
+        _summary_dirty=True,
+        draft_timer=timer,
+        audio_path=SimpleNamespace(clear=lambda: cleared.append("audio")),
+        transcript=SimpleNamespace(clear=lambda: cleared.append("transcript")),
+        segment_table=SimpleNamespace(setRowCount=lambda count: cleared.append(f"rows:{count}")),
+        approve=SimpleNamespace(setEnabled=disabled.append),
+        publish_button=SimpleNamespace(setEnabled=disabled.append),
+        transcription_queue_coordinator=SimpleNamespace(discard=discarded.append),
+        _update_transcription_queue_ui=lambda: None,
+    )
+    state._clear_removed_lesson_view = lambda: MainWindow._clear_removed_lesson_view(state)
+
+    MainWindow._forget_trashed_lesson(state, "trashed-lesson")
+
+    assert state.lesson is None
+    assert state._summary_dirty is False
+    assert timer.isActive() is False
+    assert cleared == ["audio", "transcript", "rows:0"]
+    assert disabled == [False, False]
+    assert discarded == ["trashed-lesson"]
+
+
+def test_bulk_cleanup_does_not_treat_orphan_editor_flag_as_active_work() -> None:
+    empty_queue = SimpleNamespace(entries=[])
+    page = SimpleNamespace(
+        _transcript_editing=False,
+        _draft_running=False,
+        import_cancellation=None,
+    )
+    state = SimpleNamespace(
+        student_content_page=page,
+        recorder=None,
+        quick_countdown_timer=SimpleNamespace(isActive=lambda: False),
+        _quick_start_pending=False,
+        _recording_stop_started=False,
+        _recording_lease=None,
+        recording_lesson=None,
+        transcription_worker=SimpleNamespace(
+            busy=False, pending=SimpleNamespace(empty=lambda: True)
+        ),
+        transcription_queue_coordinator=SimpleNamespace(snapshot=lambda: empty_queue),
+        publication_worker=SimpleNamespace(
+            busy=False, pending=SimpleNamespace(empty=lambda: True)
+        ),
+        publication_queue_coordinator=SimpleNamespace(
+            snapshot=lambda: empty_queue, active=None
+        ),
+        _normalization_cancellation=None,
+        normalization_coordinator=SimpleNamespace(active=False),
+        lesson=None,
+        _summary_dirty=True,
+        draft_timer=SimpleNamespace(isActive=lambda: True),
+        workers=[],
+        _shutdown_requested=False,
+    )
+
+    assert MainWindow._bulk_cleanup_runtime_blockers(state) == ()
+
+    # Real, still-open unsaved changes remain a hard safety blocker.
+    state.lesson = SimpleNamespace(lesson_id="active-editor")
+    assert "Открыт редактор транскрипта с несохранёнными изменениями" in (
+        MainWindow._bulk_cleanup_runtime_blockers(state)
+    )
