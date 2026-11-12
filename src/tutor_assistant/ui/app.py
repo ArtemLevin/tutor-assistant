@@ -64,8 +64,9 @@ from ..application import (
     TranscriptionPumpContext,
     TranscriptionQueueCoordinator,
 )
+from ..application.content_cleanup import BulkCleanupRuntime, cleanup_runtime_blockers
 from ..config import AppConfig, load_students
-from ..content import ContentMaintenanceResult
+from ..content import BulkCleanupPreview, BulkCleanupResult, ContentMaintenanceResult
 from ..content_browser import is_audio_path
 from ..crash import read_crash_marker
 from ..crm import CrmStore
@@ -100,6 +101,7 @@ from ..security.credentials import (
 )
 from ..transcript_editing import select_verified_text
 from .accessibility import sync_text_status
+from .content_bulk_cleanup import BulkCleanupDialog, BulkCleanupWorker
 from .crm import SchedulePage, StudentsPage
 from .latex_monitor_presentation import (
     LatexMonitorPresentation,
@@ -227,6 +229,11 @@ class MainWindow(QMainWindow):
         )
         self._loading_segments = False
         self._summary_dirty = False
+        self._cleanup_in_progress = False
+        self._cleanup_dialog: BulkCleanupDialog | None = None
+        self._cleanup_worker: BulkCleanupWorker | None = None
+        self._cleanup_saved_buttons: list[tuple[QPushButton, bool]] = []
+        self._cleanup_timers: tuple[bool, bool] = (False, False)
         self._shutdown_requested = False
         self._shutdown_ready = False
         self.transcription_worker = TranscriptionWorker(self.pipeline)
@@ -376,6 +383,7 @@ class MainWindow(QMainWindow):
         self.student_content_page.lesson_trashed.connect(self._forget_trashed_lesson)
         self.student_content_page.lesson_purged.connect(self._forget_trashed_lesson)
         self.student_content_page.trash_retention_changed.connect(self._save_trash_retention)
+        self.student_content_page.bulk_cleanup_requested.connect(self._open_bulk_cleanup)
         self.materials_tab_index = self.tabs.addTab(self.student_content_page, "08  Материалы")
         self.content_stack = QStackedWidget()
         self.quick_page = self._quick_start_page()
@@ -485,6 +493,8 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _run_scheduled_backup(self) -> None:
+        if self._cleanup_in_progress:
+            return
         recording_busy = bool(self.recorder and self.recorder.active) or self._recording_stop_started
         decision = self.backup_coordinator.decide(
             recording_active=recording_busy,
@@ -545,6 +555,8 @@ class MainWindow(QMainWindow):
         dialog.open()
 
     def _run_content_maintenance(self) -> None:
+        if self._cleanup_in_progress:
+            return
         if (
             not self.config.content.maintenance_enabled
             or self._shutdown_requested
@@ -617,6 +629,184 @@ class MainWindow(QMainWindow):
         if self.lesson and self.lesson.lesson_id == lesson_id:
             self.lesson = None
         self._update_transcription_queue_ui()
+
+    def _bulk_cleanup_runtime_blockers(self) -> tuple[str, ...]:
+        page = self.student_content_page
+        background = getattr(self, "background_tasks", None)
+        snapshot = BulkCleanupRuntime(
+            recording_active=(
+                bool(self.recorder and self.recorder.active)
+                or self.quick_countdown_timer.isActive()
+                or self._quick_start_pending
+            ),
+            recording_stopping=(
+                self._recording_stop_started
+                or self._recording_lease is not None
+                or self.recording_lesson is not None
+            ),
+            transcription_active=(
+                self.transcription_worker.busy
+                or any(
+                    entry.status == "running"
+                    for entry in self.transcription_queue_coordinator.snapshot().entries
+                )
+                or not self.transcription_worker.pending.empty()
+            ),
+            publication_active=(
+                self.publication_worker.busy
+                or self.publication_queue_coordinator.active is not None
+                or not self.publication_worker.pending.empty()
+            ),
+            normalization_active=(
+                self._normalization_cancellation is not None
+                or self.normalization_coordinator.active
+            ),
+            import_active=page.import_cancellation is not None,
+            editor_dirty=(
+                page._transcript_editing
+                or page._draft_running
+                or self._summary_dirty
+                or self.draft_timer.isActive()
+            ),
+            background_active=(
+                any(worker.isRunning() for worker in self.workers)
+                or bool(background is not None and background.has_pending())
+            ),
+            shutdown_requested=self._shutdown_requested,
+        )
+        return cleanup_runtime_blockers(snapshot)
+
+    def _open_bulk_cleanup(self) -> None:
+        if self._cleanup_in_progress:
+            return
+        if self._cleanup_dialog is not None:
+            self._cleanup_dialog.raise_()
+            return
+        self._run_content_task(
+            self.content_service.preview_bulk_cleanup,
+            self._bulk_cleanup_preview_ready,
+            lambda details: QMessageBox.warning(
+                self, "Очистка материалов", "Не удалось проверить архив:\\n" + details[-1500:]
+            ),
+        )
+
+    def _bulk_cleanup_preview_ready(self, result: object) -> None:
+        if not isinstance(result, BulkCleanupPreview):
+            QMessageBox.warning(self, "Очистка материалов", "Некорректный результат анализа архива")
+            return
+        dialog = BulkCleanupDialog(result, self)
+        self._cleanup_dialog = dialog
+        dialog.confirmed.connect(self._confirm_bulk_cleanup)
+        dialog.finished.connect(lambda _value: self._bulk_cleanup_dialog_closed(dialog))
+        dialog.open()
+
+    def _bulk_cleanup_dialog_closed(self, dialog: BulkCleanupDialog) -> None:
+        if self._cleanup_dialog is dialog:
+            self._cleanup_dialog = None
+
+    def _confirm_bulk_cleanup(self, fingerprint: str) -> None:
+        if self._cleanup_in_progress:
+            return
+        blockers = self._bulk_cleanup_runtime_blockers()
+        if blockers:
+            QMessageBox.warning(
+                self, "Очистка недоступна", "Завершите активные операции:\\n" + "\\n".join(blockers)
+            )
+            return
+        dialog = self._cleanup_dialog
+        if dialog is None:
+            return
+        self._cleanup_in_progress = True
+        self._cleanup_timers = (
+            self.content_maintenance_timer.isActive(),
+            self.backup_maintenance_timer.isActive(),
+        )
+        self.content_maintenance_timer.stop()
+        self.backup_maintenance_timer.stop()
+        self.publication_retry_timer.stop()
+        self.draft_timer.stop()
+        self.playback_controller.stop(clear_source=True)
+        buttons = [
+            self.start_button,
+            self.quick_start_button,
+            self.student_content_page.import_button,
+            self.student_content_page.maintenance_button,
+        ]
+        self._cleanup_saved_buttons = [(button, button.isEnabled()) for button in buttons]
+        for button in buttons:
+            button.setEnabled(False)
+        dialog.set_running()
+        worker = BulkCleanupWorker(self.content_service, fingerprint, self)
+        worker.purpose = "content-bulk-cleanup"
+        self._cleanup_worker = worker
+        self.workers.append(worker)
+        worker.progressed.connect(dialog.update_progress)
+        worker.succeeded.connect(self._bulk_cleanup_ready)
+        worker.failed.connect(self._bulk_cleanup_failed)
+        worker.finished.connect(self._bulk_cleanup_finished)
+        try:
+            worker.start()
+        except Exception as exc:
+            self._bulk_cleanup_failed(str(exc))
+            self._bulk_cleanup_finished()
+
+    def _bulk_cleanup_ready(self, result: object) -> None:
+        if not isinstance(result, BulkCleanupResult):
+            self._bulk_cleanup_failed("Некорректный результат очистки")
+            return
+        try:
+            remaining = {row[0] for row in self.content_service.repository.bulk_cleanup_snapshot_rows()}
+            for entry in self.transcription_queue_coordinator.snapshot().entries:
+                if entry.job_id not in remaining:
+                    self.transcription_queue_coordinator.discard_after_confirmed_cleanup(entry.job_id)
+            for entry in self.publication_queue_coordinator.snapshot().entries:
+                if entry.job_id not in remaining:
+                    self.publication_queue_coordinator.discard_after_confirmed_cleanup(entry.job_id)
+            self.normalization_coordinator.discard_missing_auto_lessons(remaining)
+            if self.lesson and self.lesson.lesson_id not in remaining:
+                self.lesson = None
+                self.audio_path.clear()
+            page = self.student_content_page
+            page.offset = 0
+            page._selected_lesson_id = None
+            page.refresh_if_loaded()
+            self._update_transcription_queue_ui()
+            self._refresh_teacher_cockpit()
+        except (ValueError, RuntimeError) as exc:
+            result.warnings.append(f"Обновление интерфейса: {exc}")
+            result.state = "partial"
+        if self._cleanup_dialog is not None:
+            self._cleanup_dialog.show_result(result)
+        tone = "success" if result.state == "completed" else "warning"
+        self._set_status(
+            f"Очистка: {result.state} · удалено {result.purged}/{result.total}, "
+            f"осталось {result.remaining_count}", tone,
+        )
+
+    def _bulk_cleanup_failed(self, details: str) -> None:
+        if self._cleanup_dialog is not None:
+            self._cleanup_dialog.show_error(details)
+        self._set_status("Очистка не завершена; проверьте детали", "error")
+
+    def _bulk_cleanup_finished(self) -> None:
+        worker = self._cleanup_worker
+        if worker is not None and worker in self.workers:
+            self.workers.remove(worker)
+        self._cleanup_worker = None
+        for button, enabled in self._cleanup_saved_buttons:
+            button.setEnabled(enabled)
+        self._cleanup_saved_buttons.clear()
+        self._cleanup_in_progress = False
+        maintenance, backup = self._cleanup_timers
+        if maintenance and not self._shutdown_requested:
+            self.content_maintenance_timer.start()
+        if backup and not self._shutdown_requested:
+            self.backup_maintenance_timer.start()
+        if not self._shutdown_requested:
+            self._pump_transcription_queue()
+            self._pump_publication_queue()
+            self._pump_auto_normalization()
+        self._maybe_finish_shutdown()
 
     def _save_trash_retention(self, days: int) -> None:
         self.config.content.trash_retention_days = days
@@ -1745,12 +1935,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", str(exc))
 
     def _enqueue_transcription(self, lesson: Lesson, audio: Path) -> None:
+        if self._cleanup_in_progress:
+            raise RuntimeError("Очистка материалов выполняется: новая транскрибация запрещена")
         job = self.transcription_queue_coordinator.enqueue(lesson, audio)
         logging.info("Транскрибация поставлена в очередь: lesson=%s audio=%s", job.id, audio)
         self._update_transcription_queue_ui()
         self._pump_transcription_queue()
 
     def _pump_transcription_queue(self) -> None:
+        if self._cleanup_in_progress:
+            return
         submission = self.transcription_queue_coordinator.pump(
             TranscriptionPumpContext(
                 shutdown_requested=self._shutdown_requested,
@@ -1791,6 +1985,8 @@ class MainWindow(QMainWindow):
         self._pump_transcription_queue()
 
     def _pump_publication_queue(self) -> None:
+        if self._cleanup_in_progress:
+            return
         if self._shutdown_requested:
             return
         submission = self.publication_queue_coordinator.pump(
@@ -1804,6 +2000,9 @@ class MainWindow(QMainWindow):
         self.publication_worker.submit(submission)
 
     def _schedule_publication_retry(self) -> None:
+        if self._cleanup_in_progress:
+            self.publication_retry_timer.stop()
+            return
         if self._shutdown_requested:
             self.publication_retry_timer.stop()
             return
@@ -2066,10 +2265,14 @@ class MainWindow(QMainWindow):
         return self.pipeline.lesson_dir(self.lesson) / "transcript" / "transcript_draft.json"
 
     def _schedule_draft_save(self) -> None:
+        if self._cleanup_in_progress:
+            return
         if not self._loading_segments and self.lesson:
             self.draft_timer.start()
 
     def _save_transcript_draft(self) -> None:
+        if self._cleanup_in_progress:
+            return
         path = self._draft_path()
         if not path:
             return
@@ -2611,6 +2814,9 @@ class MainWindow(QMainWindow):
         retry_indeterminate: bool = False,
     ) -> None:
         del _checked
+        if self._cleanup_in_progress:
+            self._set_status("Нормализация недоступна во время очистки материалов", "warning")
+            return
         provider = self._selected_normalization_provider()
         decision = self.normalization_coordinator.evaluate_manual_start(
             NormalizationManualStartContext(
@@ -2725,6 +2931,8 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _pump_auto_normalization(self) -> None:
+        if self._cleanup_in_progress:
+            return
         decision = self.normalization_coordinator.pump_auto(
             NormalizationAutoContext(
                 provider=self.config.normalization.provider,

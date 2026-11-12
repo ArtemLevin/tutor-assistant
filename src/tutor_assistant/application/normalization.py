@@ -126,6 +126,14 @@ class NormalizationCoordinator:
         self._active_lesson_id = lesson_id
         self._progress = None
 
+    def discard_missing_auto_lessons(self, existing_lesson_ids: set[str]) -> int:
+        """Remove stale pending IDs after confirmed archive deletion, preserving survivors."""
+        before = len(self._auto_queue)
+        self._auto_queue = [
+            lesson_id for lesson_id in self._auto_queue if lesson_id in existing_lesson_ids
+        ]
+        return before - len(self._auto_queue)
+
     def enqueue_auto(self, lesson_id: str) -> bool:
         if lesson_id == self._active_lesson_id or lesson_id in self._auto_queue:
             return False

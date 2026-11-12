@@ -101,6 +101,15 @@ jobs:
         shell: bash
         run: git diff --check ${{ github.event.pull_request.base.sha }}...HEAD
 
+      - name: Bulk cleanup focused regressions
+        run: >-
+          uv run pytest -q
+          tests/test_content_bulk_cleanup.py
+          tests/test_content_bulk_cleanup_gui.py
+          tests/test_content_trash.py
+          tests/test_transcription_queue_ui_architecture.py
+          tests/test_ux3_crm_materials_gui.py
+
       - name: Full test suite
         run: uv run pytest --junitxml=pytest-report.xml
 

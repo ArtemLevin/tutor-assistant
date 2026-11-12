@@ -122,6 +122,7 @@ class StudentContentPage(QWidget):
     lesson_purged = Signal(str)
     lesson_trashed = Signal(str)
     trash_retention_changed = Signal(int)
+    bulk_cleanup_requested = Signal()
     content_changed = Signal()
 
     def __init__(
@@ -202,6 +203,9 @@ class StudentContentPage(QWidget):
         self.health_action = self.maintenance_menu.addAction("Диагностика архива")
         self.health_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         self.health_action.triggered.connect(self.open_content_health)
+        self.maintenance_menu.addSeparator()
+        self.bulk_cleanup_action = self.maintenance_menu.addAction("Очистить все локальные материалы…")
+        self.bulk_cleanup_action.triggered.connect(lambda _checked=False: self.bulk_cleanup_requested.emit())
         self.maintenance_menu.addSeparator()
         self.sync_action = self.maintenance_menu.addAction("Проверить и восстановить")
         self.sync_action.setShortcut(QKeySequence("Ctrl+Shift+R"))

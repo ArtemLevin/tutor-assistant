@@ -210,6 +210,9 @@ class PublicationQueueCoordinator:
             int((min(retry_times) - current).total_seconds() * 1000),
         )
 
+    def discard_after_confirmed_cleanup(self, job_id: str) -> None:
+        self._queue.discard_after_confirmed_cleanup(job_id)
+
     def get(self, job_id: str) -> AutomaticPublicationJob | None:
         return self._queue.get(job_id)
 

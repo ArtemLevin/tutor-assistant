@@ -166,8 +166,13 @@ def test_materials_are_embedded_in_split_view_with_maintenance_menu(
     assert [action.text() for action in page.maintenance_menu.actions() if action.text()] == [
         "Корзина",
         "Диагностика архива",
+        "Очистить все локальные материалы…",
         "Проверить и восстановить",
     ]
+    cleanup_requests: list[bool] = []
+    page.bulk_cleanup_requested.connect(lambda: cleanup_requests.append(True))
+    page.bulk_cleanup_action.trigger()
+    assert cleanup_requests == [True]
     assert page.trash_action.shortcut() == QKeySequence("Ctrl+Shift+Delete")
     assert page.health_action.shortcut() == QKeySequence("Ctrl+Shift+D")
     assert page.sync_action.shortcut() == QKeySequence("Ctrl+Shift+R")

@@ -368,6 +368,11 @@ class MainWindow(ProductionMainWindow):
             self._refresh_quick_readiness()
 
     def start_recording(self) -> None:
+        if getattr(self, "_cleanup_in_progress", False):
+            QMessageBox.warning(
+                self, "Запись недоступна", "Дождитесь завершения очистки материалов."
+            )
+            return
         try:
             self.recording_workflow.begin_start(self._recording_runtime_state())
         except RecordingWorkflowRejected as exc:

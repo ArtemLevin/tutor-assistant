@@ -1,5 +1,13 @@
 # Tutor Assistant — Development Plan
 
+## В работе — безопасная глобальная очистка материалов (PR #125)
+
+- [x] Preview и typed DTO; SQLite CRM detach, отдельный publication journal, guarded purge.
+- [x] PySide6 команда и worker; runtime/shutdown safety gate; регрессионные тесты добавлены.
+- [ ] Windows CI и self-review должны быть зелёными перед включением в релиз.
+- Scope: управляемые local lessons + trash, но не CRM, backups, external files, remote publications.
+
+
 **Актуальность:** 5 октября 2026 года
 **Текущая версия:** `1.0.0rc1`
 **Основная ветка:** `main`  

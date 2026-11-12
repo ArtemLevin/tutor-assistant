@@ -103,6 +103,24 @@ def test_auto_queue_is_deduplicated_and_fifo() -> None:
     assert second.lesson_id == "two"
 
 
+def test_auto_queue_reconciles_only_confirmed_deleted_lessons() -> None:
+    coordinator = NormalizationCoordinator()
+    assert coordinator.enqueue_auto("removed-one")
+    assert coordinator.enqueue_auto("kept")
+    assert coordinator.enqueue_auto("removed-two")
+
+    assert coordinator.discard_missing_auto_lessons({"kept"}) == 2
+    assert coordinator.pending_auto_count == 1
+
+    decision = coordinator.pump_auto(
+        NormalizationAutoContext(
+            provider="ollama", shutdown_requested=False, transcription_busy=False
+        )
+    )
+    assert decision.action == NormalizationAutoAction.START
+    assert decision.lesson_id == "kept"
+
+
 def test_auto_queue_respects_shutdown_and_whisper_barriers() -> None:
     coordinator = NormalizationCoordinator()
     coordinator.enqueue_auto("lesson")

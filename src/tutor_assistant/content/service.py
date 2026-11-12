@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import mimetypes
 import shutil
+import sqlite3
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -18,6 +20,7 @@ from uuid import uuid4
 
 from ..atomic_io import atomic_write_text
 from ..domain import JobStatus, Lesson, Student
+from ..publication.journal import PublicationOperationStore
 from .backup import DatabaseBackupError, DatabaseBackupStore
 from .coordination import (
     ActivityLease,
@@ -37,6 +40,10 @@ from .importing import (
 from .migrations import apply_migrations
 from .models import (
     AssetKind,
+    BulkCleanupFailure,
+    BulkCleanupPreview,
+    BulkCleanupProgress,
+    BulkCleanupResult,
     ContentIntegrityIssue,
     ContentIntegrityReport,
     ContentMaintenanceResult,
@@ -587,7 +594,12 @@ class StudentContentService:
 
         for root_name in (".import-staging", ".trash-purge"):
             root = self.workspace / root_name
-            if not root.is_dir():
+            if (
+                not root.is_dir()
+                or root.is_symlink()
+                or (hasattr(root, "is_junction") and root.is_junction())
+                or not root.resolve().is_relative_to(self.workspace)
+            ):
                 continue
             for child in root.iterdir():
                 relative = child.relative_to(self.workspace).as_posix()
@@ -600,7 +612,9 @@ class StudentContentService:
                     continue
 
         lessons = self.workspace / "lessons"
-        if lessons.is_dir():
+        if lessons.is_dir() and not lessons.is_symlink() and not (
+            hasattr(lessons, "is_junction") and lessons.is_junction()
+        ):
             for candidate in lessons.rglob("*"):
                 if not candidate.name.endswith((".tmp", ".part")):
                     continue
@@ -622,7 +636,15 @@ class StudentContentService:
             relative = candidate.relative_to(self.workspace).as_posix()
             size = self._safe_path_size(candidate)
             try:
-                if candidate.is_symlink() or candidate.is_file():
+                # A source-level .tmp candidate may be nested below a Windows junction
+                # or linked directory that points outside the managed workspace.
+                if not candidate.parent.resolve().is_relative_to(self.workspace):
+                    raise ContentPathError("Временный файл находится вне рабочего каталога")
+                if candidate.is_symlink():
+                    candidate.unlink()
+                elif candidate.is_file():
+                    if not candidate.resolve().is_relative_to(self.workspace):
+                        raise ContentPathError("Временный файл находится вне рабочего каталога")
                     candidate.unlink()
                 elif candidate.is_dir():
                     resolved = candidate.resolve()
@@ -1221,6 +1243,209 @@ class StudentContentService:
             mode=IntegrityCheckMode.FULL,
         )
 
+    def _bulk_cleanup_snapshot(self) -> tuple[list[tuple[str, int, str | None, str, str]], str]:
+        rows = self.repository.bulk_cleanup_snapshot_rows()
+        # The snapshot tracks database ownership; external files are never sourced
+        # from serialized artifact paths.
+        digest = hashlib.sha256(repr(rows).encode("utf-8")).hexdigest()
+        return rows, digest
+
+    def preview_bulk_cleanup(self) -> BulkCleanupPreview:
+        """Preview the whole managed archive without modifying any content."""
+        rows, fingerprint = self._bulk_cleanup_snapshot()
+        blockers = self.repository.bulk_cleanup_blockers()
+        if any(status in {"recording", "transcribing"} for _, _, _, status, _ in rows):
+            blockers.append("Незавершённая запись или транскрибация занятия")
+        for manifest in self.workspace.glob("lessons/*/recording/session.json"):
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            if data.get("status") in {
+                None, "recording", "recorded", "failed_to_start",
+                "failed_to_stop", "encoding_failed",
+            } and any((manifest.parent / "chunks").rglob("*.wav")):
+                blockers.append("Обнаружена запись с доступными чанками для восстановления")
+                break
+        if any(deleted is not None and state != "trashed" for _, _, deleted, _, state in rows):
+            blockers.append("Корзина содержит незавершённую операцию")
+        for item in self.active_activities():
+            if item.activity != "content-bulk-cleanup":
+                blockers.append(f"Рабочий каталог занят: {item.activity}")
+        journal_path = self.workspace / "publication.sqlite3"
+        if (
+            journal_path.is_symlink()
+            or (hasattr(journal_path, "is_junction") and journal_path.is_junction())
+            or not journal_path.resolve().is_relative_to(self.workspace)
+        ):
+            blockers.append("Небезопасный путь журнала публикаций")
+        else:
+            try:
+                active_publications = PublicationOperationStore.active_lesson_ids_readonly(journal_path)
+                if active_publications:
+                    blockers.append("Имеется незавершённая GitHub-публикация")
+            except (OSError, ValueError, sqlite3.DatabaseError):
+                blockers.append("Не удалось проверить журнал публикаций")
+        return BulkCleanupPreview(
+            fingerprint=fingerprint,
+            workspace=self.workspace,
+            active_lessons_count=sum(deleted is None for _, _, deleted, _, _ in rows),
+            trashed_lessons_count=sum(deleted is not None for _, _, deleted, _, _ in rows),
+            lessons_bytes=self._safe_path_size(self.workspace / "lessons"),
+            trash_bytes=self._safe_path_size(self.workspace / "trash"),
+            temporary_bytes=sum(
+                self._safe_path_size(path) for path in self._temporary_candidates()
+            ),
+            backups_bytes=self._safe_path_size(self.workspace / "backups"),
+            blockers=sorted(set(blockers)),
+        )
+
+    def _validate_bulk_cleanup_paths(self, lesson_id: str) -> None:
+        """Fail closed for symlinks, junctions and other path redirections."""
+        _validate_lesson_id(lesson_id)
+        trash = self.repository.get_trash_entry(lesson_id)
+        if trash is not None and (
+            trash.original_relative_path != (Path("lessons") / lesson_id).as_posix()
+            or trash.trash_relative_path != (Path("trash") / "lessons" / lesson_id).as_posix()
+            or trash.staging_relative_path is not None
+        ):
+            raise ContentPathError("Каталог корзины не соответствует управляемому занятию")
+        candidates = (
+            self.workspace / "lessons",
+            self.workspace / "lessons" / lesson_id,
+            self.workspace / "trash",
+            self.workspace / "trash" / "lessons",
+            self.workspace / "trash" / "lessons" / lesson_id,
+            self.workspace / ".trash-purge",
+            self.workspace / ".import-staging",
+            self.workspace / "publication.sqlite3",
+        )
+        for path in candidates:
+            try:
+                path.relative_to(self.workspace)
+            except ValueError as exc:
+                raise ContentPathError("Путь очистки находится вне рабочего каталога") from exc
+            if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+                raise ContentPathError(f"Небезопасная ссылка в управляемом архиве: {path.name}")
+            if not path.resolve().is_relative_to(self.workspace):
+                raise ContentPathError("Путь очистки выходит за пределы рабочего каталога")
+        for target in (
+            self.workspace / "lessons" / lesson_id,
+            self.workspace / "trash" / "lessons" / lesson_id,
+        ):
+            if target.is_dir():
+                for child in target.rglob("*"):
+                    if child.is_symlink() or (hasattr(child, "is_junction") and child.is_junction()):
+                        raise ContentPathError(
+                            f"Каталог занятия содержит файловую ссылку: {lesson_id}"
+                        )
+
+    def _purge_lesson_with_owned_exclusive_lease(
+        self,
+        lease: ActivityLease,
+        lesson_id: str,
+        *,
+        active: bool,
+    ) -> TrashActionResult:
+        """Use the caller's exclusive lease without acquiring a nested lesson lease."""
+        if (
+            lease.info.owner_id != self.owner_id
+            or not lease.info.exclusive
+            or lease.origin_thread_id != get_ident()
+            or not lease.valid
+        ):
+            raise ContentBusyError("Эксклюзивная блокировка очистки утрачена")
+        if active:
+            self._delete_lesson(lesson_id, discard_waiting_transcription=True)
+        if not lease.valid:
+            raise ContentBusyError("Очистка остановлена после перемещения в корзину")
+        result, operation_id, staging = self.stage_lesson_purge(lesson_id)
+        if not lease.valid:
+            # Database has a recoverable cleanup_pending operation. Do not
+            # continue with more destructive writes under a lost lease.
+            raise ContentBusyError("Блокировка потеряна после staging; требуется восстановление")
+        self.finalize_staged_purge(operation_id, staging)
+        return result
+
+    def run_bulk_cleanup(
+        self,
+        expected_fingerprint: str,
+        *,
+        progress: Callable[[BulkCleanupProgress], None] | None = None,
+    ) -> BulkCleanupResult:
+        """Destructive all-lessons cleanup under one owned cross-process lease."""
+        if not expected_fingerprint:
+            raise ValueError("Необходим подтверждённый fingerprint архива")
+        run_id = uuid4().hex
+        result = BulkCleanupResult(run_id=run_id, state="blocked", total=0)
+        with self.activity("content-bulk-cleanup", exclusive=True, ttl=timedelta(minutes=5)) as lease:
+            preview = self.preview_bulk_cleanup()
+            if preview.blockers:
+                raise ContentBusyError("; ".join(preview.blockers))
+            rows, fingerprint = self._bulk_cleanup_snapshot()
+            if fingerprint != expected_fingerprint or preview.fingerprint != expected_fingerprint:
+                raise ContentConflictError("Архив изменился после подтверждения; обновите предпросмотр")
+            # Validate *all* targets before first destructive write, not halfway.
+            for lesson_id, _, _, _, _ in rows:
+                self._validate_bulk_cleanup_paths(lesson_id)
+            if not lease.valid:
+                raise ContentBusyError("Потеряна блокировка рабочего каталога")
+            result.total = len(rows)
+            result.free_before = self.storage_usage().free_bytes
+            for index, (lesson_id, _, deleted_at, _, _) in enumerate(rows, 1):
+                if not lease.valid:
+                    result.warnings.append("Блокировка потеряна; дальнейшее удаление остановлено")
+                    break
+                try:
+                    self._validate_bulk_cleanup_paths(lesson_id)
+                    purged = self._purge_lesson_with_owned_exclusive_lease(
+                        lease, lesson_id, active=deleted_at is None
+                    )
+                    result.purged += 1
+                    result.removed_bytes += purged.size_bytes
+                except (OSError, ValueError, RuntimeError, LookupError, sqlite3.DatabaseError) as exc:
+                    result.failures.append(BulkCleanupFailure(
+                        lesson_id=lesson_id,
+                        details=f"{type(exc).__name__}: {exc}",
+                    ))
+                if progress is not None:
+                    progress(BulkCleanupProgress(
+                        processed=index, total=len(rows),
+                        purged=result.purged, lesson_id=lesson_id,
+                    ))
+            remaining = self.repository.bulk_cleanup_snapshot_rows()
+            result.remaining_count = len(remaining)
+            if lease.valid and (self.workspace / "publication.sqlite3").exists():
+                try:
+                    journal = self.workspace / "publication.sqlite3"
+                    if (
+                        journal.is_symlink()
+                        or (hasattr(journal, "is_junction") and journal.is_junction())
+                        or not journal.resolve().is_relative_to(self.workspace)
+                    ):
+                        raise ContentPathError("Небезопасный путь журнала публикаций")
+                    PublicationOperationStore(journal).purge_terminal_orphans(
+                        {row[0] for row in remaining}
+                    )
+                except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+                    result.warnings.append(f"Журнал публикаций не очищен: {exc}")
+            if lease.valid:
+                try:
+                    cleanup = self.cleanup_temporary_files()
+                    result.removed_bytes += cleanup.released_bytes
+                    result.warnings.extend(cleanup.errors)
+                except (OSError, ValueError) as exc:
+                    result.warnings.append(f"Временные файлы: {exc}")
+            integrity_ok, message = self.repository.database_integrity_status()
+            if not integrity_ok:
+                result.warnings.append(f"Проверка SQLite: {message}")
+            result.free_after = self.storage_usage().free_bytes
+            result.state = (
+                "completed" if result.remaining_count == 0 and not result.failures
+                and not result.warnings and lease.valid else "partial"
+            )
+        return result
+
     def set_trash_retention_days(self, days: int) -> None:
         if not 0 <= days <= 3650:
             raise ValueError("Срок хранения корзины должен быть от 0 до 3650 дней")
@@ -1231,7 +1456,12 @@ class StudentContentService:
         with self.activity("content-delete", lesson_id=lesson_id):
             return self._delete_lesson(lesson_id)
 
-    def _delete_lesson(self, lesson_id: str) -> TrashActionResult:
+    def _delete_lesson(
+        self,
+        lesson_id: str,
+        *,
+        discard_waiting_transcription: bool = False,
+    ) -> TrashActionResult:
         _validate_lesson_id(lesson_id)
         source_relative = Path("lessons") / lesson_id
         trash_relative = Path("trash") / "lessons" / lesson_id
@@ -1251,7 +1481,11 @@ class StudentContentService:
             deleted_at=now,
             purge_after=now + timedelta(days=self.trash_retention_days),
         )
-        self.repository.begin_trash(entry, operation_id)
+        self.repository.begin_trash(
+            entry,
+            operation_id,
+            discard_waiting_transcription=discard_waiting_transcription,
+        )
         moved = False
         try:
             if source.exists():

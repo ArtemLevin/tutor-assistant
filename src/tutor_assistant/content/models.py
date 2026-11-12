@@ -253,6 +253,54 @@ class ContentIntegrityIssue(BaseModel):
     relative_path: str | None = None
 
 
+class BulkCleanupPreview(BaseModel):
+    fingerprint: str
+    workspace: Path
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    active_lessons_count: int = 0
+    trashed_lessons_count: int = 0
+    lessons_bytes: int = 0
+    trash_bytes: int = 0
+    temporary_bytes: int = 0
+    backups_bytes: int = 0
+    blockers: list[str] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def total_lessons_count(self) -> int:
+        return self.active_lessons_count + self.trashed_lessons_count
+
+    @computed_field
+    @property
+    def estimated_total_bytes(self) -> int:
+        return self.lessons_bytes + self.trash_bytes + self.temporary_bytes
+
+
+class BulkCleanupProgress(BaseModel):
+    processed: int
+    total: int
+    purged: int
+    lesson_id: str
+
+
+class BulkCleanupFailure(BaseModel):
+    lesson_id: str
+    details: str
+
+
+class BulkCleanupResult(BaseModel):
+    run_id: str
+    state: str
+    total: int
+    purged: int = 0
+    removed_bytes: int = 0
+    free_before: int = 0
+    free_after: int = 0
+    remaining_count: int = 0
+    failures: list[BulkCleanupFailure] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class StorageUsage(BaseModel):
     lessons_bytes: int = Field(default=0, ge=0)
     trash_bytes: int = Field(default=0, ge=0)

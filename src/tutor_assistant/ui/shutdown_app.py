@@ -76,6 +76,12 @@ class MainWindow(ConcurrentMainWindow):
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if getattr(self, "_cleanup_in_progress", False):
+            event.ignore()
+            QMessageBox.information(
+                self, "Очистка материалов", "Дождитесь завершения безопасной очистки."
+            )
+            return
         self.playback_controller.stop(clear_source=True)
         snapshot = self._shutdown_runtime_snapshot()
         decision = self.shutdown_coordinator.request_close(snapshot)

@@ -142,6 +142,9 @@ class TranscriptionQueueCoordinator:
             self._retry_state_writer(job.lesson)
         return self._queue.retry(job_id)
 
+    def discard_after_confirmed_cleanup(self, job_id: str) -> None:
+        self._queue.discard_after_confirmed_cleanup(job_id)
+
     def discard(self, job_id: str) -> None:
         self._queue.discard(job_id)
 

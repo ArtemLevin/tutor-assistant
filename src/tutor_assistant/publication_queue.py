@@ -327,5 +327,12 @@ class AutomaticPublicationQueue:
         self._persist(job)
         return job
 
+    def discard_after_confirmed_cleanup(self, job_id: str) -> None:
+        """Remove stale in-memory state; never touch a running Git operation."""
+        if self._active_id == job_id:
+            raise ValueError("Нельзя удалить выполняющуюся публикацию")
+        self._jobs.pop(job_id, None)
+        self._waiting = deque(item for item in self._waiting if item != job_id)
+
     def get(self, job_id: str) -> AutomaticPublicationJob | None:
         return self._jobs.get(job_id)

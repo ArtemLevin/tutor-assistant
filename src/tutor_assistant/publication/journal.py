@@ -69,6 +69,39 @@ class PublicationOperationStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    @staticmethod
+    def active_lesson_ids_readonly(path: Path) -> tuple[str, ...]:
+        """Read-only preflight: never create a journal merely to preview cleanup."""
+        if not path.exists():
+            return ()
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=10) as db:
+            rows = db.execute(
+                """
+                SELECT DISTINCT lesson_id FROM publication_operations
+                WHERE status IN ('prepared', 'pushing', 'remote_verified', 'indeterminate')
+                """
+            ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def purge_terminal_orphans(self, remaining_lesson_ids: set[str]) -> int:
+        """Prune only terminal entries for lessons no longer present in the archive."""
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, lesson_id FROM publication_operations
+                WHERE status IN ('completed', 'failed', 'conflict')
+                """
+            ).fetchall()
+            identifiers = [
+                (str(row["id"]),)
+                for row in rows
+                if str(row["lesson_id"]) not in remaining_lesson_ids
+            ]
+            if identifiers:
+                db.executemany("DELETE FROM publication_operations WHERE id=?", identifiers)
+        return len(identifiers)
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
         connection.row_factory = sqlite3.Row
