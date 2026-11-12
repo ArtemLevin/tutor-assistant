@@ -1401,11 +1401,17 @@ class StudentContentService:
             result.remaining_count = len(remaining)
             if lease.valid and (self.workspace / "publication.sqlite3").exists():
                 try:
-                    self._validate_bulk_cleanup_paths("_publication_journal_guard")
-                    PublicationOperationStore(
-                        self.workspace / "publication.sqlite3"
-                    ).purge_terminal_orphans({row[0] for row in remaining})
-                except (OSError, __import__("sqlite3").DatabaseError) as exc:
+                    journal = self.workspace / "publication.sqlite3"
+                    if (
+                        journal.is_symlink()
+                        or (hasattr(journal, "is_junction") and journal.is_junction())
+                        or not journal.resolve().is_relative_to(self.workspace)
+                    ):
+                        raise ContentPathError("Небезопасный путь журнала публикаций")
+                    PublicationOperationStore(journal).purge_terminal_orphans(
+                        {row[0] for row in remaining}
+                    )
+                except (OSError, ValueError, sqlite3.DatabaseError) as exc:
                     result.warnings.append(f"Журнал публикаций не очищен: {exc}")
             if lease.valid:
                 try:
