@@ -594,7 +594,12 @@ class StudentContentService:
 
         for root_name in (".import-staging", ".trash-purge"):
             root = self.workspace / root_name
-            if not root.is_dir():
+            if (
+                not root.is_dir()
+                or root.is_symlink()
+                or (hasattr(root, "is_junction") and root.is_junction())
+                or not root.resolve().is_relative_to(self.workspace)
+            ):
                 continue
             for child in root.iterdir():
                 relative = child.relative_to(self.workspace).as_posix()
@@ -607,7 +612,9 @@ class StudentContentService:
                     continue
 
         lessons = self.workspace / "lessons"
-        if lessons.is_dir():
+        if lessons.is_dir() and not lessons.is_symlink() and not (
+            hasattr(lessons, "is_junction") and lessons.is_junction()
+        ):
             for candidate in lessons.rglob("*"):
                 if not candidate.name.endswith((".tmp", ".part")):
                     continue
@@ -1258,12 +1265,19 @@ class StudentContentService:
             if item.activity != "content-bulk-cleanup":
                 blockers.append(f"Рабочий каталог занят: {item.activity}")
         journal_path = self.workspace / "publication.sqlite3"
-        try:
-            active_publications = PublicationOperationStore.active_lesson_ids_readonly(journal_path)
-            if active_publications:
-                blockers.append("Имеется незавершённая GitHub-публикация")
-        except (OSError, ValueError, sqlite3.DatabaseError):
-            blockers.append("Не удалось проверить журнал публикаций")
+        if (
+            journal_path.is_symlink()
+            or (hasattr(journal_path, "is_junction") and journal_path.is_junction())
+            or not journal_path.resolve().is_relative_to(self.workspace)
+        ):
+            blockers.append("Небезопасный путь журнала публикаций")
+        else:
+            try:
+                active_publications = PublicationOperationStore.active_lesson_ids_readonly(journal_path)
+                if active_publications:
+                    blockers.append("Имеется незавершённая GitHub-публикация")
+            except (OSError, ValueError, sqlite3.DatabaseError):
+                blockers.append("Не удалось проверить журнал публикаций")
         return BulkCleanupPreview(
             fingerprint=fingerprint,
             workspace=self.workspace,
@@ -1287,6 +1301,8 @@ class StudentContentService:
             self.workspace / "trash" / "lessons",
             self.workspace / "trash" / "lessons" / lesson_id,
             self.workspace / ".trash-purge",
+            self.workspace / ".import-staging",
+            self.workspace / "publication.sqlite3",
         )
         for path in candidates:
             try:
@@ -1385,6 +1401,7 @@ class StudentContentService:
             result.remaining_count = len(remaining)
             if lease.valid and (self.workspace / "publication.sqlite3").exists():
                 try:
+                    self._validate_bulk_cleanup_paths("_publication_journal_guard")
                     PublicationOperationStore(
                         self.workspace / "publication.sqlite3"
                     ).purge_terminal_orphans({row[0] for row in remaining})

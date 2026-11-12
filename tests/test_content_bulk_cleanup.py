@@ -85,6 +85,23 @@ def test_bulk_cleanup_detaches_crm_occurrences_and_preserves_financial_fields(tm
     assert tuple(row) == (None, "completed", 2500, 1)
 
 
+def test_symlinked_publication_journal_is_rejected(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    audio = stored(service, "test-journal-path")
+    external = PublicationOperationStore(tmp_path / "external-publication.sqlite3")
+    link = service.workspace / "publication.sqlite3"
+    try:
+        link.symlink_to(external.path)
+    except (OSError, NotImplementedError):
+        pytest.skip("OS does not allow creating symlinks")
+    preview = service.preview_bulk_cleanup()
+    assert any("журнала публикаций" in item for item in preview.blockers)
+    with pytest.raises(ContentBusyError):
+        service.run_bulk_cleanup(preview.fingerprint)
+    assert audio.is_file()
+    assert external.path.is_file()
+
+
 def test_recoverable_recording_chunks_block_cleanup(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
     audio = stored(service, "incomplete")
