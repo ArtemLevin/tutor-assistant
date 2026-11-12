@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 import logging
 import mimetypes
 import shutil
+import sqlite3
 from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar

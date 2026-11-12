@@ -101,6 +101,7 @@ from ..security.credentials import (
 )
 from ..transcript_editing import select_verified_text
 from .accessibility import sync_text_status
+from .content_bulk_cleanup import BulkCleanupDialog, BulkCleanupWorker
 from .crm import SchedulePage, StudentsPage
 from .latex_monitor_presentation import (
     LatexMonitorPresentation,
@@ -136,7 +137,6 @@ from .recording_presentation import (
     build_recording_tick_presentation,
     recording_panel_visual,
 )
-from .content_bulk_cleanup import BulkCleanupDialog, BulkCleanupWorker
 from .student_content import StudentContentPage
 from .theme import apply_theme, refresh_style, set_button_kind, set_status
 from .transcript_workspace import (

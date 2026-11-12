@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 
 from tutor_assistant.application.content_cleanup import BulkCleanupRuntime, cleanup_runtime_blockers
-from tutor_assistant.content import ContentBusyError, ContentConflictError, ContentPathError
-from tutor_assistant.content import StudentContentService
+from tutor_assistant.content import ContentBusyError, ContentConflictError, ContentPathError, StudentContentService
 from tutor_assistant.domain import JobStatus, Lesson, Student
 from tutor_assistant.publication.journal import PublicationOperationStore
 from tutor_assistant.publication_queue import AutomaticPublicationQueue
