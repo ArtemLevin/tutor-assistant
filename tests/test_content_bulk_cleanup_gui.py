@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from tutor_assistant.content import (  # noqa: E402
     BulkCleanupProgress,
     BulkCleanupResult,
 )
+from tutor_assistant.ui.app import MainWindow  # noqa: E402
 from tutor_assistant.ui.content_bulk_cleanup import BulkCleanupDialog  # noqa: E402
 
 
@@ -73,3 +75,14 @@ def test_cleanup_dialog_is_blocked_when_archive_is_busy(tmp_path: Path) -> None:
     assert "Идёт публикация" in dialog.state.text()
     dialog.close()
     application.processEvents()
+
+
+
+def test_cleanup_disables_direct_transcript_draft_writer(tmp_path: Path) -> None:
+    draft = tmp_path / "lessons" / "already-removed" / "transcript" / "transcript_draft.json"
+    state = SimpleNamespace(_cleanup_in_progress=True, _draft_path=lambda: draft)
+
+    MainWindow._save_transcript_draft(state)
+
+    assert not draft.exists()
+    assert not draft.parent.exists()

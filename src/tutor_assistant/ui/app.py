@@ -662,7 +662,12 @@ class MainWindow(QMainWindow):
                 or self.normalization_coordinator.active
             ),
             import_active=page.import_cancellation is not None,
-            editor_dirty=page._transcript_editing or page._draft_running,
+            editor_dirty=(
+                page._transcript_editing
+                or page._draft_running
+                or self._summary_dirty
+                or self.draft_timer.isActive()
+            ),
             background_active=(
                 any(worker.isRunning() for worker in self.workers)
                 or bool(background is not None and background.has_pending())
@@ -719,6 +724,7 @@ class MainWindow(QMainWindow):
         self.content_maintenance_timer.stop()
         self.backup_maintenance_timer.stop()
         self.publication_retry_timer.stop()
+        self.draft_timer.stop()
         self.playback_controller.stop(clear_source=True)
         buttons = [
             self.start_button,
@@ -2259,10 +2265,14 @@ class MainWindow(QMainWindow):
         return self.pipeline.lesson_dir(self.lesson) / "transcript" / "transcript_draft.json"
 
     def _schedule_draft_save(self) -> None:
+        if self._cleanup_in_progress:
+            return
         if not self._loading_segments and self.lesson:
             self.draft_timer.start()
 
     def _save_transcript_draft(self) -> None:
+        if self._cleanup_in_progress:
+            return
         path = self._draft_path()
         if not path:
             return
