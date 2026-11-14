@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -183,3 +184,29 @@ def test_bulk_cleanup_does_not_treat_orphan_editor_flag_as_active_work() -> None
     assert "Открыт редактор транскрипта с несохранёнными изменениями" in (
         MainWindow._bulk_cleanup_runtime_blockers(state)
     )
+
+
+
+def test_completed_cleanup_reports_ui_refresh_failure_without_stuck_dialog() -> None:
+    reported: list[BulkCleanupResult] = []
+    statuses: list[tuple[str, str]] = []
+    result = BulkCleanupResult(run_id="finished", state="completed", total=1, purged=1)
+    state = SimpleNamespace(
+        content_service=SimpleNamespace(
+            repository=SimpleNamespace(
+                bulk_cleanup_snapshot_rows=lambda: (_ for _ in ()).throw(
+                    sqlite3.OperationalError("database temporarily locked")
+                ),
+            )
+        ),
+        _cleanup_dialog=SimpleNamespace(show_result=reported.append),
+        _set_status=lambda message, tone: statuses.append((message, tone)),
+    )
+
+    MainWindow._bulk_cleanup_ready(state, result)
+
+    assert reported == [result]
+    assert result.state == "completed"
+    assert len(result.warnings) == 1
+    assert "OperationalError" in result.warnings[0]
+    assert statuses and statuses[0][1] == "warning"

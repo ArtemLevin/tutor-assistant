@@ -522,3 +522,49 @@ def test_purge_rejects_nested_link_in_managed_trash(tmp_path: Path) -> None:
     with pytest.raises(ContentPathError):
         service.permanently_delete_lesson("linked-purge")
     assert sentinel.read_text(encoding="utf-8") == "backup"
+
+
+
+def test_bulk_cleanup_fingerprint_tracks_old_import_staging_changes(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    staging = service.workspace / ".import-staging" / ("temp-" + "b" * 32)
+    staging.mkdir(parents=True)
+    payload = staging / "recording.part"
+    payload.write_bytes(b"original")
+    old = time.time() - 90000
+    os.utime(staging, (old, old))
+
+    preview = service.preview_bulk_cleanup()
+    assert preview.temporary_bytes == len(b"original")
+    payload.write_bytes(b"modified-after-preview")
+
+    with pytest.raises(ContentConflictError, match="Архив изменился"):
+        service.run_bulk_cleanup(preview.fingerprint)
+    assert payload.read_bytes() == b"modified-after-preview"
+
+
+def test_bulk_cleanup_preserves_temporary_file_changed_during_lesson_purge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "one-lesson")
+    staging = service.workspace / ".import-staging" / ("temp-" + "c" * 32)
+    staging.mkdir(parents=True)
+    payload = staging / "recording.part"
+    payload.write_bytes(b"original")
+    old = time.time() - 90000
+    os.utime(staging, (old, old))
+    preview = service.preview_bulk_cleanup()
+    original_finalize = service.finalize_staged_purge
+
+    def finalize_and_change(operation_id: str, path: Path) -> None:
+        original_finalize(operation_id, path)
+        payload.write_bytes(b"changed-during-cleanup")
+
+    monkeypatch.setattr(service, "finalize_staged_purge", finalize_and_change)
+    result = service.run_bulk_cleanup(preview.fingerprint)
+
+    assert result.state == "partial"
+    assert result.purged == 1
+    assert payload.read_bytes() == b"changed-during-cleanup"
+    assert result.warnings
