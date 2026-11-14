@@ -84,6 +84,20 @@ class PublicationOperationStore:
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
+    def purge_terminal_for_lessons(self, purged_lesson_ids: set[str]) -> int:
+        """Drop only terminal records for lessons confirmed purged in this run."""
+        if not purged_lesson_ids:
+            return 0
+        with self._connect() as db:
+            cursor = db.executemany(
+                """
+                DELETE FROM publication_operations
+                WHERE lesson_id=? AND status IN ('completed', 'failed', 'conflict')
+                """,
+                [(lesson_id,) for lesson_id in sorted(purged_lesson_ids)],
+            )
+            return cursor.rowcount
+
     def purge_terminal_orphans(self, remaining_lesson_ids: set[str]) -> int:
         """Prune only terminal entries for lessons no longer present in the archive."""
         with self._connect() as db:
