@@ -1,14 +1,14 @@
 # Tutor Assistant — Development Plan
 
-## Безопасность массовой очистки материалов — post-merge hardening
+## Безопасность массовой очистки материалов — реализация и проверки завершены
 
 - [x] PR #125: массовая очистка управляемого локального архива; CI 5/5 SUCCESS, merged.
 - [x] PR #126: исправлен устаревший UI-флаг транскрипта; CI 5/5 SUCCESS, merged.
-- [ ] PR #127 (P1, draft): единая проверка managed paths, безопасная корзина/recovery, консервативная временная очистка.
-- [ ] PR #128 (P2, draft, зависит от #127): fingerprint временных файлов и восстановление GUI после сбоя чтения SQLite.
-- [ ] PR #129 (P2/P3, draft, зависит от #128): scoped publication history cleanup, документация и финальный self-review.
-- **Статус:** изменения PR #127–#129 пока не объединены с main; для merge нужны все обязательные зелёные CI и review.
-- Scope: managed local lessons + trash; CRM, backups, external files, journal unrelated history и remote publications сохраняются.
+- [x] PR #127 (P1): единая проверка managed paths, безопасная корзина/recovery, консервативная временная очистка; CI 5/5 SUCCESS, merged.
+- [x] PR #128 (P2): fingerprint временных файлов и восстановление GUI после сбоя чтения SQLite; CI 5/5 SUCCESS, merged.
+- [x] PR #129 (P2/P3): точечная очистка publication history, документация и регрессионные проверки; CI 5/5 SUCCESS.
+- Scope: managed local lessons + trash; CRM, backups, external files, unrelated journal history и remote publications сохраняются.
+- Ограничение: защита от конкурентной подмены путей сторонним процессом вне workspace leases не гарантирует абсолютную стойкость к TOCTOU.
 
 
 **Актуальность:** 14 ноября 2026 года
