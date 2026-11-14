@@ -623,6 +623,7 @@ class StudentContentService:
         now: datetime | None = None,
         minimum_age: timedelta = timedelta(hours=24),
         candidates: list[Path] | None = None,
+        expected_signatures: dict[str, str] | None = None,
     ) -> TemporaryCleanupResult:
         result = TemporaryCleanupResult()
         for candidate in (
@@ -634,6 +635,15 @@ class StudentContentService:
                 if not self.path_policy.is_owned_import_staging(candidate):
                     raise ContentPathError("Не подтверждена принадлежность временного каталога")
                 self.path_policy.validate_tree(candidate)
+                if expected_signatures is not None:
+                    expected = expected_signatures.get(relative)
+                    if (
+                        expected is None
+                        or self._temporary_tree_fingerprint(candidate) != expected
+                    ):
+                        raise ContentConflictError(
+                            "Временный каталог изменился после подтверждения; удаление пропущено"
+                        )
                 size = self._safe_path_size(candidate)
                 # Never pass candidate.resolve() to rmtree: it would follow
                 # a junction to backups or another protected workspace root.
@@ -1229,16 +1239,44 @@ class StudentContentService:
             mode=IntegrityCheckMode.FULL,
         )
 
-    def _bulk_cleanup_snapshot(self) -> tuple[list[tuple[str, int, str | None, str, str]], str]:
+    def _temporary_tree_fingerprint(self, root: Path) -> str:
+        """Stable file identity snapshot; never follow directory links."""
+        self.path_policy.validate_tree(root)
+        records: list[tuple[str, int, int, int, int, int]] = []
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            self.path_policy.validate_path(current)
+            metadata = current.lstat()
+            records.append((
+                current.relative_to(self.workspace).as_posix(),
+                metadata.st_mode,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_dev,
+                metadata.st_ino,
+            ))
+            if current.is_dir():
+                pending.extend(current.iterdir())
+        return hashlib.sha256(repr(sorted(records)).encode("utf-8")).hexdigest()
+
+    def _bulk_cleanup_snapshot(
+        self,
+    ) -> tuple[list[tuple[str, int, str | None, str, str]], str, dict[str, str]]:
         rows = self.repository.bulk_cleanup_snapshot_rows()
-        # The snapshot tracks database ownership; external files are never sourced
-        # from serialized artifact paths.
-        digest = hashlib.sha256(repr(rows).encode("utf-8")).hexdigest()
-        return rows, digest
+        temporary = {
+            candidate.relative_to(self.workspace).as_posix():
+                self._temporary_tree_fingerprint(candidate)
+            for candidate in self._temporary_candidates()
+        }
+        fingerprint = hashlib.sha256(
+            repr(("bulk-cleanup-v2", rows, sorted(temporary.items()))).encode("utf-8")
+        ).hexdigest()
+        return rows, fingerprint, temporary
 
     def preview_bulk_cleanup(self) -> BulkCleanupPreview:
         """Preview the whole managed archive without modifying any content."""
-        rows, fingerprint = self._bulk_cleanup_snapshot()
+        rows, fingerprint, _temporary = self._bulk_cleanup_snapshot()
         blockers = self.repository.bulk_cleanup_blockers()
         if any(status in {"recording", "transcribing"} for _, _, _, status, _ in rows):
             blockers.append("Незавершённая запись или транскрибация занятия")
@@ -1346,7 +1384,7 @@ class StudentContentService:
             preview = self.preview_bulk_cleanup()
             if preview.blockers:
                 raise ContentBusyError("; ".join(preview.blockers))
-            rows, fingerprint = self._bulk_cleanup_snapshot()
+            rows, fingerprint, temporary_snapshot = self._bulk_cleanup_snapshot()
             if fingerprint != expected_fingerprint or preview.fingerprint != expected_fingerprint:
                 raise ContentConflictError("Архив изменился после подтверждения; обновите предпросмотр")
             # Validate *all* targets before first destructive write, not halfway.
@@ -1395,7 +1433,10 @@ class StudentContentService:
                     result.warnings.append(f"Журнал публикаций не очищен: {exc}")
             if lease.valid:
                 try:
-                    cleanup = self._cleanup_temporary_files_owned()
+                    cleanup = self._cleanup_temporary_files_owned(
+                        candidates=[self.workspace / name for name in temporary_snapshot],
+                        expected_signatures=temporary_snapshot,
+                    )
                     result.removed_bytes += cleanup.released_bytes
                     result.warnings.extend(cleanup.errors)
                 except (OSError, ValueError) as exc:

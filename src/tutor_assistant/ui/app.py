@@ -784,12 +784,15 @@ class MainWindow(QMainWindow):
             page.refresh_if_loaded()
             self._update_transcription_queue_ui()
             self._refresh_teacher_cockpit()
-        except (ValueError, RuntimeError) as exc:
-            result.warnings.append(f"Обновление интерфейса: {exc}")
-            result.state = "partial"
-        if self._cleanup_dialog is not None:
-            self._cleanup_dialog.show_result(result)
-        tone = "success" if result.state == "completed" else "warning"
+        except Exception as exc:
+            # A post-cleanup refresh failure must not leave the modal dialog in
+            # its non-closable running state or hide the true filesystem result.
+            logging.exception("Archive cleanup succeeded but UI refresh failed")
+            result.warnings.append(f"Не удалось обновить интерфейс: {type(exc).__name__}: {exc}")
+        finally:
+            if self._cleanup_dialog is not None:
+                self._cleanup_dialog.show_result(result)
+        tone = "success" if result.state == "completed" and not result.warnings else "warning"
         self._set_status(
             f"Очистка: {result.state} · удалено {result.purged}/{result.total}, "
             f"осталось {result.remaining_count}", tone,
