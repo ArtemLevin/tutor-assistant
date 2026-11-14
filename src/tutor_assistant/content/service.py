@@ -70,6 +70,7 @@ from .models import (
     TrashSummary,
     _validate_lesson_id,
 )
+from .paths import ContentPathError, ManagedPathPolicy
 from .repository import (
     ContentConflictError,
     ContentNotFoundError,
@@ -93,10 +94,6 @@ REPAIRABLE_CONTENT_ISSUES = {
     "missing_transcript",
     "transcript_changed",
 }
-
-
-class ContentPathError(ValueError):
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +130,7 @@ class StudentContentService:
     ) -> None:
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self.path_policy = ManagedPathPolicy(self.workspace)
         if not 0 <= trash_retention_days <= 3650:
             raise ValueError("Срок хранения корзины должен быть от 0 до 3650 дней")
         self.trash_retention_days = trash_retention_days
@@ -588,42 +586,27 @@ class StudentContentService:
         now: datetime | None = None,
         minimum_age: timedelta = timedelta(hours=24),
     ) -> list[Path]:
+        """Only import staging with a generated ownership name is eligible."""
         threshold = (now or datetime.now(UTC)).timestamp() - minimum_age.total_seconds()
-        protected = self.repository.protected_temporary_paths()
+        root = self.workspace / ".import-staging"
+        try:
+            self.path_policy.validate_path(root)
+        except ContentPathError:
+            return []
+        if not root.is_dir():
+            return []
         candidates: list[Path] = []
-
-        for root_name in (".import-staging", ".trash-purge"):
-            root = self.workspace / root_name
-            if (
-                not root.is_dir()
-                or root.is_symlink()
-                or (hasattr(root, "is_junction") and root.is_junction())
-                or not root.resolve().is_relative_to(self.workspace)
-            ):
+        for child in root.iterdir():
+            if not self.path_policy.is_owned_import_staging(child):
                 continue
-            for child in root.iterdir():
-                relative = child.relative_to(self.workspace).as_posix()
-                if relative in protected:
-                    continue
-                try:
-                    if child.lstat().st_mtime <= threshold:
-                        candidates.append(child)
-                except OSError:
-                    continue
-
-        lessons = self.workspace / "lessons"
-        if lessons.is_dir() and not lessons.is_symlink() and not (
-            hasattr(lessons, "is_junction") and lessons.is_junction()
-        ):
-            for candidate in lessons.rglob("*"):
-                if not candidate.name.endswith((".tmp", ".part")):
-                    continue
-                try:
-                    if candidate.lstat().st_mtime <= threshold:
-                        candidates.append(candidate)
-                except OSError:
-                    continue
-        return sorted(set(candidates), key=lambda path: path.as_posix().casefold())
+            try:
+                if child.lstat().st_mtime <= threshold:
+                    candidates.append(child)
+            except OSError:
+                continue
+        # Unknown files under lessons/ and orphan .trash-purge entries are not
+        # provably disposable. Recovery owns the latter.
+        return sorted(candidates, key=lambda path: path.as_posix().casefold())
 
     def cleanup_temporary_files(
         self,
@@ -631,32 +614,35 @@ class StudentContentService:
         now: datetime | None = None,
         minimum_age: timedelta = timedelta(hours=24),
     ) -> TemporaryCleanupResult:
+        with self.activity("content-temporary-cleanup", exclusive=True):
+            return self._cleanup_temporary_files_owned(now=now, minimum_age=minimum_age)
+
+    def _cleanup_temporary_files_owned(
+        self,
+        *,
+        now: datetime | None = None,
+        minimum_age: timedelta = timedelta(hours=24),
+        candidates: list[Path] | None = None,
+    ) -> TemporaryCleanupResult:
         result = TemporaryCleanupResult()
-        for candidate in self._temporary_candidates(now=now, minimum_age=minimum_age):
-            relative = candidate.relative_to(self.workspace).as_posix()
-            size = self._safe_path_size(candidate)
+        for candidate in (
+            candidates if candidates is not None
+            else self._temporary_candidates(now=now, minimum_age=minimum_age)
+        ):
             try:
-                # A source-level .tmp candidate may be nested below a Windows junction
-                # or linked directory that points outside the managed workspace.
-                if not candidate.parent.resolve().is_relative_to(self.workspace):
-                    raise ContentPathError("Временный файл находится вне рабочего каталога")
-                if candidate.is_symlink():
-                    candidate.unlink()
-                elif candidate.is_file():
-                    if not candidate.resolve().is_relative_to(self.workspace):
-                        raise ContentPathError("Временный файл находится вне рабочего каталога")
-                    candidate.unlink()
-                elif candidate.is_dir():
-                    resolved = candidate.resolve()
-                    resolved.relative_to(self.workspace)
-                    shutil.rmtree(resolved)
-                else:
-                    continue
+                relative = candidate.relative_to(self.workspace).as_posix()
+                if not self.path_policy.is_owned_import_staging(candidate):
+                    raise ContentPathError("Не подтверждена принадлежность временного каталога")
+                self.path_policy.validate_tree(candidate)
+                size = self._safe_path_size(candidate)
+                # Never pass candidate.resolve() to rmtree: it would follow
+                # a junction to backups or another protected workspace root.
+                shutil.rmtree(candidate)
                 result.removed_paths.append(relative)
                 result.released_bytes += size
                 self._remove_empty_directory(candidate.parent)
             except (OSError, ValueError) as exc:
-                result.errors.append(f"{relative}: {exc}")
+                result.errors.append(f"{candidate}: {exc}")
         return result
 
     def inspect_content_integrity(
@@ -1301,44 +1287,22 @@ class StudentContentService:
         )
 
     def _validate_bulk_cleanup_paths(self, lesson_id: str) -> None:
-        """Fail closed for symlinks, junctions and other path redirections."""
+        """Use the same policy as ordinary deletion and crash recovery."""
         _validate_lesson_id(lesson_id)
-        trash = self.repository.get_trash_entry(lesson_id)
-        if trash is not None and (
-            trash.original_relative_path != (Path("lessons") / lesson_id).as_posix()
-            or trash.trash_relative_path != (Path("trash") / "lessons" / lesson_id).as_posix()
-            or trash.staging_relative_path is not None
-        ):
-            raise ContentPathError("Каталог корзины не соответствует управляемому занятию")
-        candidates = (
+        entry = self.repository.get_trash_entry(lesson_id)
+        if entry is not None:
+            self.path_policy.validate_trash_entry(entry)
+        for path in (
             self.workspace / "lessons",
-            self.workspace / "lessons" / lesson_id,
             self.workspace / "trash",
             self.workspace / "trash" / "lessons",
-            self.workspace / "trash" / "lessons" / lesson_id,
             self.workspace / ".trash-purge",
             self.workspace / ".import-staging",
             self.workspace / "publication.sqlite3",
-        )
-        for path in candidates:
-            try:
-                path.relative_to(self.workspace)
-            except ValueError as exc:
-                raise ContentPathError("Путь очистки находится вне рабочего каталога") from exc
-            if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
-                raise ContentPathError(f"Небезопасная ссылка в управляемом архиве: {path.name}")
-            if not path.resolve().is_relative_to(self.workspace):
-                raise ContentPathError("Путь очистки выходит за пределы рабочего каталога")
-        for target in (
-            self.workspace / "lessons" / lesson_id,
-            self.workspace / "trash" / "lessons" / lesson_id,
         ):
-            if target.is_dir():
-                for child in target.rglob("*"):
-                    if child.is_symlink() or (hasattr(child, "is_junction") and child.is_junction()):
-                        raise ContentPathError(
-                            f"Каталог занятия содержит файловую ссылку: {lesson_id}"
-                        )
+            self.path_policy.validate_path(path)
+        for target in (self.path_policy.lesson(lesson_id), self.path_policy.trash(lesson_id)):
+            self.path_policy.validate_tree(target)
 
     def _purge_lesson_with_owned_exclusive_lease(
         self,
@@ -1431,7 +1395,7 @@ class StudentContentService:
                     result.warnings.append(f"Журнал публикаций не очищен: {exc}")
             if lease.valid:
                 try:
-                    cleanup = self.cleanup_temporary_files()
+                    cleanup = self._cleanup_temporary_files_owned()
                     result.removed_bytes += cleanup.released_bytes
                     result.warnings.extend(cleanup.errors)
                 except (OSError, ValueError) as exc:
@@ -1467,6 +1431,8 @@ class StudentContentService:
         trash_relative = Path("trash") / "lessons" / lesson_id
         source = self.workspace / source_relative
         destination = self.workspace / trash_relative
+        self.path_policy.validate_tree(source)
+        self.path_policy.validate_path(destination)
         if destination.exists():
             raise ContentConflictError(f"Каталог уже существует в корзине: {lesson_id}")
         size_bytes = self._directory_size(source)
@@ -1514,8 +1480,10 @@ class StudentContentService:
         existing = self.repository.get_trash_entry(lesson_id)
         if existing is None:
             raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+        self.path_policy.validate_trash_entry(existing)
         source = self.workspace / existing.trash_relative_path
         destination = self.workspace / existing.original_relative_path
+        self.path_policy.validate_path(destination)
         if destination.exists():
             raise ContentConflictError(f"Каталог занятия уже существует: {lesson_id}")
         entry = self.repository.begin_restore(lesson_id, operation_id, now)
@@ -1552,8 +1520,10 @@ class StudentContentService:
         existing = self.repository.get_trash_entry(lesson_id)
         if existing is None:
             raise ContentNotFoundError(f"Занятие не найдено в корзине: {lesson_id}")
+        self.path_policy.validate_trash_entry(existing)
         source = self.workspace / existing.trash_relative_path
-        staging = self.workspace / staging_relative
+        staging = self.path_policy.staging(operation_id)
+        self.path_policy.validate_path(staging)
         if staging.exists():
             raise ContentConflictError(f"Временный каталог очистки уже существует: {operation_id}")
         entry = self.repository.begin_purge(
@@ -1584,6 +1554,9 @@ class StudentContentService:
         )
 
     def finalize_staged_purge(self, operation_id: str, staging: Path) -> None:
+        if staging != self.path_policy.staging(operation_id):
+            raise ContentPathError("Некорректный путь завершения очистки")
+        self.path_policy.validate_tree(staging)
         if staging.exists():
             shutil.rmtree(staging)
         self._remove_empty_directory(staging.parent)
@@ -1623,11 +1596,12 @@ class StudentContentService:
             elif entry.state == TrashState.PURGING:
                 self._recover_purge(entry)
         for operation in self.repository.list_cleanup_operations():
-            if operation.destination_relative_path:
-                staging = self.workspace / operation.destination_relative_path
-                if staging.exists():
-                    shutil.rmtree(staging)
-                self._remove_empty_directory(staging.parent)
+            self.path_policy.validate_operation(operation)
+            staging = self.path_policy.staging(operation.id)
+            self.path_policy.validate_tree(staging)
+            if staging.exists():
+                shutil.rmtree(staging)
+            self._remove_empty_directory(staging.parent)
             self.repository.complete_cleanup(operation.id)
 
     @staticmethod
@@ -1639,6 +1613,8 @@ class StudentContentService:
 
     def _recover_move_to_trash(self, entry: TrashEntry) -> None:
         operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.DELETE)
+        self.path_policy.validate_trash_entry(entry)
+        self.path_policy.validate_operation(operation)
         source = self.workspace / entry.original_relative_path
         destination = self.workspace / entry.trash_relative_path
         if source.exists() and destination.exists():
@@ -1650,6 +1626,8 @@ class StudentContentService:
 
     def _recover_restore(self, entry: TrashEntry) -> None:
         operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.RESTORE)
+        self.path_policy.validate_trash_entry(entry)
+        self.path_policy.validate_operation(operation)
         source = self.workspace / entry.trash_relative_path
         destination = self.workspace / entry.original_relative_path
         if source.exists() and destination.exists():
@@ -1661,16 +1639,19 @@ class StudentContentService:
 
     def _recover_purge(self, entry: TrashEntry) -> None:
         operation = self.repository.pending_operation(entry.lesson_id, ContentOperationKind.PURGE)
+        self.path_policy.validate_trash_entry(entry, operation_id=operation.id)
+        self.path_policy.validate_operation(operation)
         source = self.workspace / entry.trash_relative_path
         if not entry.staging_relative_path:
             raise ContentConflictError(f"Не указан staging операции очистки: {entry.lesson_id}")
-        staging = self.workspace / entry.staging_relative_path
+        staging = self.path_policy.staging(operation.id)
         if source.exists() and staging.exists():
             raise ContentConflictError(f"Найдены оба каталога очистки: {entry.lesson_id}")
         if source.exists():
             staging.parent.mkdir(parents=True, exist_ok=True)
             source.replace(staging)
         self.repository.complete_purge_database(entry.lesson_id, operation.id)
+        self.path_policy.validate_tree(staging)
         if staging.exists():
             shutil.rmtree(staging)
         self._remove_empty_directory(staging.parent)
@@ -1729,6 +1710,8 @@ class StudentContentService:
 
         final_directory = self.workspace / "lessons" / lesson_id
         staging_root = self.workspace / ".import-staging"
+        self.path_policy.validate_path(staging_root)
+        self.path_policy.validate_path(final_directory)
         staging_directory = staging_root / f"{lesson_id}-{uuid4().hex}"
         moved_to_final = False
         audio_sha256: str | None = None

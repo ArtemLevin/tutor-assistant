@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import subprocess
 import time
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -44,10 +45,12 @@ def stored(service: StudentContentService, identifier: str) -> Path:
 
 def test_cleanup_allows_a_temporary_only_workspace(tmp_path: Path) -> None:
     service = StudentContentService(tmp_path / "data")
-    stale = service.workspace / ".import-staging" / "stale.part"
+    staging = service.workspace / ".import-staging" / ("test-" + "a" * 32)
+    stale = staging / "stale.part"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_bytes(b"old-temporary-data")
     os.utime(stale, (time.time() - 90000, time.time() - 90000))
+    os.utime(staging, (time.time() - 90000, time.time() - 90000))
 
     preview = service.preview_bulk_cleanup()
     assert preview.total_lessons_count == 0
@@ -396,3 +399,126 @@ def test_runtime_policy_and_in_memory_queue_cleanup() -> None:
     transcriptions.enqueue(item, Path("audio.wav"))
     transcriptions.discard_after_confirmed_cleanup(item.lesson_id)
     assert transcriptions.jobs == ()
+
+
+def test_individual_purge_rejects_corrupted_trash_path_and_preserves_backup(
+    tmp_path: Path,
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "corrupt-purge")
+    service.delete_lesson("corrupt-purge")
+    protected = service.workspace / "backups" / "preserve.txt"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("backup", encoding="utf-8")
+    with service.repository.connect() as db:
+        db.execute(
+            "UPDATE content_trash SET trash_relative_path='backups' WHERE lesson_id=?",
+            ("corrupt-purge",),
+        )
+
+    with pytest.raises(ContentPathError):
+        service.permanently_delete_lesson("corrupt-purge")
+
+    assert protected.read_text(encoding="utf-8") == "backup"
+    assert service.repository.get_lesson("corrupt-purge", include_deleted=True) is not None
+
+
+def test_recovery_rejects_corrupted_cleanup_pending_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "data"
+    service = StudentContentService(workspace)
+    stored(service, "corrupt-recovery")
+    service.delete_lesson("corrupt-recovery")
+    operation_id = "crashed-recovery"
+    staging_relative = f".trash-purge/{operation_id}"
+    entry = service.repository.begin_purge(
+        "corrupt-recovery", operation_id, staging_relative, datetime.now(UTC)
+    )
+    staging = workspace / staging_relative
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    (workspace / entry.trash_relative_path).replace(staging)
+    service.repository.complete_purge_database("corrupt-recovery", operation_id)
+
+    protected = workspace / "backups" / "preserve.txt"
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text("backup", encoding="utf-8")
+    with service.repository.connect() as db:
+        db.execute(
+            "UPDATE content_operations SET destination_relative_path='backups' WHERE id=?",
+            (operation_id,),
+        )
+
+    with pytest.raises(ContentPathError):
+        StudentContentService(workspace)
+
+    assert protected.read_text(encoding="utf-8") == "backup"
+    assert staging.is_dir()
+
+
+def test_import_staging_reparse_to_backups_cannot_be_deleted(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    protected = service.workspace / "backups"
+    protected.mkdir(parents=True, exist_ok=True)
+    sentinel = protected / "preserve.txt"
+    sentinel.write_text("backup", encoding="utf-8")
+    staging_root = service.workspace / ".import-staging"
+    staging_root.mkdir()
+    linked = staging_root / ("stale-" + "a" * 32)
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linked), str(protected)],
+            capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+        assert linked.is_junction()
+    else:
+        linked.symlink_to(protected, target_is_directory=True)
+
+    cleaned = service.cleanup_temporary_files(minimum_age=timedelta(seconds=0))
+
+    assert not cleaned.removed_paths
+    assert cleaned.errors
+    assert sentinel.read_text(encoding="utf-8") == "backup"
+
+
+def test_unknown_old_partial_files_are_never_selected(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    unrelated = service.workspace / "lessons" / "unknown" / "private.part"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_bytes(b"preserve")
+    legacy = service.workspace / ".import-staging" / "unidentified"
+    legacy.mkdir(parents=True)
+    (legacy / "unknown.part").write_bytes(b"preserve")
+    old = time.time() - 90000
+    os.utime(unrelated, (old, old))
+    os.utime(legacy, (old, old))
+
+    assert service._temporary_candidates() == []
+    cleaned = service.cleanup_temporary_files()
+    assert cleaned.removed_paths == []
+    assert unrelated.read_bytes() == b"preserve"
+    assert (legacy / "unknown.part").read_bytes() == b"preserve"
+
+
+def test_purge_rejects_nested_link_in_managed_trash(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "linked-purge")
+    service.delete_lesson("linked-purge")
+    protected = service.workspace / "backups"
+    protected.mkdir(parents=True, exist_ok=True)
+    sentinel = protected / "preserve.txt"
+    sentinel.write_text("backup", encoding="utf-8")
+    linked = service.workspace / "trash" / "lessons" / "linked-purge" / "linked"
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(linked), str(protected)],
+            capture_output=True, text=True, check=False
+        )
+        assert result.returncode == 0, result.stderr
+    else:
+        linked.symlink_to(protected, target_is_directory=True)
+
+    with pytest.raises(ContentPathError):
+        service.permanently_delete_lesson("linked-purge")
+    assert sentinel.read_text(encoding="utf-8") == "backup"

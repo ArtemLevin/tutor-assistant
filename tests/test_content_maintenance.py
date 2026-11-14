@@ -88,7 +88,7 @@ def test_maintenance_purges_expired_trash_and_old_temporary_files(tmp_path: Path
     service = StudentContentService(workspace, trash_retention_days=0)
     lesson = service.create_lesson(make_lesson("expired-trash"))
     service.delete_lesson(lesson.lesson_id)
-    temporary = workspace / ".import-staging" / "expired"
+    temporary = workspace / ".import-staging" / ("expired-" + "a" * 32)
     temporary.mkdir(parents=True)
     (temporary / "payload.part").write_bytes(b"temporary")
     old = (datetime.now(UTC) - timedelta(hours=3)).timestamp()
@@ -102,7 +102,7 @@ def test_maintenance_purges_expired_trash_and_old_temporary_files(tmp_path: Path
 
     assert result.errors == []
     assert result.purged_lessons == [lesson.lesson_id]
-    assert result.temporary_cleanup.removed_paths == [".import-staging/expired"]
+    assert result.temporary_cleanup.removed_paths == [".import-staging/expired-" + "a" * 32]
     assert service.repository.get_lesson(lesson.lesson_id, include_deleted=True) is None
     assert not (workspace / "trash" / "lessons" / lesson.lesson_id).exists()
     assert not temporary.exists()
@@ -154,7 +154,7 @@ def test_purge_failure_does_not_block_other_purges_or_temp_cleanup(
     healthy = service.create_lesson(make_lesson("healthy-purge"))
     service.delete_lesson(failed.lesson_id)
     service.delete_lesson(healthy.lesson_id)
-    temporary = workspace / ".import-staging" / "cleanup-after-failure"
+    temporary = workspace / ".import-staging" / ("cleanup-after-failure-" + "b" * 32)
     temporary.mkdir(parents=True)
     old = (datetime.now(UTC) - timedelta(days=2)).timestamp()
     os.utime(temporary, (old, old))
