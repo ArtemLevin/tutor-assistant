@@ -94,10 +94,10 @@ def test_integrity_report_finds_changed_files_orphans_and_search_drift(tmp_path:
         assert repaired.fts_documents == repaired.indexed_lessons
 
 
-def test_cleanup_removes_only_old_known_temporary_artifacts(tmp_path: Path) -> None:
+def test_cleanup_removes_owned_import_staging_but_preserves_unknown_part_files(tmp_path: Path) -> None:
     workspace = tmp_path / "data"
     service = StudentContentService(workspace)
-    old_import = workspace / ".import-staging" / "abandoned"
+    old_import = workspace / ".import-staging" / ("abandoned-" + "a" * 32)
     old_import.mkdir(parents=True)
     (old_import / "audio.part").write_bytes(b"stale")
     old_tmp = workspace / "lessons" / "lesson" / "lesson.json.tmp"
@@ -115,14 +115,13 @@ def test_cleanup_removes_only_old_known_temporary_artifacts(tmp_path: Path) -> N
     result = service.cleanup_temporary_files()
 
     assert set(before.temporary_paths) == {
-        ".import-staging/abandoned",
-        "lessons/lesson/lesson.json.tmp",
+        ".import-staging/abandoned-" + "a" * 32,
     }
     assert set(result.removed_paths) == set(before.temporary_paths)
     assert result.released_bytes > 0
     assert result.errors == []
     assert not old_import.exists()
-    assert not old_tmp.exists()
+    assert old_tmp.exists()
     assert fresh_part.exists()
     assert unrelated.exists()
 
