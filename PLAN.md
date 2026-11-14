@@ -1,14 +1,17 @@
 # Tutor Assistant — Development Plan
 
-## В работе — безопасная глобальная очистка материалов (PR #125)
+## Безопасность массовой очистки материалов — post-merge hardening
 
-- [x] Preview и typed DTO; SQLite CRM detach, отдельный publication journal, guarded purge.
-- [x] PySide6 команда и worker; runtime/shutdown safety gate; регрессионные тесты добавлены.
-- [ ] Windows CI и self-review должны быть зелёными перед включением в релиз.
-- Scope: управляемые local lessons + trash, но не CRM, backups, external files, remote publications.
+- [x] PR #125: массовая очистка управляемого локального архива; CI 5/5 SUCCESS, merged.
+- [x] PR #126: исправлен устаревший UI-флаг транскрипта; CI 5/5 SUCCESS, merged.
+- [ ] PR #127 (P1, draft): единая проверка managed paths, безопасная корзина/recovery, консервативная временная очистка.
+- [ ] PR #128 (P2, draft, зависит от #127): fingerprint временных файлов и восстановление GUI после сбоя чтения SQLite.
+- [ ] PR #129 (P2/P3, draft, зависит от #128): scoped publication history cleanup, документация и финальный self-review.
+- **Статус:** изменения PR #127–#129 пока не объединены с main; для merge нужны все обязательные зелёные CI и review.
+- Scope: managed local lessons + trash; CRM, backups, external files, journal unrelated history и remote publications сохраняются.
 
 
-**Актуальность:** 5 октября 2026 года
+**Актуальность:** 14 ноября 2026 года
 **Текущая версия:** `1.0.0rc1`
 **Основная ветка:** `main`  
 **Production entrypoint:** `tutor-assistant-gui -> tutor_assistant.ui.recording_recovery_app:main`

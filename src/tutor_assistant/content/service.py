@@ -1393,6 +1393,7 @@ class StudentContentService:
             if not lease.valid:
                 raise ContentBusyError("Потеряна блокировка рабочего каталога")
             result.total = len(rows)
+            purged_lesson_ids: set[str] = set()
             result.free_before = self.storage_usage().free_bytes
             for index, (lesson_id, _, deleted_at, _, _) in enumerate(rows, 1):
                 if not lease.valid:
@@ -1404,6 +1405,7 @@ class StudentContentService:
                         lease, lesson_id, active=deleted_at is None
                     )
                     result.purged += 1
+                    purged_lesson_ids.add(lesson_id)
                     result.removed_bytes += purged.size_bytes
                 except (OSError, ValueError, RuntimeError, LookupError, sqlite3.DatabaseError) as exc:
                     result.failures.append(BulkCleanupFailure(
@@ -1417,7 +1419,7 @@ class StudentContentService:
                     ))
             remaining = self.repository.bulk_cleanup_snapshot_rows()
             result.remaining_count = len(remaining)
-            if lease.valid and (self.workspace / "publication.sqlite3").exists():
+            if lease.valid and purged_lesson_ids and (self.workspace / "publication.sqlite3").exists():
                 try:
                     journal = self.workspace / "publication.sqlite3"
                     if (
@@ -1426,8 +1428,8 @@ class StudentContentService:
                         or not journal.resolve().is_relative_to(self.workspace)
                     ):
                         raise ContentPathError("Небезопасный путь журнала публикаций")
-                    PublicationOperationStore(journal).purge_terminal_orphans(
-                        {row[0] for row in remaining}
+                    PublicationOperationStore(journal).purge_terminal_for_lessons(
+                        purged_lesson_ids
                     )
                 except (OSError, ValueError, sqlite3.DatabaseError) as exc:
                     result.warnings.append(f"Журнал публикаций не очищен: {exc}")

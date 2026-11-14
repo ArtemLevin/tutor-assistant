@@ -568,3 +568,50 @@ def test_bulk_cleanup_preserves_temporary_file_changed_during_lesson_purge(
     assert result.purged == 1
     assert payload.read_bytes() == b"changed-during-cleanup"
     assert result.warnings
+
+
+
+def test_cleanup_prunes_only_journal_history_of_confirmed_purges(tmp_path: Path) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "selected-for-purge")
+    journal = PublicationOperationStore(service.workspace / "publication.sqlite3")
+    current = _journal(journal, "selected-for-purge")
+    unrelated = _journal(journal, "old-orphan")
+    journal.mark_failed(current, error_code="test", details="synthetic")
+    journal.mark_failed(unrelated, error_code="test", details="synthetic")
+
+    result = service.run_bulk_cleanup(service.preview_bulk_cleanup().fingerprint)
+
+    assert result.state == "completed"
+    assert result.purged == 1
+    with pytest.raises(LookupError, match="Publication operation not found"):
+        journal.get(current)
+    assert journal.get(unrelated) is not None
+
+
+def test_partial_cleanup_keeps_terminal_history_of_failed_lesson(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = StudentContentService(tmp_path / "data")
+    stored(service, "failed-lesson")
+    stored(service, "success-lesson")
+    journal = PublicationOperationStore(service.workspace / "publication.sqlite3")
+    failed = _journal(journal, "failed-lesson")
+    success = _journal(journal, "success-lesson")
+    journal.mark_failed(failed, error_code="test", details="synthetic")
+    journal.mark_failed(success, error_code="test", details="synthetic")
+    original = service.stage_lesson_purge
+
+    def reject_failed(lesson_id: str):
+        if lesson_id == "failed-lesson":
+            raise PermissionError("simulated file lock")
+        return original(lesson_id)
+
+    monkeypatch.setattr(service, "stage_lesson_purge", reject_failed)
+    result = service.run_bulk_cleanup(service.preview_bulk_cleanup().fingerprint)
+
+    assert result.state == "partial"
+    assert result.purged == 1
+    assert journal.get(failed) is not None
+    with pytest.raises(LookupError, match="Publication operation not found"):
+        journal.get(success)
