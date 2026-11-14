@@ -1710,6 +1710,8 @@ class StudentContentService:
 
         final_directory = self.workspace / "lessons" / lesson_id
         staging_root = self.workspace / ".import-staging"
+        self.path_policy.validate_path(staging_root)
+        self.path_policy.validate_path(final_directory)
         staging_directory = staging_root / f"{lesson_id}-{uuid4().hex}"
         moved_to_final = False
         audio_sha256: str | None = None
