@@ -49,21 +49,23 @@ def _store(tmp_path) -> CrmStore:
     return store
 
 
-def test_schedule_workday_includes_nine_to_ten_slot(
+def test_schedule_workday_includes_nine_to_twenty_one_slot(
     tmp_path,
     application: QApplication,
 ) -> None:
     store = _store(tmp_path)
     page = schedule_ui.SchedulePageStable(store)
 
-    assert page.grid.rowCount() == 12
+    assert page.grid.rowCount() == 13
     assert page.grid.verticalHeaderItem(0).text() == "09:00"
     assert page.grid.verticalHeaderItem(11).text() == "20:00"
+    assert page.grid.verticalHeaderItem(12).text() == "21:00"
     assert page._time_for_row(0) == (9, 0)
+    assert page._time_for_row(12) == (21, 0)
 
     dialog = schedule_ui.ScheduleDialogStable(store, date(2026, 8, 3), 9, 0)
     assert dialog.start_time.minimumTime() == QTime(9, 0)
-    assert dialog.start_time.maximumTime() == QTime(20, 0)
+    assert dialog.start_time.maximumTime() == QTime(21, 0)
     dialog.close()
     page.close()
 

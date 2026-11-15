@@ -39,8 +39,8 @@ def test_new_lesson_must_end_inside_visible_workday(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path)
-    dialog = ScheduleDialogStable(store, date(2026, 8, 3), 20, 0)
-    dialog.start_time.setTime(QTime(20, 0))
+    dialog = ScheduleDialogStable(store, date(2026, 8, 3), 21, 0)
+    dialog.start_time.setTime(QTime(21, 0))
     dialog.duration.setCurrentIndex(dialog.duration.findData(120))
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -52,7 +52,7 @@ def test_new_lesson_must_end_inside_visible_workday(
     dialog._finish("save")
 
     assert dialog.result() != QDialog.Accepted
-    assert warnings and "не позже 21:00" in warnings[-1]
+    assert warnings and "не позже 22:00" in warnings[-1]
     dialog.close()
 
 
@@ -61,14 +61,57 @@ def test_last_hour_accepts_one_hour_lesson(
     application: QApplication,
 ) -> None:
     store = _store(tmp_path)
-    dialog = ScheduleDialogStable(store, date(2026, 8, 3), 20, 0)
-    dialog.start_time.setTime(QTime(20, 0))
+    dialog = ScheduleDialogStable(store, date(2026, 8, 3), 21, 0)
+    dialog.start_time.setTime(QTime(21, 0))
     dialog.duration.setCurrentIndex(dialog.duration.findData(60))
 
     dialog._finish("save")
 
     assert dialog.result() == QDialog.Accepted
     dialog.close()
+
+
+def test_two_hour_lesson_can_end_at_22(
+    tmp_path,
+    application: QApplication,
+) -> None:
+    store = _store(tmp_path)
+    dialog = ScheduleDialogStable(store, date(2026, 8, 3), 20, 0)
+    dialog.start_time.setTime(QTime(20, 0))
+    dialog.duration.setCurrentIndex(dialog.duration.findData(120))
+
+    dialog._finish("save")
+
+    assert dialog.result() == QDialog.Accepted
+    dialog.close()
+
+
+def test_nine_pm_lesson_is_visible_in_last_grid_row(
+    tmp_path,
+    application: QApplication,
+) -> None:
+    store = _store(tmp_path)
+    store.save_one_off(
+        ScheduledLesson(
+            student_id="student",
+            student_name="Ученик",
+            starts_at=datetime(2026, 8, 5, 21, 0),
+            duration_minutes=60,
+            subject="mathematics",
+        )
+    )
+    page = SchedulePageStable(store)
+    page.week_start = date(2026, 8, 3)
+    page.refresh()
+
+    row = page._row_for_time(21, 0)
+    column = 2  # Wednesday
+    assert row == page.grid.rowCount() - 1
+    assert page.grid.verticalHeaderItem(row).text() == "21:00"
+    assert page.grid.item(row, column) is not None
+    assert (row, column) in page.cell_lessons
+    assert "вне сетки" not in page.lessons_stat.text()
+    page.close()
 
 
 def test_recording_failed_lesson_has_no_future_cancel_action(
@@ -111,7 +154,7 @@ def test_legacy_out_of_grid_lesson_is_reported_in_schedule_summary(
         ScheduledLesson(
             student_id="student",
             student_name="Ученик",
-            starts_at=datetime(2026, 8, 5, 21, 0),
+            starts_at=datetime(2026, 8, 5, 22, 0),
             duration_minutes=60,
             subject="mathematics",
         )
