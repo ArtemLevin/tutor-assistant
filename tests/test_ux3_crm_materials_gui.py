@@ -216,11 +216,13 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
     page.show()
     application.processEvents()
 
-    assert page.grid.rowCount() == 12
+    assert page.grid.rowCount() == 13
     assert page.grid.verticalHeaderItem(0).text() == "09:00"
     assert page.grid.verticalHeaderItem(11).text() == "20:00"
+    assert page.grid.verticalHeaderItem(12).text() == "21:00"
     assert page._row_for_time(8, 30) < 0
-    assert page._row_for_time(21, 0) >= page.grid.rowCount()
+    assert page._row_for_time(21, 0) == page.grid.rowCount() - 1
+    assert page._row_for_time(22, 0) >= page.grid.rowCount()
 
     row = page._row_for_time(16, 30)
     assert page.grid.verticalHeaderItem(row).text() == "16:00"
@@ -252,7 +254,7 @@ def test_schedule_uses_hour_rows_for_workday_and_keeps_legacy_half_hours(
 
     new_dialog = ScheduleDialog(store, week_start, 16, 0)
     assert new_dialog.start_time.minimumTime() == QTime(9, 0)
-    assert new_dialog.start_time.maximumTime() == QTime(20, 0)
+    assert new_dialog.start_time.maximumTime() == QTime(21, 0)
     new_dialog.start_time.setTime(QTime(16, 31))
     snapped = new_dialog.value()
     assert (snapped.starts_at.hour, snapped.starts_at.minute) == (17, 0)
