@@ -19,7 +19,7 @@ from .journal_interactions import ReversibleLessonJournalService
 from .theme import set_button_kind
 
 WORKDAY_FIRST_HOUR = 9
-WORKDAY_LAST_HOUR = 20
+WORKDAY_LAST_HOUR = 21
 SCHEDULE_SLOT_MINUTES = 60
 WORKDAY_END_MINUTE = (WORKDAY_LAST_HOUR + 1) * 60
 
@@ -237,7 +237,7 @@ class ScheduleDialogStable(base_crm.ScheduleDialog):
                 QMessageBox.warning(
                     self,
                     "Расписание",
-                    "Старт занятия должен быть в сетке 09:00–20:00, а окончание — не позже 21:00. "
+                    "Старт занятия должен быть в сетке 09:00–21:00, а окончание — не позже 22:00. "
                     "Последний допустимый старт зависит от длительности занятия.",
                 )
                 return
